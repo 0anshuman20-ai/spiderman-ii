@@ -1,5 +1,9 @@
 # COSMIC WEAVER // VEYL STUDIO — PRD
 
+> Architecture of record: **`memory/TERMINAL_PLAN.md`** — the five inversions (Performance File,
+> neural person layer, character factory, Dream Forge, and the **Omega Layer**) and Phases 0–5 + Ω.
+> This PRD tracks what is *shipped*; the terminal plan tracks where it is *going*.
+
 ## Original Problem Statement
 Build the definitive $0 in-browser recording studio for the COSMIC WEAVER YouTube Shorts channel: a 3D masked character (VEYL — black/crimson suit, glowing web-circuit lines, reflective lenses) replaces the creator on screen, driven live by their webcam. The user explicitly demanded the known gaps be filled: not just face tracking but **body + hand tracking**, all free, "no weakness", definitive. Recording must be one-click, upload-ready vertical video. Raw webcam is never recorded (local PIP preview only). Voice is transformed live into a deep-space transmission voice.
 
