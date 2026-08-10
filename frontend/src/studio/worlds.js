@@ -28,7 +28,7 @@ function tex(path, srgb = true) {
 
 /* ------------------------------------------------------------------ */
 /* GPU star dome — real 3D shell of round, twinkling shader points     */
-function starDome(count = 4600, radius = 90) {
+function starDome(count = 8200, radius = 90) {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(count * 3);
   const col = new Float32Array(count * 3);
@@ -122,7 +122,7 @@ function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
         float trans = 1.0;
         float t = 8.0;
         // higher-fidelity march: more, finer steps + self-shadow density lift
-        for (int i = 0; i < 22; i++){
+        for (int i = 0; i < 30; i++){
           vec3 p = cameraPosition + rd * t;
           vec3 q = p * 0.045 + vec3(uTime * 0.008, 0.0, uTime * 0.005);
           float d = fbm(q);
@@ -133,12 +133,15 @@ function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
             c = mix(c, uColC, smoothstep(0.55, 0.9, fbm(q * 0.25 - 1.3)));
             // cheap self-shadowing: denser clouds glow hotter at their cores
             c *= 0.75 + d * 0.65;
-            float a = d * 0.115;
+            // embedded newborn stars flare inside the densest knots
+            float knot = smoothstep(0.86, 0.99, d / max(uDensity, 0.001));
+            c += vec3(1.2, 1.05, 0.9) * knot * (0.6 + 0.4 * sin(uTime * 2.0 + hue * 40.0));
+            float a = d * 0.10;
             col += c * a * trans;
             trans *= 1.0 - a;
             if (trans < 0.04) break;
           }
-          t += 2.5;
+          t += 1.9;
         }
         // keep the zenith darker so the subject reads
         float horizon = smoothstep(-0.15, 0.55, rd.y);
@@ -149,6 +152,101 @@ function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 24), mat);
   mesh.frustumCulled = false;
   return mesh;
+}
+
+/* ------------------------------------------------------------------ */
+/* distant spiral galaxy — a real shader disk, tilted in true 3D       */
+function spiralGalaxy(radius, cCore, cArm) {
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uCore: { value: new THREE.Color(cCore) },
+      uArm: { value: new THREE.Color(cArm) },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main(){ vUv = uv - 0.5; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform float uTime; uniform vec3 uCore, uArm;
+      varying vec2 vUv;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 x){
+        vec2 i = floor(x), f = fract(x);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1,0)), f.x), mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), f.x), f.y);
+      }
+      void main(){
+        float r = length(vUv) * 2.0;
+        if (r > 1.0) discard;
+        float ang = atan(vUv.y, vUv.x);
+        // two logarithmic arms winding out of the core, slowly rotating
+        float swirl = ang + 5.2 * log(max(r, 0.03)) + uTime * 0.01;
+        float arms = pow(abs(cos(swirl)), 2.2);
+        float grain = noise(vUv * 40.0 + uTime * 0.02) * 0.4 + 0.6;
+        float core = exp(-r * 5.5) * 2.2;
+        float disk = exp(-r * 2.4) * (0.25 + arms * 0.75) * grain;
+        vec3 col = uCore * core + uArm * disk;
+        float a = clamp(core + disk, 0.0, 1.0) * smoothstep(1.0, 0.82, r);
+        gl_FragColor = vec4(col, a);
+      }`,
+  });
+  const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 48), mat);
+  return mesh;
+}
+
+/* GPU shooting stars — each meteor is a trail of points streaking the dome */
+function meteorShower(meteors = 5, trail = 16) {
+  const count = meteors * trail;
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(count * 3);      // start position on the dome
+  const dir = new Float32Array(count * 3);      // streak direction
+  const info = new Float32Array(count * 3);     // meteor phase, trail index 0..1, speed
+  for (let m = 0; m < meteors; m++) {
+    const start = new THREE.Vector3().randomDirection().multiplyScalar(70);
+    start.y = Math.abs(start.y) * 0.7 + 12;     // always overhead
+    const d = new THREE.Vector3((Math.random() - 0.5), -0.5 - Math.random() * 0.4, (Math.random() - 0.5)).normalize();
+    for (let i = 0; i < trail; i++) {
+      const idx = m * trail + i;
+      pos.set([start.x, start.y, start.z], idx * 3);
+      dir.set([d.x, d.y, d.z], idx * 3);
+      info.set([m * 1.618, i / trail, 22 + Math.random() * 8], idx * 3);
+    }
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aDir', new THREE.BufferAttribute(dir, 3));
+  geo.setAttribute('aInfo', new THREE.BufferAttribute(info, 3));
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute vec3 aDir; attribute vec3 aInfo;
+      uniform float uTime; varying float vA;
+      void main(){
+        // each meteor lives on a long cycle: a short brilliant streak, then darkness
+        float cycle = 9.0 + aInfo.x * 2.7;
+        float t = mod(uTime + aInfo.x * 13.7, cycle);
+        float life = 1.6;
+        float lt = clamp(t / life, 0.0, 1.0);
+        float dist = lt * aInfo.z - aInfo.y * 3.2;     // trail lags the head
+        vec3 p = position + aDir * dist;
+        float alive = step(t, life) * step(0.0, dist);
+        vA = alive * (1.0 - aInfo.y) * (1.0 - lt) * 1.4;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_PointSize = (1.0 - aInfo.y * 0.8) * 160.0 / -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying float vA;
+      void main(){
+        float d = length(gl_PointCoord - 0.5);
+        float a = smoothstep(0.5, 0.0, d) * vA;
+        gl_FragColor = vec4(vec3(1.0, 0.96, 0.88), a);
+      }`,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  return pts;
 }
 
 /* ------------------------------------------------------------------ */
@@ -322,6 +420,10 @@ export function buildWorld(scene, key) {
   group.add(stars);
   timeMats.push(stars.material);
   updaters.push((t) => { stars.rotation.y = t * 0.003; });
+  // occasional meteors streak the dome in every world
+  const meteors = meteorShower();
+  group.add(meteors);
+  timeMats.push(meteors.material);
   let fogColor = 0x02020a;
   let fogDensity = 0.012;
   const lights = [];
@@ -334,6 +436,11 @@ export function buildWorld(scene, key) {
     const neb = nebulaVolume(0x7a2ce0, 0xd42a55, 0x1e64c8, 1.15);
     group.add(addTimeMat(neb));
     updaters.push((t) => { neb.rotation.y = t * 0.004; });
+    // a distant spiral galaxy tilted into the deep field
+    const gal = addTimeMat(spiralGalaxy(18, 0xfff0dd, 0x8866ff));
+    gal.position.set(-16, 18, -60);
+    gal.rotation.set(1.15, 0.2, 0.4);
+    group.add(gal);
     // drifting rock silhouettes catching purple light — real geometry with parallax
     const rocks = asteroidField(26, { x: 40, y: 16, yBase: -4, zBase: 14, z: 30 }, 0.4, 2.2, 0x241f30);
     group.add(rocks);
@@ -433,6 +540,11 @@ export function buildWorld(scene, key) {
     const moon = new THREE.Mesh(new THREE.SphereGeometry(1.1, 48, 48), new THREE.MeshStandardMaterial({ map: tex('/textures/moon_1024.jpg'), roughness: 1 }));
     moon.position.set(7.5, 13, -34); group.add(moon);
     updaters.push((t) => { moon.rotation.y = t * 0.01; });
+    // Andromeda hanging in the far field
+    const gal = addTimeMat(spiralGalaxy(14, 0xffeedd, 0x6688ff));
+    gal.position.set(14, 20, -70);
+    gal.rotation.set(1.3, -0.3, 0.2);
+    group.add(gal);
     // asteroid belt drifting through the foreground depth
     const belt = asteroidField(34, { x: 44, y: 20, yBase: -6, zBase: 8, z: 34 }, 0.2, 1.6, 0x4a4550);
     group.add(belt);

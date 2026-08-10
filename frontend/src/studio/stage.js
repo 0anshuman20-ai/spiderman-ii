@@ -56,7 +56,7 @@ export function createStage(canvas) {
   renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
+  renderer.toneMappingExposure = 1.18;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(34, W / H, 0.1, 200);
@@ -76,7 +76,7 @@ export function createStage(canvas) {
   const composer = new EffectComposer(renderer);
   composer.setSize(W, H);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.5, 0.62, 0.78);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.62, 0.68, 0.76);
   composer.addPass(bloom);
   const grade = new ShaderPass(GradeShader);
   composer.addPass(grade);
