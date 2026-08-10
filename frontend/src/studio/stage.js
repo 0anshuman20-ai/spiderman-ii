@@ -42,7 +42,7 @@ const GradeShader = {
       col.r = texture2D(tDiffuse, uv + vec2(ca, 0.0)).r;
       col.g = texture2D(tDiffuse, uv).g;
       col.b = texture2D(tDiffuse, uv - vec2(ca, 0.0)).b;
-      col += (rand(uv * (uTime + 1.0)) - 0.5) * 0.018;       // fine grain
+      col += (rand(uv * (uTime + 1.0)) - 0.5) * 0.011;       // fine grain
       float d = distance(uv, vec2(0.5, 0.48));
       col *= 1.0 - d * d * 0.42;                              // gentle vignette
       col *= 1.0 - uGlitch * 0.12;
@@ -56,7 +56,7 @@ export function createStage(canvas) {
   renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 1.1;
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(34, W / H, 0.1, 200);
@@ -76,7 +76,7 @@ export function createStage(canvas) {
   const composer = new EffectComposer(renderer);
   composer.setSize(W, H);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.35, 0.5, 0.82);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.5, 0.62, 0.78);
   composer.addPass(bloom);
   const grade = new ShaderPass(GradeShader);
   composer.addPass(grade);
