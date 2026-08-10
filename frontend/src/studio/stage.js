@@ -216,21 +216,30 @@ export function createStage(canvas) {
       if (tracker && !tracker.sim && !suitLayer) {
         suitLayer = createSuitLayer(tracker, rig, planeW, planeH);
         suitLayer.group.position.set(0, 0, -PLANE_D);
-        suitLayer.setRim(WORLD_RIM[worldKey] || 0x7a5aff);
+        suitLayer.setRim(rimFor(worldKey));
         camera.add(suitLayer.group);
       }
       loop(onFrame);
     },
-    setWorld(k) {
-      if (k === worldKey) return;
-      world.dispose(); world = buildWorld(scene, k); worldKey = k;
-      if (suitLayer) suitLayer.setRim(WORLD_RIM[k] || 0x7a5aff);
+    setWorld(k, params) {
+      if (params !== undefined) worldParams = params && Object.keys(params).length ? { ...params } : null;
+      else if (k === worldKey) return; // no params given, same world: nothing to do
+      world.dispose(); world = buildWorld(scene, k, worldParams); worldKey = k;
+      if (suitLayer) suitLayer.setRim(rimFor(k));
     },
+    /* WORLD EDITOR: rebuild the current world with new params (same dispose path) */
+    setWorldParams(params) {
+      worldParams = params && Object.keys(params).length ? { ...params } : null;
+      world.dispose(); world = buildWorld(scene, worldKey, worldParams);
+      if (suitLayer) suitLayer.setRim(rimFor(worldKey));
+    },
+    get worldParams() { return worldParams; },
     get worldKey() { return worldKey; },
     punch() { punchT = performance.now() / 1000; },
     glitch(sec = 0.4) { glitchT = sec; if (stage.rig) stage.rig.glitch = sec; },
     setHud,
     setHudOn(on) { hudOn = on; },
+    setCaption,
     captureStream(fpsWanted = 60) { return canvas.captureStream(fpsWanted); },
     dispose() { running = false; world.dispose(); if (suitLayer) suitLayer.dispose(); renderer.dispose(); },
   };

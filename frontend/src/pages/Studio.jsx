@@ -7,20 +7,23 @@ import { vault, PERFORMANCES } from '../studio/vault';
 import { Tracker, makeRig } from '../studio/tracking';
 import { VoiceEngine } from '../studio/voice';
 import { Recorder } from '../studio/recorder';
+import { MusicEngine } from '../studio/music';
 import { EMOTE_TO_EXPR } from '../studio/scripts';
-import { ScenePanel, ExpressionPanel, VoicePanel, StatusPanel } from '../components/studio/Panels';
+import { DEFAULT_WORLD_PARAMS } from '../studio/worlds';
+import { readActiveParams, writeActiveParams, readPresets, savePreset, deletePreset, isDefaultParams } from '../studio/worldPresets';
+import { ScenePanel, ExpressionPanel, VoicePanel, StatusPanel, MusicPanel, WorldEditorPanel } from '../components/studio/Panels';
 import { ScriptLog, Prompter } from '../components/studio/Teleprompter';
 import { TakesPanel } from '../components/studio/TakesPanel';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const FX_MAP = {
-  glitch: (stage, voice) => { stage.glitch(0.45); voice.triggerGlitch(250); },
-  zoom: (stage) => stage.punch(),
-  flare: (stage) => stage.punch(),
-  shake: (stage) => stage.glitch(0.2),
-  static: (stage, voice) => voice.triggerGlitch(140),
-  pulse: (stage) => stage.punch(),
+  glitch: (stage, voice, music) => { stage.glitch(0.45); voice.triggerGlitch(250); if (music) music.glitchZap(); },
+  zoom: (stage, voice, music) => { stage.punch(); if (music) music.impact(); },
+  flare: (stage, voice, music) => { stage.punch(); if (music) music.riser(900); },
+  shake: (stage, voice, music) => { stage.glitch(0.2); if (music) music.whoosh(500); },
+  static: (stage, voice, music) => { voice.triggerGlitch(140); if (music) music.glitchZap(); },
+  pulse: (stage, voice, music) => { stage.punch(); if (music) music.impact(); },
   none: () => {},
 };
 
@@ -33,9 +36,13 @@ export default function Studio() {
   const voiceRef = useRef(null);
   const recorderRef = useRef(new Recorder());
   const perfRecRef = useRef(new PerfRecorder());
+  const musicRef = useRef(null);
   const scriptRef = useRef(null);
   const beatRef = useRef(0);
   const recStartRef = useRef(0);
+  const countdownRef = useRef(null);   // interval id while the 3-2-1 runs
+  const captionsRef = useRef(true);    // mirrored into the frame callback
+  const paramsTimerRef = useRef(null); // debounce for world-editor rebuilds
 
   const [booted, setBooted] = useState(null); // null | 'live' | 'sim'
   const [booting, setBooting] = useState(false);
@@ -56,6 +63,17 @@ export default function Studio() {
   const [progress, setProgress] = useState({});
   const [pipOn, setPipOn] = useState(true);
   const [glitchUi, setGlitchUi] = useState(false);
+  const [countdown, setCountdown] = useState(null); // null | 3 | 2 | 1
+  const [captionsOn, setCaptionsOn] = useState(true);
+  // sound layer UI
+  const [musicOn, setMusicOn] = useState(true);
+  const [musicReady, setMusicReady] = useState(false);
+  const [bedVol, setBedVol] = useState(1);
+  const [sfxVol, setSfxVol] = useState(1);
+  const [musicMonitor, setMusicMonitor] = useState(true);
+  // world editor
+  const [wParams, setWParams] = useState({ ...DEFAULT_WORLD_PARAMS });
+  const [wPresets, setWPresets] = useState(() => readPresets('nebula-drift'));
 
   useEffect(() => {
     axios.get(`${API}/progress`).then((r) => setProgress(r.data)).catch(() => {});
@@ -70,7 +88,32 @@ export default function Studio() {
 
   const setWorld = useCallback((k) => {
     setWorldState(k);
-    if (stageRef.current) stageRef.current.setWorld(k);
+    const saved = readActiveParams(k);
+    setWParams(saved ? { ...saved } : { ...DEFAULT_WORLD_PARAMS });
+    setWPresets(readPresets(k));
+    if (stageRef.current) stageRef.current.setWorld(k, saved);
+    if (musicRef.current) musicRef.current.setWorld(k);
+  }, []);
+
+  /* WORLD EDITOR — debounce slider moves into one rebuild, persist the dial */
+  const onWorldParam = useCallback((key, value) => {
+    setWParams((prev) => {
+      const next = { ...prev, [key]: value };
+      writeActiveParams(stageRef.current ? stageRef.current.worldKey : 'nebula-drift', next);
+      if (paramsTimerRef.current) clearTimeout(paramsTimerRef.current);
+      paramsTimerRef.current = setTimeout(() => {
+        if (stageRef.current) stageRef.current.setWorldParams(isDefaultParams(next) ? null : next);
+      }, 180);
+      return next;
+    });
+  }, []);
+
+  const applyWorldParams = useCallback((params) => {
+    const k = stageRef.current ? stageRef.current.worldKey : 'nebula-drift';
+    const next = { ...DEFAULT_WORLD_PARAMS, ...(params || {}) };
+    setWParams(next);
+    writeActiveParams(k, next);
+    if (stageRef.current) stageRef.current.setWorldParams(isDefaultParams(next) ? null : next);
   }, []);
 
   const setExpr = useCallback((e) => {
@@ -81,6 +124,7 @@ export default function Studio() {
   const doGlitch = useCallback(() => {
     if (stageRef.current) stageRef.current.glitch(0.45);
     if (voiceRef.current) voiceRef.current.triggerGlitch(250);
+    if (musicRef.current) musicRef.current.glitchZap();
     setGlitchUi(true);
     setTimeout(() => setGlitchUi(false), 700);
   }, []);
