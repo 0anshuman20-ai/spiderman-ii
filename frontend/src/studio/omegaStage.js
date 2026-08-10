@@ -212,7 +212,8 @@ export function createOmegaStage(canvas) {
       const frame = Math.min(perf.frames - 1, Math.round(pt * perf.fps));
       let conf = meanVisibility(perf, frame);
       if (stuntSolver) conf = stuntSolver.solve(t, jointBuf, conf);
-      actor.applyPose(jointBuf, faceBuf, conf, 1);   // offline snaps: no easing lag
+      // offline snaps (no easing lag); a live stunt window owns the root outright
+      actor.applyPose(jointBuf, faceBuf, conf, 1, stuntSolver ? stuntSolver.root : null);
       grade.uniforms.uGlitch.value = faceBuf[9] > 0.5 ? 0.35 : 0;
     } else {
       actor.idle(t);

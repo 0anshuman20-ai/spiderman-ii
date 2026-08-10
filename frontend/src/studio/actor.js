@@ -323,9 +323,17 @@ export function createActor() {
       chest.lerpVectors(hipC, shoulderC, 0.62);
       headBase.copy(shoulderC).addScaledVector(tmpC.subVectors(shoulderC, hipC).normalize(), 0.11);
 
-      /* foot lock: whichever foot is lower owns the floor, so contact stops sliding */
-      const footY = Math.min(smooth[JOINT.ankleL * 3 + 1], smooth[JOINT.ankleR * 3 + 1]);
-      group.position.y = actor.rootLock ? REST.groundY - REST.thigh - REST.shin : -footY;
+      /* Root ownership, in priority order:
+         1. an explicit root — the Stunt Engine has taken the body off the floor,
+            so physics owns translation and the foot lock must not fight it;
+         2. rootLock — hips pinned at standing height (turntables, reverse angles);
+         3. otherwise the lower foot owns the floor, so contact stops sliding. */
+      if (root) {
+        group.position.set(root.x, root.y, root.z);
+      } else {
+        const footY = Math.min(smooth[JOINT.ankleL * 3 + 1], smooth[JOINT.ankleR * 3 + 1]);
+        group.position.set(0, actor.rootLock ? REST.groundY - REST.thigh - REST.shin : -footY, 0);
+      }
 
       BONES.forEach((def) => {
         const b = bones[def.id];
