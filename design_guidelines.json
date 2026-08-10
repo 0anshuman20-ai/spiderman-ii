@@ -1,0 +1,131 @@
+{
+  "theme": "dark",
+  "typography": {
+    "headings": {
+      "fontFamily": "JetBrains Mono, monospace",
+      "weights": ["400", "700"],
+      "strategy": "Technical, uppercase, tracking-widest for labels. Use tracking-tighter for large numeric displays. Banned: Inter, Roboto."
+    },
+    "body": {
+      "fontFamily": "Chivo, sans-serif",
+      "weights": ["300", "400"],
+      "strategy": "Clean, highly readable geometry. High contrast against dark background."
+    }
+  },
+  "colors": {
+    "archetype": "Retro-Futuristic Broadcast (Terminal/Cinematic)",
+    "primary": "#FF1A1A",
+    "primary_hover": "#FF4D4D",
+    "background": {
+      "base": "#050505",
+      "panel": "#0A0A0A",
+      "surface": "#121212"
+    },
+    "text": {
+      "primary": "#F8F8FF",
+      "secondary": "#A1A1AA",
+      "muted": "#52525B"
+    },
+    "accents": {
+      "green": "#00FF41",
+      "amber": "#FFB000",
+      "cyan": "#00FFFF"
+    },
+    "borders": {
+      "default": "rgba(255, 255, 255, 0.1)",
+      "active": "rgba(255, 26, 26, 0.5)"
+    }
+  },
+  "surfaces_and_visual_enhancers": {
+    "strategy": "Retro-Futurism / Terminal Look. Deep black backgrounds. Borders are 1px solid rgba(255,255,255,0.1). Scanlines overlay.",
+    "scanlines": "CSS repeating-linear-gradient(to bottom, transparent, transparent 2px, rgba(0,0,0,0.5) 3px).",
+    "glow": "Subtle red or green drop-shadow on active recording elements.",
+    "panels": "Flat backgrounds, sharp edges or max 4px radius. High density bento-grid."
+  },
+  "components": {
+    "buttons": {
+      "record": "Sharp edges, solid #FF1A1A background, pulsing box-shadow when active.",
+      "hotkeys": "Border-collapse style grid, 1px border. Hover state slightly lifts with a subtle inner glow."
+    },
+    "sliders": {
+      "style": "Thin 2px track, sharp rectangular thumb, glowing track fill."
+    },
+    "panels": {
+      "style": "Cardless or 1px border with #0A0A0A background. No shadows. Technical broadcast feel."
+    },
+    "teleprompter": {
+      "style": "Monospace text, #F8F8FF text on #000000/80 background (backdrop-blur-md), yellow highlights for directing notes."
+    },
+    "shadcn_customization": "Override default soft radii to rounded-none or rounded-sm. Remove soft shadows, replace with 1px borders."
+  },
+  "layout_and_grids": {
+    "strategy": "MODE B: High Density Grid. The dashboard wraps a central large 9:16 viewport.",
+    "structure": "Grid columns: 12. Viewport takes 4 columns (centered conceptually or left). Left sidebar: 3 columns (Voice Engine & Scenes). Right sidebar: 5 columns (Teleprompter, Takes, Status dots).",
+    "spacing": "Dense padding (p-4 to p-6) inside panels. Gap-4 between panels."
+  },
+  "motion_and_interactions": {
+    "strategy": "Snappy, purposeful. Ticker-like strips for alerts.",
+    "hover": "Text color shifts to pure white, border opacity increases.",
+    "recording_active": "Pulse animation on REC button. Red border glow on the 3D viewport canvas.",
+    "glitch_burst": "CSS keyframe animation for temporary UI glitch effect (skew, rgb split) triggered by hotkey."
+  },
+  "accessibility": {
+    "contrast": "APCA standard compliant. Normal text > 4.5:1.",
+    "focus": "focus:ring-2 focus:ring-[#FF1A1A] focus:outline-none.",
+    "reduced_motion": "Respect prefers-reduced-motion for glitch effects.",
+    "test_ids": "All buttons, sliders, panels MUST have data-testid attributes (e.g., data-testid='record-btn', data-testid='scene-switch-1')."
+  },
+  "3d_and_media": {
+    "strategy": "3D Avatar driven by MediaPipe, placed over 2D/3D space backgrounds.",
+    "libraries": ["@mediapipe/tasks-vision", "three", "@react-three/fiber", "@react-three/drei"],
+    "lighting": "Cinematic 3D lighting. Directional rim light (red/blue) to match space backgrounds.",
+    "webcam_pip": "Small floating video element, absolute positioned, grayscale filter applied."
+  },
+  "image_urls": {
+    "worlds": [
+      {
+        "name": "Red Planet",
+        "url": "https://images.unsplash.com/photo-1770723963970-ace02c7db50e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHw0fHxyZWQlMjBwbGFuZXQlMjBtYXJzJTIwc3VyZmFjZXxlbnwwfHx8fDE3ODYzMzIyODl8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Mars-like red surface background"
+      },
+      {
+        "name": "Asteroid with Earth view",
+        "url": "https://images.unsplash.com/photo-1747422220716-17490b7139cc?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwzfHxhc3Rlcm9pZCUyMHdpdGglMjBlYXJ0aCUyMHZpZXclMjBzcGFjZXxlbnwwfHx8fDE3ODYzMzIyODl8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Earth from space"
+      },
+      {
+        "name": "Dying Star",
+        "url": "https://images.unsplash.com/photo-1707588883773-32cea93c94ff?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzN8MHwxfHNlYXJjaHwzfHxkeWluZyUyMHN0YXIlMjBzdXBlcm5vdmElMjBzcGFjZXxlbnwwfHx8fDE3ODYzMzIyODl8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Supernova explosion"
+      },
+      {
+        "name": "Nebula Drift",
+        "url": "https://images.unsplash.com/photo-1754851582381-04fe7bedd618?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwxfHxzcGFjZSUyMG5lYnVsYSUyMHN0YXJzfGVufDB8fHx8MTc4NjMzMjMxOXww&ixlib=rb-4.1.0&q=85",
+        "description": "Colorful space nebula"
+      },
+      {
+        "name": "Derelict Station",
+        "url": "https://images.unsplash.com/photo-1760813360432-9b5d79eb9679?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzB8MHwxfHNlYXJjaHwzfHxzcGFjZXNoaXAlMjBpbnRlcmlvciUyMGRhcmt8ZW58MHx8fHwxNzg2MzMyMzE5fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Dark futuristic spaceship interior with glowing beam"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Install required dependencies for styling and 3D: `yarn add @phosphor-icons/react three @react-three/fiber @react-three/drei @mediapipe/tasks-vision`",
+    "Set up a layout with `grid-cols-1` on mobile, `md:grid-cols-12` on desktop. The center piece must be a 9:16 aspect ratio container taking up `col-span-4` (or similar depending on screen) for the video feed.",
+    "Implement the CRT scanline overlay using a full-screen or container-relative `pointer-events-none` div with a repeating-linear-gradient and subtle opacity.",
+    "Use Phosphor Icons for technical, broadcast-style icons.",
+    "Do NOT use pure transparent backgrounds on panels. Always use a solid dark background like #0A0A0A or a highly blurred dark translucent layer #000000/80.",
+    "Implement the teleprompter to overlay the 3D viewport or sit alongside it, using absolute positioning if overlaying, with `backdrop-blur-md bg-black/60` so the 3D world is still visible underneath.",
+    "No generic centering of layout. Left align text and numeric data."
+  ],
+  "universal_guidelines_for_main_agent": [
+    "You tend to converge toward generic outputs. Break the mold: use 1px borders, dense data displays, and raw broadcast-style typography.",
+    "Dark colors look good without gradients. DO NOT use gradients for backgrounds, except for the scanline texture.",
+    "Create depth through z-index and border-collapse styles.",
+    "NEVER use emojis for icons. Use Phosphor Icons.",
+    "Do NOT use universal transition 'all'. Specify properties (e.g. `transition: transform 0.2s ease, opacity 0.2s ease`).",
+    "DO NOT center align the app container.",
+    "Add data-testid attributes to all interactive elements."
+  ]
+}
