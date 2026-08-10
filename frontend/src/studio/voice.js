@@ -5,6 +5,9 @@ export const VOICE_PRESETS = {
   'deep-oracle': { pitch: -5, sub: 0.42, reverb: 0.3, static: 0.008, drive: 0.12, label: 'DEEP ORACLE' },
   'ghost-signal': { pitch: -3.5, sub: 0.2, reverb: 0.34, static: 0.06, drive: 0.5, label: 'GHOST SIGNAL' },
   'comms-only': { pitch: -2, sub: 0.1, reverb: 0.06, static: 0.03, drive: 0.35, label: 'COMMS ONLY' },
+  // definitive creator voice: barely-shifted, zero grit, whisper of room + sub weight —
+  // the polished "voiceover booth" sound for narration takes that must carry a channel
+  'creator-broadcast': { pitch: -1, sub: 0.14, reverb: 0.07, static: 0, drive: 0.05, label: 'CREATOR BROADCAST' },
   clean: { pitch: 0, sub: 0, reverb: 0, static: 0, drive: 0, label: 'CLEAN MIC' },
 };
 
@@ -65,6 +68,9 @@ export class VoiceEngine {
       const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2600; presence.Q.value = 1.1; presence.gain.value = 3;
       const weight = ctx.createBiquadFilter(); weight.type = 'lowshelf'; weight.frequency.value = 140; weight.gain.value = 2;
       const demud = ctx.createBiquadFilter(); demud.type = 'peaking'; demud.frequency.value = 400; demud.Q.value = 1; demud.gain.value = -3;
+      // air shelf: pitching down dulls the top octave — restore broadcast sparkle.
+      // applied on the core layer only so it never amplifies the static/noise bed.
+      const air = ctx.createBiquadFilter(); air.type = 'highshelf'; air.frequency.value = 10500; air.gain.value = 2.5;
       this.coreGain = ctx.createGain(); this.coreGain.gain.value = 1;
 
       // sub octave layer
@@ -87,6 +93,9 @@ export class VoiceEngine {
 
       const comp = ctx.createDynamicsCompressor();
       comp.threshold.value = -18; comp.knee.value = 6; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.18;
+      // makeup gain: recover the level the compressor takes away so takes land at
+      // competitive loudness for platform audio; the limiter still owns the ceiling.
+      const makeup = ctx.createGain(); makeup.gain.value = 1.35; // +2.6 dB
       const limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = -2; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.06;
       this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
@@ -95,13 +104,13 @@ export class VoiceEngine {
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
       src.connect(hp); hp.connect(this.gateNode);
-      this.gateNode.connect(this.corePitch); this.corePitch.connect(presence); presence.connect(weight); weight.connect(demud); demud.connect(this.coreGain); this.coreGain.connect(sum);
+      this.gateNode.connect(this.corePitch); this.corePitch.connect(presence); presence.connect(weight); weight.connect(demud); demud.connect(air); air.connect(this.coreGain); this.coreGain.connect(sum);
       this.gateNode.connect(this.subPitch); this.subPitch.connect(subLp); subLp.connect(this.subGain); this.subGain.connect(sum);
       this.gateNode.connect(bHp); bHp.connect(bLp); bLp.connect(this.commsGain); this.commsGain.connect(sum);
       sum.connect(this.fxNode);
       this.fxNode.connect(this.dry); this.dry.connect(comp);
       this.fxNode.connect(this.convolver); this.convolver.connect(this.wet); this.wet.connect(comp);
-      comp.connect(limiter); limiter.connect(this.outGain);
+      comp.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
       this.outGain.connect(this.analyser); this.outGain.connect(this.dest); this.outGain.connect(this.monitorGain);
       this.monitorGain.connect(ctx.destination);
 

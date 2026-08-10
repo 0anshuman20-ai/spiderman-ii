@@ -166,7 +166,7 @@ export default function Studio() {
         setTakes((p) => [entry, ...p]);
         // auto-download
         const a = document.createElement('a');
-        a.href = take.url; a.download = `${entry.name}.webm`; a.click();
+        a.href = take.url; a.download = `${entry.name}.${take.ext || 'webm'}`; a.click();
         axios.post(`${API}/takes`, {
           name: entry.name, transmission: script ? script.number : null,
           world: stage.worldKey, duration: take.duration, size: take.size, mime: take.mime,

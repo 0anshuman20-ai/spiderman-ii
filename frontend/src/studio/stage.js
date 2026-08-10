@@ -73,7 +73,14 @@ export function createStage(canvas) {
   const planeW = planeH * (W / H);
   let suitLayer = null; // created in start() once the tracker exists
 
-  const composer = new EffectComposer(renderer);
+  /* the composer bypasses the canvas's MSAA entirely — without an explicit
+     multisampled HDR target every pass (and therefore the recording) is aliased.
+     4x MSAA + half-float = clean silhouette edges and band-free bloom on tape. */
+  let composerTarget;
+  try {
+    composerTarget = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 });
+  } catch (_) { composerTarget = undefined; }
+  const composer = composerTarget ? new EffectComposer(renderer, composerTarget) : new EffectComposer(renderer);
   composer.setSize(W, H);
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.62, 0.68, 0.76);

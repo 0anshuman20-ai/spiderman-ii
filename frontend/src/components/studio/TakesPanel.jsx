@@ -14,7 +14,7 @@ export const TakesPanel = ({ takes, onDelete }) => (
         <div key={t.id} className="cw-chip" style={{ cursor: 'default' }} data-testid={`take-${t.id}`}>
           <span className="flex-1 truncate" style={{ fontSize: 10 }}>{t.name}</span>
           <small>{fmtDur(t.duration)} · {fmtSize(t.size)}</small>
-          <a href={t.url} download={`${t.name}.webm`} className="mono"
+          <a href={t.url} download={`${t.name}.${t.ext || 'webm'}`} className="mono"
             style={{ color: 'var(--cw-green)', fontSize: 10, textDecoration: 'none' }}
             data-testid={`take-download-${t.id}`}>▼ SAVE</a>
           <button onClick={() => onDelete(t.id)} className="bg-transparent border-0 cursor-pointer mono"
