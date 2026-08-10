@@ -146,7 +146,8 @@ export function createStage(canvas) {
     scene, camera, renderer,
     start(rig, tracker, onFrame) {
       stage.rig = rig;
-      if (tracker && !suitLayer) {
+      // in sim mode there is no webcam feed — a person layer would just be an opaque black quad
+      if (tracker && !tracker.sim && !suitLayer) {
         suitLayer = createSuitLayer(tracker, rig, planeW, planeH);
         suitLayer.group.position.set(0, 0, -PLANE_D);
         suitLayer.setRim(WORLD_RIM[worldKey] || 0x7a5aff);

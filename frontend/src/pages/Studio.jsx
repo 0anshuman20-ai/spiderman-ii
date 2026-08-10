@@ -239,7 +239,7 @@ export default function Studio() {
             <p className="mono text-[10px] mb-8" style={{ color: 'var(--cw-muted)' }}>REAL VIDEO SUIT · AI BACKGROUND MATTE — 1080×1920 · 60FPS · $0</p>
             <div className="flex flex-col gap-3 items-start">
               <button className="cw-rec" data-testid="boot-live-btn" disabled={booting}
-                onClick={() => boot('live')}>{booting ? 'INITIALIZING…' : '⦿ INITIALIZE FULL RIG'}</button>
+                onClick={() => boot('live')}>{booting ? 'INITIALIZING…' : '● INITIALIZE FULL RIG'}</button>
               <button className="cw-chip" style={{ padding: '10px 18px' }} data-testid="boot-sim-btn" disabled={booting}
                 onClick={() => boot('sim')}><span>RUN SIM MODE — NO CAMERA</span></button>
             </div>
@@ -257,7 +257,7 @@ export default function Studio() {
         <div className="flex-1" />
         {recording && <span className="mono text-sm" style={{ color: 'var(--cw-red)' }} data-testid="rec-timer">● {fmtClock(elapsed)}</span>}
         <button className={`cw-rec ${recording ? 'live' : ''}`} disabled={!booted} data-testid="record-btn" onClick={toggleRec}>
-          {recording ? '■ STOP & SAVE' : '⦿ REC'}
+          {recording ? '■ STOP & SAVE' : '● REC'}
         </button>
       </header>
 

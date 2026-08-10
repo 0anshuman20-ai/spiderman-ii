@@ -104,23 +104,30 @@ export function buildWorld(scene, key) {
   } else if (key === 'derelict-station') {
     scene.background = new THREE.Color(0x020306);
     fogColor = 0x050810;
-    const beamMat = new THREE.MeshStandardMaterial({ color: 0x11151f, roughness: 0.6, metalness: 0.8 });
+    // cold nebula haze behind the wreck so the silhouettes read
+    const haze1 = sprite(radialTexture('rgba(40,110,190,0.4)', 'rgba(0,0,0,0)'), 34, -6, 8, -32); group.add(haze1);
+    const haze2 = sprite(radialTexture('rgba(90,180,230,0.3)', 'rgba(0,0,0,0)'), 24, 8, 2, -36); group.add(haze2);
+    const beamMat = new THREE.MeshStandardMaterial({ color: 0x2a3448, roughness: 0.5, metalness: 0.85 });
     for (let i = -2; i <= 2; i++) {
       const beam = new THREE.Mesh(new THREE.BoxGeometry(0.25, 12, 0.4), beamMat);
       beam.position.set(i * 2.6, 3, -5 - Math.abs(i) * 1.4);
       beam.rotation.z = i * 0.06; group.add(beam);
       const cross = new THREE.Mesh(new THREE.BoxGeometry(12, 0.22, 0.35), beamMat);
       cross.position.set(0, 1.2 + i * 2.1, -5.6); group.add(cross);
+      // emissive strip lights running along each cross-beam
+      const strip = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.05, 0.05), new THREE.MeshBasicMaterial({ color: 0x77d5ff }));
+      strip.position.set(0, 1.34 + i * 2.1, -5.55); group.add(strip);
     }
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(9, 0.35, 8, 60), new THREE.MeshStandardMaterial({ color: 0x0c1018, roughness: 0.7, metalness: 0.9 }));
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(9, 0.35, 8, 60), new THREE.MeshStandardMaterial({ color: 0x1c2534, roughness: 0.6, metalness: 0.9 }));
     ring.position.set(4, 5, -26); ring.rotation.x = 1.1; group.add(ring);
     updaters.push((t) => { ring.rotation.z = t * 0.03; });
-    const flicker = new THREE.PointLight(0x66ddff, 14, 22); flicker.position.set(-3, 4, -2); group.add(flicker);
-    updaters.push((t) => { flicker.intensity = (Math.sin(t * 17) > 0.94 || Math.sin(t * 7.3) > 0.98) ? 2 : 12 + Math.sin(t * 2) * 3; });
-    const warn = new THREE.PointLight(0xff3322, 10, 14); warn.position.set(4, 2.5, -4); group.add(warn);
-    updaters.push((t) => { warn.intensity = 5 + 5 * Math.max(0, Math.sin(t * 1.4)); });
-    const dust = dustField(220, 9, 0x99bbcc, 0.014); group.add(dust);
+    const flicker = new THREE.PointLight(0x66ddff, 34, 30); flicker.position.set(-3, 4, -2); group.add(flicker);
+    updaters.push((t) => { flicker.intensity = (Math.sin(t * 17) > 0.94 || Math.sin(t * 7.3) > 0.98) ? 6 : 30 + Math.sin(t * 2) * 6; });
+    const warn = new THREE.PointLight(0xff3322, 22, 18); warn.position.set(4, 2.5, -4); group.add(warn);
+    updaters.push((t) => { warn.intensity = 12 + 12 * Math.max(0, Math.sin(t * 1.4)); });
+    const dust = dustField(300, 9, 0x99bbcc, 0.016); group.add(dust);
     updaters.push((t) => { dust.rotation.y = t * 0.015; });
+    lights.push(new THREE.DirectionalLight(0x5588bb, 0.7)); lights[0].position.set(-4, 8, 6);
   } else if (key === 'asteroid-earth') {
     scene.background = new THREE.Color(0x010208);
     fogColor = 0x030512;
@@ -134,11 +141,15 @@ export function buildWorld(scene, key) {
     rockGeo.computeVertexNormals();
     const rock = new THREE.Mesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0x3d3a42, roughness: 1, flatShading: true }));
     rock.position.set(0, -3.15, 0); rock.scale.set(1.6, 1, 1.6); group.add(rock);
-    const earth = new THREE.Mesh(new THREE.SphereGeometry(3.4, 48, 48), new THREE.MeshStandardMaterial({ map: noiseSphereTexture('#1a4d8f', [{ color: '#2d7a3a', n: 42, rMax: 34, alpha: 0.85 }, { color: '#c9d8e8', n: 90, rMax: 16, alpha: 0.5 }, { color: '#e8eef5', n: 40, rMax: 10, alpha: 0.6 }]), roughness: 0.8 }));
-    earth.position.set(-5.5, 6, -22); group.add(earth);
-    const atmo = sprite(radialTexture('rgba(90,160,255,0.5)', 'rgba(0,0,0,0)'), 9.4, -5.5, 6, -22.2); group.add(atmo);
-    updaters.push((t) => { earth.rotation.y = t * 0.02; });
-    lights.push(new THREE.DirectionalLight(0xbfd7ff, 1.4)); lights[0].position.set(-4, 8, 4);
+    const earth = new THREE.Mesh(new THREE.SphereGeometry(4.6, 48, 48), new THREE.MeshStandardMaterial({ map: noiseSphereTexture('#1a4d8f', [{ color: '#2d7a3a', n: 42, rMax: 34, alpha: 0.85 }, { color: '#c9d8e8', n: 90, rMax: 16, alpha: 0.5 }, { color: '#e8eef5', n: 40, rMax: 10, alpha: 0.6 }]), roughness: 0.8, emissive: 0x0a1e3a, emissiveIntensity: 0.5 }));
+    earth.position.set(-2.4, 7.4, -20); group.add(earth);
+    const atmo = sprite(radialTexture('rgba(90,160,255,0.55)', 'rgba(0,0,0,0)'), 13.5, -2.4, 7.4, -20.3); group.add(atmo);
+    const moonGlow = sprite(radialTexture('rgba(200,215,240,0.5)', 'rgba(0,0,0,0)'), 4, 5.5, 12, -30); group.add(moonGlow);
+    updaters.push((t) => { earth.rotation.y = t * 0.02; atmo.material.opacity = 0.85 + 0.15 * Math.sin(t * 0.5); });
+    const dust = dustField(260, 10, 0x6699ff, 0.016); group.add(dust);
+    updaters.push((t) => { dust.rotation.y = t * 0.018; });
+    lights.push(new THREE.DirectionalLight(0xbfd7ff, 2.2)); lights[0].position.set(-4, 8, 4);
+    lights.push(new THREE.PointLight(0x4477ff, 20, 30)); lights[1].position.set(-2, 6, -10);
   } else { // dying-star
     scene.background = new THREE.Color(0x0d0302);
     fogColor = 0x1a0503;
