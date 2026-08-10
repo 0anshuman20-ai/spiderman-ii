@@ -13,6 +13,23 @@ export const WORLDS = [
 ];
 
 /* ------------------------------------------------------------------ */
+/* WORLD EDITOR params — density scales particle counts at build time,
+   motion multiplies animation speed, hueShift rotates the palette.     */
+export const DEFAULT_WORLD_PARAMS = { hueShift: 0, density: 1, motion: 1 };
+
+let DENSITY = 1; // module-scoped build-time factor, set per buildWorld call
+
+function scaled(n) { return Math.max(6, Math.round(n * DENSITY)); }
+
+/* HSL-rotate a THREE.Color in place */
+function hueRotate(color, deg) {
+  if (!deg) return;
+  const hsl = { h: 0, s: 0, l: 0 };
+  color.getHSL(hsl);
+  color.setHSL((hsl.h + deg / 360 + 1) % 1, hsl.s, hsl.l);
+}
+
+/* ------------------------------------------------------------------ */
 /* texture cache                                                        */
 const texLoader = new THREE.TextureLoader();
 const texCache = {};
@@ -29,6 +46,7 @@ function tex(path, srgb = true) {
 /* ------------------------------------------------------------------ */
 /* GPU star dome — real 3D shell of round, twinkling shader points     */
 function starDome(count = 8200, radius = 90) {
+  count = scaled(count);
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(count * 3);
   const col = new Float32Array(count * 3);
@@ -197,6 +215,7 @@ function spiralGalaxy(radius, cCore, cArm) {
 
 /* GPU shooting stars — each meteor is a trail of points streaking the dome */
 function meteorShower(meteors = 5, trail = 16) {
+  meteors = Math.max(2, Math.round(meteors * DENSITY));
   const count = meteors * trail;
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(count * 3);      // start position on the dome
@@ -319,6 +338,7 @@ function fresnelShell(radius, color, power = 3.0, intensity = 1.0) {
 /* ------------------------------------------------------------------ */
 /* instanced asteroid field — real displaced rock geometry, drifting   */
 function asteroidField(count, box, scaleMin, scaleMax, color = 0x4a4550) {
+  count = scaled(count);
   const geo = new THREE.IcosahedronGeometry(1, 1);
   const p = geo.attributes.position;
   for (let i = 0; i < p.count; i++) {
@@ -359,6 +379,7 @@ function asteroidField(count, box, scaleMin, scaleMax, color = 0x4a4550) {
 
 /* volumetric dust motes with true 3D positions (round shader points) */
 function dustPoints(count, spread, color, size = 0.03) {
+  count = scaled(count);
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(count * 3);
   for (let i = 0; i < count; i++) pos.set([(Math.random() - 0.5) * spread, Math.random() * 4 - 0.5, (Math.random() - 0.5) * spread], i * 3);
@@ -412,7 +433,11 @@ function terrain(width, depth, segs, ampl, colorMap) {
 }
 
 /* ------------------------------------------------------------------ */
-export function buildWorld(scene, key) {
+export function buildWorld(scene, key, params) {
+  const p = { ...DEFAULT_WORLD_PARAMS, ...(params || {}) };
+  DENSITY = Math.max(0.4, Math.min(1.6, p.density || 1));
+  const motion = Math.max(0.2, Math.min(2.5, p.motion || 1));
+  const hueShift = p.hueShift || 0;
   const group = new THREE.Group();
   const updaters = [];
   const timeMats = []; // materials with uTime
@@ -585,11 +610,41 @@ export function buildWorld(scene, key) {
   scene.fog = new THREE.FogExp2(fogColor, fogDensity);
   scene.add(group);
 
+  /* WORLD EDITOR — hueShift rotates the whole palette after build:
+     lights, standard material tints, every shader color uniform, background + fog */
+  if (hueShift) {
+    group.traverse((o) => {
+      if (o.isLight && o.color) hueRotate(o.color, hueShift);
+      if (o.isLight && o.groundColor) hueRotate(o.groundColor, hueShift);
+      const m = o.material;
+      if (!m) return;
+      if (m.uniforms) {
+        Object.values(m.uniforms).forEach((u) => { if (u.value && u.value.isColor) hueRotate(u.value, hueShift); });
+      } else if (m.color) hueRotate(m.color, hueShift);
+    });
+    if (scene.background && scene.background.isColor) hueRotate(scene.background, hueShift);
+    if (scene.fog && scene.fog.color) hueRotate(scene.fog.color, hueShift);
+  }
+
+  /* audio-reactive energy: cheap uniform/intensity nudges only, no allocations */
+  const lightBase = lights.map((l) => l.intensity);
+  let energy = 0;
+
   return {
     group,
+    params: p,
     update(t, dt) {
-      timeMats.forEach((m) => { if (m.uniforms && m.uniforms.uTime) m.uniforms.uTime.value = t; });
-      updaters.forEach((u) => u(t, dt));
+      const mt = t * motion, mdt = dt * motion;
+      timeMats.forEach((m) => { if (m.uniforms && m.uniforms.uTime) m.uniforms.uTime.value = mt; });
+      updaters.forEach((u) => u(mt, mdt));
+      for (let i = 0; i < lights.length; i++) lights[i].intensity = lightBase[i] * (1 + energy * 0.55);
+    },
+    setEnergy(e) { energy = Math.max(0, Math.min(1, e || 0)); },
+    /* depth-parallax: counter-shift the farthest layers against head motion */
+    parallax(dx, dy) {
+      stars.position.x = -dx * 1.6;
+      stars.position.y = dy * 0.8;
+      meteors.position.x = -dx * 1.2;
     },
     dispose() {
       scene.remove(group);
