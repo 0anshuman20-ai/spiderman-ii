@@ -93,10 +93,27 @@ export default function OmegaRoom() {
     return () => { alive = false; if (epRunRef.current) epRunRef.current.stop(); stage.dispose(); };
   }, []);
 
-  /* one function rebuilds the shot from current state — deterministic by design */
+  /* one function rebuilds the shot from current state — deterministic by design.
+     Cinema strength is read from the ref, never the state, so a slider move
+     retunes the live pass without tearing the shot down and resetting the clock. */
   const loadShot = useCallback(async () => {
     const stage = stageRef.current;
     if (!stage || epRendering) return;
+
+    /* Ω.3 — a frozen frame owns the room: the depth mesh IS the shot */
+    if (still) {
+      stage.load({
+        performance: null, rig, world,
+        in: 0, out: STILL_DUR,
+        still, cinema: cinemaRef.current, cinemaSeed: still.seed || 11,
+        label: `still · 2.5d dolly${cinemaRef.current > 0.004 ? ' · cinema' : ''}`,
+      });
+      setDuration(stage.duration);
+      setTime(0);
+      setPlaying(false);
+      return;
+    }
+
     const perf = activeId ? await vault.get(PERFORMANCES, activeId) : null;
     const dur = perf ? perf.duration : 6;
     let solver = null;
@@ -110,12 +127,13 @@ export default function OmegaRoom() {
     stage.load({
       performance: perf, rig, world,
       in: 0, out: dur, stunt: solver,
-      label: `${label} · ${(RIG_BY_KEY[rig] || RIG_BY_KEY.medium).badge}`,
+      cinema: cinemaRef.current, cinemaSeed: 11,
+      label: `${label} · ${(RIG_BY_KEY[rig] || RIG_BY_KEY.medium).badge}${cinemaRef.current > 0.004 ? ' · cinema' : ''}`,
     });
     setDuration(stage.duration);
     setTime(0);
     setPlaying(false);
-  }, [activeId, rig, world, stunt, stuntStart, stuntLen, epRendering]);
+  }, [activeId, rig, world, stunt, stuntStart, stuntLen, epRendering, still]);
 
   useEffect(() => { if (ready) loadShot(); }, [ready, loadShot]);
 
@@ -135,6 +153,42 @@ export default function OmegaRoom() {
     stage.pause(); setPlaying(false);
     stage.seek(t); setTime(t);
   }, [epRendering]);
+
+  /* Ω.3 — the cinema finish. Strength retunes the running pass live (the held
+     frame re-renders in place); the A/B hold drops to the raw render and snaps
+     back on release. All direction-track values — the shot never loses them. */
+  const setCinemaStrength = useCallback((v) => {
+    setCinema(v);
+    cinemaRef.current = v;
+    const stage = stageRef.current;
+    if (stage && !epRendering) stage.setCinema(v);
+  }, [epRendering]);
+
+  const abDown = useCallback(() => {
+    const stage = stageRef.current;
+    if (stage && !epRendering) stage.setCinema(0);
+  }, [epRendering]);
+
+  const abUp = useCallback(() => {
+    const stage = stageRef.current;
+    if (stage && !epRendering) stage.setCinema(cinemaRef.current);
+  }, [epRendering]);
+
+  /* Ω.3 — freeze the framed viewport into a persistable still; the depth mesh is
+     re-derived deterministically on every load, so the shot stays references-only */
+  const freezeStill = useCallback(() => {
+    const stage = stageRef.current;
+    if (!stage || epRendering || !canvasRef.current) return;
+    stage.pause();
+    setPlaying(false);
+    /* the drawing buffer is cleared after compositing — re-render the held frame
+       synchronously so the capture reads real pixels, never a cleared canvas */
+    stage.seek(stage.time);
+    const seed = 7 + (forgeSeed.current += 1);
+    setStill(captureStill(canvasRef.current, { seed }));
+  }, [epRendering]);
+
+  const clearStill = useCallback(() => setStill(null), []);
 
   const forge = useCallback(async () => {
     const seed = forgeSeed.current += 6;
@@ -175,11 +229,15 @@ export default function OmegaRoom() {
 
   const addShot = useCallback(async () => {
     if (!episode) return;
-    const perf = activeId ? await vault.get(PERFORMANCES, activeId) : null;
-    const shot = makeShot({ perf, rig, world, stuntKey: stunt, stuntStart, stuntLen });
+    const perf = !still && activeId ? await vault.get(PERFORMANCES, activeId) : null;
+    const shot = makeShot({
+      perf, rig, world,
+      stuntKey: still ? null : stunt, stuntStart, stuntLen,
+      still, stillDur: STILL_DUR, cinema: cinemaRef.current,
+    });
     await saveEpisode({ ...episode, shots: [...episode.shots, shot] });
     setSelectedShot(shot.id);
-  }, [episode, activeId, rig, world, stunt, stuntStart, stuntLen, saveEpisode]);
+  }, [episode, activeId, rig, world, stunt, stuntStart, stuntLen, still, saveEpisode]);
 
   const selectShot = useCallback((id) => {
     if (!episode || epRendering) return;
@@ -192,6 +250,10 @@ export default function OmegaRoom() {
     setWorld(shot.world);
     setStunt(shot.stunt ? shot.stunt.key : null);
     if (shot.stunt) { setStuntStart(shot.stunt.t0); setStuntLen(shot.stunt.len); }
+    setStill(shot.still || null);
+    const c = shot.cinema || 0;
+    setCinema(c);
+    cinemaRef.current = c;
   }, [episode, epRendering]);
 
   const moveShot = useCallback((i, dir) => {
@@ -324,8 +386,14 @@ export default function OmegaRoom() {
         {/* right rail: the camera, the physics, the cut */}
         <div className="lg:col-span-4 space-y-3 order-3">
           <RigPanel rig={rig} onRig={setRig} />
-          <StuntPanel stunt={stunt} onStunt={setStunt} dur={duration || 6}
-            start={stuntStart} len={stuntLen} onStart={setStuntStart} onLen={setStuntLen} />
+          {/* a still shot has no body to seize — physics yields the panel to the dolly */}
+          {!still && (
+            <StuntPanel stunt={stunt} onStunt={setStunt} dur={duration || 6}
+              start={stuntStart} len={stuntLen} onStart={setStuntStart} onLen={setStuntLen} />
+          )}
+          <CinemaPanel strength={cinema} onStrength={setCinemaStrength}
+            onABDown={abDown} onABUp={abUp} onFreeze={freezeStill}
+            still={still} onClearStill={clearStill} disabled={!ready || epRendering} />
           <EpisodePanel shots={episode ? episode.shots : []} ledger={ledger} totalDur={epDur}
             selected={selectedShot} canAdd={ready && !epRendering}
             onAdd={addShot} onSelect={selectShot} onMove={moveShot} onRemove={removeShot}
