@@ -201,13 +201,37 @@ const fragmentShader = /* glsl */ `
     float lL = dot(texture2D(uVideo, vUv - vec2(texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
     float lD = dot(texture2D(uVideo, vUv - vec2(0.0, texel.y)).rgb, vec3(0.299, 0.587, 0.114));
     float sLuma = (luma * 2.0 + lR + lU + lL + lD) / 6.0;
-    /* costume normalization: compress the camera's tonal range so shirt prints,
-       logos, skin tone and fabric patterns can NOT read through the suit —
-       only the broad light/shadow form of your body survives the recolor */
+
+    /* WIDE luma ring (8-texel radius): captures only the broad light/shadow
+       form of your body — shirt prints, logos and skin tone are far below
+       this frequency and vanish entirely */
+    vec2 wtex = texel * 8.0;
+    float w1 = dot(texture2D(uVideo, vUv + vec2( wtex.x,  0.0)).rgb, vec3(0.299, 0.587, 0.114));
+    float w2 = dot(texture2D(uVideo, vUv + vec2(-wtex.x,  0.0)).rgb, vec3(0.299, 0.587, 0.114));
+    float w3 = dot(texture2D(uVideo, vUv + vec2( 0.0,  wtex.y)).rgb, vec3(0.299, 0.587, 0.114));
+    float w4 = dot(texture2D(uVideo, vUv + vec2( 0.0, -wtex.y)).rgb, vec3(0.299, 0.587, 0.114));
+    float w5 = dot(texture2D(uVideo, vUv + wtex * 0.7).rgb, vec3(0.299, 0.587, 0.114));
+    float w6 = dot(texture2D(uVideo, vUv - wtex * 0.7).rgb, vec3(0.299, 0.587, 0.114));
+    float wLuma = (w1 + w2 + w3 + w4 + w5 + w6 + sLuma * 2.0) * 0.125;
+
+    /* detail firewall: base tonality comes from the WIDE blur (pure body form);
+       only a whisper of fine luma survives, and it is soft-clipped so a bold
+       logo edge cannot punch through the dye */
+    float fine = clamp(sLuma - wLuma, -0.5, 0.5);
+    fine = fine / (1.0 + 6.0 * abs(fine));                         // soft-knee compressor
+    // a real mask HIDES the face: inside the head region, eyebrows, eye sockets
+    // and beard shadow are suppressed even harder — only jaw/cheek form remains
+    float fineAmt = isHead ? 0.16 : 0.35;
+    sLuma = wLuma + fine * fineAmt;
+
+    /* costume normalization: compress the camera's tonal range so nothing of
+       your real clothing contrast survives the recolor */
     sLuma = clamp(sLuma, 0.0, 1.0);
-    sLuma = 0.5 + (sLuma - 0.5) * 0.60;                            // flatten real-clothing contrast
+    sLuma = 0.5 + (sLuma - 0.5) * 0.55;                            // flatten real-clothing contrast
     sLuma = pow(sLuma, 0.92);                                      // lift the compressed mids
     vec2 grad = vec2(lR - lL, lU - lD) * 0.5;                      // pseudo surface normal
+    // widen the pseudo-normal too, so muscle form (not logo edges) drives the relight
+    grad = mix(grad, vec2(w1 - w2, w3 - w4) * 0.5, 0.6);
     float form = clamp(dot(normalize(grad + 1e-5), normalize(KEY_DIR)) * length(grad) * 30.0, -0.35, 0.5);
 
     // filmic fabric response: dyed-dark shadows, chroma-pushed mids, sheen highs
