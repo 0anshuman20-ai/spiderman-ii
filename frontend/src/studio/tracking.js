@@ -52,7 +52,9 @@ export class Tracker {
         eyeDist: 0.08, angle: 0,
         mouth: { x: 0.5, y: 0.5 }, mouthW: 0.05, mouthOpen: 0,
       },
-      pose: { ok: 0, lm: null }, // raw normalized pose landmarks (already in crop space)
+      // lm: normalized pose landmarks (already in crop space, drives the suit compositor)
+      // world: metric 3D joints, hips at the origin — the Performance File / Omega Layer feed
+      pose: { ok: 0, lm: null, world: null },
       // up to two hands, 21 landmarks each, smoothed in crop space — drives real gloved fingers
       hands: { list: [ { ok: 0, lm: null }, { ok: 0, lm: null } ] },
       seg: { ok: false, data: null, w: SEG_W, h: SEG_H, version: 0 },
@@ -184,6 +186,17 @@ export class Tracker {
           s.x = lerp(s.x, p.x, kPos); s.y = lerp(s.y, p.y, kPos);
           s.v = lerp(s.v, p.visibility != null ? p.visibility : 1, kBody);
         });
+        /* metric 3D joints for the Performance File — smoothed on the same clock as
+           the 2D landmarks so a synthetic re-render matches the matted take frame for
+           frame. Costs one array write per frame and nothing on the GPU. */
+        const wl = pr.worldLandmarks && pr.worldLandmarks[0];
+        if (wl && wl.length >= 29) {
+          if (!pts.pose.world) pts.pose.world = wl.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+          else wl.forEach((p, i) => {
+            const s = pts.pose.world[i];
+            s.x = lerp(s.x, p.x, kPos); s.y = lerp(s.y, p.y, kPos); s.z = lerp(s.z, p.z, kBody);
+          });
+        }
         // background parallax follows you
         const cx = (nl[11].x + nl[12].x) / 2;
         rig.root.x = lerp(rig.root.x, (cx - 0.5) * 2, kBody);
