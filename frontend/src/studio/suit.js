@@ -186,21 +186,31 @@ const fragmentShader = /* glsl */ `
       micro = (smoothstep(0.18, 0.46, hd) - 0.5) * 0.075;
     }
 
+    /* ---- dye mottle + wear: no real costume is one flat color ---- */
+    float mottle = vnoise(q * 34.0) * 0.6 + vnoise(q * 9.0) * 0.4;  // large soft dye variation
+    base *= 0.93 + mottle * 0.14;
+    float scuff = smoothstep(0.72, 0.95, vnoise(q * 120.0 + 51.0)); // rare pale wear spots
+    base = mix(base, base * 1.35 + vec3(0.04), scuff * 0.10);
+
     /* ---- screen-space relighting from YOUR real shading ---- */
     float luma = dot(video.rgb, vec3(0.299, 0.587, 0.114));
     vec2 texel = vec2(1.0 / 720.0, 1.0 / 1280.0);
     float lR = dot(texture2D(uVideo, vUv + vec2(texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
     float lU = dot(texture2D(uVideo, vUv + vec2(0.0, texel.y)).rgb, vec3(0.299, 0.587, 0.114));
-    vec2 grad = vec2(lR - luma, lU - luma);                        // pseudo surface normal
+    // denoised luma for tonality: 4-tap cross blur kills sensor-noise sparkle
+    float lL = dot(texture2D(uVideo, vUv - vec2(texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
+    float lD = dot(texture2D(uVideo, vUv - vec2(0.0, texel.y)).rgb, vec3(0.299, 0.587, 0.114));
+    float sLuma = (luma * 2.0 + lR + lU + lL + lD) / 6.0;
+    vec2 grad = vec2(lR - lL, lU - lD) * 0.5;                      // pseudo surface normal
     float form = clamp(dot(normalize(grad + 1e-5), normalize(KEY_DIR)) * length(grad) * 30.0, -0.35, 0.5);
 
     // filmic fabric response: dyed-dark shadows, chroma-pushed mids, sheen highs
-    float shade = 0.16 + 1.9 * pow(luma, 0.9);
+    float shade = 0.16 + 1.9 * pow(sLuma, 0.9);
     vec3 dyedDark = base * vec3(0.28, 0.22, 0.30);                 // shadows keep dye hue
     vec3 lit = base * shade;
-    vec3 suit = mix(dyedDark, lit, smoothstep(0.02, 0.30, luma));
+    vec3 suit = mix(dyedDark, lit, smoothstep(0.02, 0.30, sLuma));
     suit *= 1.0 + micro + form * 0.6;                              // weave + recovered form
-    suit += vec3(1.0, 0.88, 0.82) * pow(luma, 4.5) * 0.42;         // broad fabric sheen
+    suit += vec3(1.0, 0.88, 0.82) * pow(sLuma, 4.5) * 0.42;        // broad fabric sheen
     suit += vec3(1.0) * pow(max(form, 0.0), 1.5) * 0.35;           // key-light specular
 
     // webbing: near-black rubber, AO groove, lit top edge
