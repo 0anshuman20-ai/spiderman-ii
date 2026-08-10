@@ -1,18 +1,22 @@
-/* THE OMEGA ROOM — Ω.1 + Ω.4 live in here.
+/* THE OMEGA ROOM — Ω.1 + Ω.2 + Ω.4 + Ω.5 live in here.
 
    No webcam, no matte, no live loop. A `.veyl` Performance File from the Vault
-   (or a forged synthetic take) drives the Synthetic Actor inside a real 3D world,
-   framed by a free camera rig — and the Stunt Engine can seize the body inside a
-   takeover window: verlet web-line physics, baked at construction, identical on
-   every re-render, scrubbable like any other clip. */
-import { useCallback, useEffect, useRef, useState } from 'react';
+   (or a forged synthetic take, or a Motion Bank assembly built from your own
+   recorded frames) drives the Synthetic Actor inside a real 3D world, framed by
+   a free camera rig — the Stunt Engine can seize the body inside a takeover
+   window — and every framed shot can be added to a `.veylep` EPISODE: an ordered
+   cut assembled from many sources, continuity-checked on every edit, rendered
+   end to end as one continuous file. The deliverable stops being a take. */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { createOmegaStage, RIG_BY_KEY } from '../studio/omegaStage';
 import { createStunt, STUNT_PRESETS } from '../studio/stunt';
 import { synthesizePerformance } from '../studio/perf';
-import { vault, PERFORMANCES } from '../studio/vault';
+import { buildBank, assemble } from '../studio/motion';
+import { makeEpisode, makeShot, checkContinuity, episodeDuration, playEpisode, downloadEpisode } from '../studio/shotlist';
+import { vault, PERFORMANCES, EPISODES } from '../studio/vault';
 import { Recorder } from '../studio/recorder';
-import { SourcePanel, RigPanel, OmegaWorldPanel, StuntPanel } from '../components/studio/OmegaPanels';
+import { SourcePanel, RigPanel, OmegaWorldPanel, StuntPanel, MotionBankPanel, EpisodePanel } from '../components/studio/OmegaPanels';
 
 const STUNT_BY_KEY = STUNT_PRESETS.reduce((m, s) => { m[s.key] = s; return m; }, {});
 const FORGE_BEATS = [
@@ -26,6 +30,7 @@ export default function OmegaRoom() {
   const stageRef = useRef(null);
   const recorderRef = useRef(new Recorder());
   const forgeSeed = useRef(11);
+  const epRunRef = useRef(null);
 
   const [perfs, setPerfs] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -40,8 +45,21 @@ export default function OmegaRoom() {
   const [exporting, setExporting] = useState(false);
   const [ready, setReady] = useState(false);
 
+  /* Ω.2 — motion bank */
+  const [bankBeats, setBankBeats] = useState([]);
+  const [banking, setBanking] = useState(false);
+  const bank = useMemo(() => (perfs.length ? buildBank(perfs) : null), [perfs]);
+
+  /* Ω.5 — the episode */
+  const [episode, setEpisode] = useState(null);
+  const [selectedShot, setSelectedShot] = useState(null);
+  const [epRendering, setEpRendering] = useState(false);
+  const [epShotIdx, setEpShotIdx] = useState(0);
+  const ledger = useMemo(() => (episode ? checkContinuity(episode.shots) : []), [episode]);
+  const epDur = useMemo(() => (episode ? episodeDuration(episode.shots) : 0), [episode]);
+
   /* boot: stage + vault. If the vault is empty, forge a first synthetic take so
-     the room (and the Stunt Engine) works on day one with no camera ever opened. */
+     the room (and every engine in it) works on day one with no camera ever opened. */
   useEffect(() => {
     const stage = createOmegaStage(canvasRef.current);
     stageRef.current = stage;
@@ -53,45 +71,42 @@ export default function OmegaRoom() {
         await vault.put(PERFORMANCES, first);
         list = [first];
       }
+      const eps = await vault.all(EPISODES);
+      const ep = eps[0] || makeEpisode({ name: 'episode-01' });
+      if (eps.length === 0) await vault.put(EPISODES, ep);
       if (!alive) return;
       setPerfs(list);
       setActiveId(list[0].id);
       setWorld(list[0].world || 'nebula-drift');
+      setEpisode(ep);
       setReady(true);
     })();
-    return () => { alive = false; stage.dispose(); };
+    return () => { alive = false; if (epRunRef.current) epRunRef.current.stop(); stage.dispose(); };
   }, []);
 
   /* one function rebuilds the shot from current state — deterministic by design */
-  const loadShot = useCallback(async (opts = {}) => {
+  const loadShot = useCallback(async () => {
     const stage = stageRef.current;
-    if (!stage) return;
-    const id = opts.activeId !== undefined ? opts.activeId : activeId;
-    const rigKey = opts.rig || rig;
-    const worldKey = opts.world || world;
-    const stuntKey = opts.stunt !== undefined ? opts.stunt : stunt;
-    const t0 = opts.stuntStart !== undefined ? opts.stuntStart : stuntStart;
-    const len = opts.stuntLen !== undefined ? opts.stuntLen : stuntLen;
-
-    const perf = id ? await vault.get(PERFORMANCES, id) : null;
+    if (!stage || epRendering) return;
+    const perf = activeId ? await vault.get(PERFORMANCES, activeId) : null;
     const dur = perf ? perf.duration : 6;
     let solver = null;
-    let label = perf ? (perf.source === 'performed' ? 'performed' : 'synthetic') : 'synthetic';
-    if (stuntKey && STUNT_BY_KEY[stuntKey]) {
-      const s0 = Math.max(0, Math.min(dur - 1.2, t0));
-      const s1 = Math.min(dur - 0.05, s0 + len);
-      solver = createStunt(STUNT_BY_KEY[stuntKey].make(s0, s1));
-      label = `stunt · ${STUNT_BY_KEY[stuntKey].name.toLowerCase()}`;
+    let label = perf ? (perf.source === 'performed' ? 'performed' : perf.source === 'bank' ? 'bank' : 'synthetic') : 'synthetic';
+    if (stunt && STUNT_BY_KEY[stunt]) {
+      const s0 = Math.max(0, Math.min(dur - 1.2, stuntStart));
+      const s1 = Math.min(dur - 0.05, s0 + stuntLen);
+      solver = createStunt(STUNT_BY_KEY[stunt].make(s0, s1));
+      label = `stunt · ${STUNT_BY_KEY[stunt].name.toLowerCase()}`;
     }
     stage.load({
-      performance: perf, rig: rigKey, world: worldKey,
+      performance: perf, rig, world,
       in: 0, out: dur, stunt: solver,
-      label: `${label} · ${(RIG_BY_KEY[rigKey] || RIG_BY_KEY.medium).badge}`,
+      label: `${label} · ${(RIG_BY_KEY[rig] || RIG_BY_KEY.medium).badge}`,
     });
     setDuration(stage.duration);
     setTime(0);
     setPlaying(false);
-  }, [activeId, rig, world, stunt, stuntStart, stuntLen]);
+  }, [activeId, rig, world, stunt, stuntStart, stuntLen, epRendering]);
 
   useEffect(() => { if (ready) loadShot(); }, [ready, loadShot]);
 
@@ -107,10 +122,10 @@ export default function OmegaRoom() {
 
   const seek = useCallback((t) => {
     const stage = stageRef.current;
-    if (!stage) return;
+    if (!stage || epRendering) return;
     stage.pause(); setPlaying(false);
     stage.seek(t); setTime(t);
-  }, []);
+  }, [epRendering]);
 
   const forge = useCallback(async () => {
     const seed = forgeSeed.current += 6;
@@ -119,17 +134,116 @@ export default function OmegaRoom() {
       name: `forged-take-${String(seed).padStart(2, '0')}`, beats, world, seed,
     });
     await vault.put(PERFORMANCES, perf);
-    const list = await vault.all(PERFORMANCES);
-    setPerfs(list);
+    setPerfs(await vault.all(PERFORMANCES));
     setActiveId(perf.id);
   }, [world]);
 
-  /* offline render: play the shot once into MediaRecorder. Same clock, same bake,
-     same frames — the export IS the preview, at full quality. */
+  /* Ω.2 — assemble a take out of your own recorded frames, from a beat list */
+  const assembleFromBank = useCallback(async () => {
+    if (!bank || !bank.count || bankBeats.length === 0 || banking) return;
+    setBanking(true);
+    // let the button repaint before the (synchronous, deterministic) search runs
+    await new Promise((r) => setTimeout(r, 30));
+    const seed = 100 + (forgeSeed.current += 1);
+    const perf = assemble(bank, {
+      beats: bankBeats,
+      name: `bank-shot-${String(seed - 100).padStart(2, '0')}`,
+      world, seed,
+    });
+    setBanking(false);
+    if (!perf) return;
+    await vault.put(PERFORMANCES, perf);
+    setPerfs(await vault.all(PERFORMANCES));
+    setActiveId(perf.id);
+    setBankBeats([]);
+  }, [bank, bankBeats, banking, world]);
+
+  /* Ω.5 — episode editing. Every mutation persists and re-runs the ledger. */
+  const saveEpisode = useCallback(async (next) => {
+    setEpisode(next);
+    await vault.put(EPISODES, next);
+  }, []);
+
+  const addShot = useCallback(async () => {
+    if (!episode) return;
+    const perf = activeId ? await vault.get(PERFORMANCES, activeId) : null;
+    const shot = makeShot({ perf, rig, world, stuntKey: stunt, stuntStart, stuntLen });
+    await saveEpisode({ ...episode, shots: [...episode.shots, shot] });
+    setSelectedShot(shot.id);
+  }, [episode, activeId, rig, world, stunt, stuntStart, stuntLen, saveEpisode]);
+
+  const selectShot = useCallback((id) => {
+    if (!episode || epRendering) return;
+    const shot = episode.shots.find((s) => s.id === id);
+    if (!shot) return;
+    setSelectedShot(id);
+    // loading a shot back into the room restores the exact state that framed it
+    setActiveId(shot.perfId);
+    setRig(shot.rig);
+    setWorld(shot.world);
+    setStunt(shot.stunt ? shot.stunt.key : null);
+    if (shot.stunt) { setStuntStart(shot.stunt.t0); setStuntLen(shot.stunt.len); }
+  }, [episode, epRendering]);
+
+  const moveShot = useCallback((i, dir) => {
+    if (!episode) return;
+    const next = [...episode.shots];
+    const j = i + dir;
+    if (j < 0 || j >= next.length) return;
+    [next[i], next[j]] = [next[j], next[i]];
+    saveEpisode({ ...episode, shots: next });
+  }, [episode, saveEpisode]);
+
+  const removeShot = useCallback((i) => {
+    if (!episode) return;
+    const next = episode.shots.filter((_, k) => k !== i);
+    saveEpisode({ ...episode, shots: next });
+  }, [episode, saveEpisode]);
+
+  /* Ω.5 — the episode render: one continuous recording across every shot and
+     every source. The recorder keeps rolling over shot boundaries; the export
+     IS the episode, end to end, in one file. */
+  const renderEpisode = useCallback(async () => {
+    const stage = stageRef.current;
+    const rec = recorderRef.current;
+    if (!stage || !episode || episode.shots.length === 0 || rec.recording || epRendering) return;
+    const perfById = {};
+    for (const shot of episode.shots) {
+      if (shot.perfId && !perfById[shot.perfId]) {
+        perfById[shot.perfId] = await vault.get(PERFORMANCES, shot.perfId);
+      }
+    }
+    setEpRendering(true);
+    setEpShotIdx(0);
+    setDuration(episodeDuration(episode.shots));
+    setTime(0);
+    stage.pause();
+    rec.start(stage, null);
+    setPlaying(true);
+    epRunRef.current = playEpisode(stage, episode, perfById, {
+      onShot: (idx) => setEpShotIdx(idx),
+      onTick: (total) => setTime(total),
+      onEnd: async () => {
+        setPlaying(false);
+        const take = await rec.stop();
+        setEpRendering(false);
+        epRunRef.current = null;
+        if (take) {
+          const a = document.createElement('a');
+          a.href = take.url;
+          a.download = `${episode.name}.${take.ext || 'webm'}`;
+          a.click();
+        }
+        loadShot();
+      },
+    });
+  }, [episode, epRendering, loadShot]);
+
+  /* offline render of the single framed shot — unchanged path */
   const exportShot = useCallback(() => {
     const stage = stageRef.current;
     const rec = recorderRef.current;
-    if (!stage || rec.recording || exporting) return;
+    if (!stage || rec.recording || exporting || epRendering) return;
     setExporting(true);
     stage.pause(); stage.seek(0); setTime(0);
     rec.start(stage, null);
@@ -148,7 +262,7 @@ export default function OmegaRoom() {
         }
       },
     });
-  }, [exporting, rig, stunt]);
+  }, [exporting, epRendering, rig, stunt]);
 
   const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}.${String(Math.floor((s % 1) * 10))}`;
 
@@ -159,7 +273,7 @@ export default function OmegaRoom() {
           COSMIC WEAVER <span style={{ color: 'var(--cw-red)' }}>// OMEGA ROOM</span>
         </span>
         <span className="mono text-[9px] hidden md:inline" style={{ color: 'var(--cw-muted)' }}>
-          SYNTHETIC ACTOR · STUNT ENGINE · NO CAMERA REQUIRED
+          SYNTHETIC ACTOR · MOTION BANK · STUNT ENGINE · EPISODE CUT · NO CAMERA REQUIRED
         </span>
         <div className="flex-1" />
         <Link to="/" className="cw-chip" style={{ padding: '8px 14px', textDecoration: 'none' }} data-testid="omega-back-link">
@@ -168,10 +282,12 @@ export default function OmegaRoom() {
       </header>
 
       <main className="grid grid-cols-1 lg:grid-cols-12 gap-3 p-3">
-        {/* left rail: what drives the body, where it stands */}
+        {/* left rail: what drives the body, where it stands, what the bank can build */}
         <div className="lg:col-span-3 space-y-3 order-2 lg:order-1">
           <SourcePanel perfs={perfs} activeId={activeId} memoryOnly={vault.isMemoryOnly}
             onPick={(id) => setActiveId(id)} onForge={forge} />
+          <MotionBankPanel bank={bank} beats={bankBeats} onBeats={setBankBeats}
+            onAssemble={assembleFromBank} busy={banking} />
           <OmegaWorldPanel world={world} onWorld={setWorld} />
         </div>
 
@@ -182,7 +298,7 @@ export default function OmegaRoom() {
             <div className="cw-scanlines" />
           </div>
           <div className="flex items-center gap-3 mt-2 px-1" data-testid="omega-transport">
-            <button className={`cw-rec ${playing ? 'live' : ''}`} disabled={!ready || exporting}
+            <button className={`cw-rec ${playing ? 'live' : ''}`} disabled={!ready || exporting || epRendering}
               data-testid="omega-play-btn" onClick={play}>
               {playing ? '❚❚' : '▶'}
             </button>
@@ -190,20 +306,25 @@ export default function OmegaRoom() {
               {fmt(time)}
             </span>
             <input type="range" className="flex-1" min={0} max={Math.max(0.1, duration)} step={0.033}
-              value={Math.min(time, duration)} data-testid="omega-scrub"
+              value={Math.min(time, duration)} data-testid="omega-scrub" disabled={epRendering}
               onChange={(e) => seek(parseFloat(e.target.value))} />
             <span className="mono text-[10px]" style={{ color: 'var(--cw-muted)' }}>{fmt(duration)}</span>
           </div>
         </div>
 
-        {/* right rail: the camera and the physics */}
+        {/* right rail: the camera, the physics, the cut */}
         <div className="lg:col-span-4 space-y-3 order-3">
           <RigPanel rig={rig} onRig={setRig} />
           <StuntPanel stunt={stunt} onStunt={setStunt} dur={duration || 6}
             start={stuntStart} len={stuntLen} onStart={setStuntStart} onLen={setStuntLen} />
+          <EpisodePanel shots={episode ? episode.shots : []} ledger={ledger} totalDur={epDur}
+            selected={selectedShot} canAdd={ready && !epRendering}
+            onAdd={addShot} onSelect={selectShot} onMove={moveShot} onRemove={removeShot}
+            onRender={renderEpisode} onDownload={() => episode && downloadEpisode(episode)}
+            rendering={epRendering} renderIdx={epShotIdx} />
           <div className="cw-panel" data-testid="omega-export-panel">
             <h2>⇩ Render Shot</h2>
-            <button className="cw-rec w-full" disabled={!ready || exporting || playing}
+            <button className="cw-rec w-full" disabled={!ready || exporting || playing || epRendering}
               data-testid="omega-export-btn" onClick={exportShot}>
               {exporting ? '● RENDERING…' : '● RENDER & DOWNLOAD'}
             </button>
