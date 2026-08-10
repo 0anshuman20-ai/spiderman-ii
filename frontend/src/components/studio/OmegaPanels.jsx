@@ -172,11 +172,54 @@ export const MotionBankPanel = ({ bank, beats, onBeats, onAssemble, busy }) => {
   );
 };
 
+/* Ω.3 — NEURAL CINEMA. The deterministic photographic finish (halation, film
+   tone, grain-in-log, gate weave) plus the 2.5D novel view: freeze any frame
+   into real depth geometry and dolly through it. Honest by design — the header
+   states exactly which pass is running and which upgrade is gated. */
+export const CinemaPanel = ({ strength, onStrength, onABDown, onABUp, onFreeze, still, onClearStill, disabled }) => (
+  <div className="cw-panel" data-testid="omega-cinema-panel">
+    <h2>◎ Neural Cinema</h2>
+    <div className="cw-slider">
+      <div className="lab"><span>Cinema Finish</span><b>{Math.round(strength * 100)}%</b></div>
+      <input type="range" min={0} max={1} step={0.01} value={strength} disabled={disabled}
+        data-testid="omega-cinema-strength" onChange={(e) => onStrength(parseFloat(e.target.value))} />
+    </div>
+    <div className="flex gap-1.5 mt-2">
+      <button className="cw-chip flex-1" disabled={disabled || strength === 0}
+        data-testid="omega-cinema-ab"
+        onPointerDown={onABDown} onPointerUp={onABUp} onPointerLeave={onABUp}>
+        <span>HOLD — A/B RAW RENDER</span>
+      </button>
+    </div>
+    <div className="flex gap-1.5 mt-2">
+      <button className="cw-chip flex-1" style={{ color: 'var(--cw-amber)' }} disabled={disabled}
+        data-testid="omega-cinema-freeze" onClick={onFreeze}>
+        <span>❄ FREEZE FRAME → 2.5D</span><small>DEPTH MESH</small>
+      </button>
+      {still && (
+        <button className="cw-chip" style={{ padding: '8px 12px', color: 'var(--cw-red)' }}
+          data-testid="omega-cinema-clear-still" onClick={onClearStill}>
+          <span>✕ EXIT STILL</span>
+        </button>
+      )}
+    </div>
+    {still && (
+      <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-amber)' }} data-testid="omega-cinema-still-state">
+        STILL LOADED · SEEDED DOLLY #{still.seed} · SOURCE BADGE: STILL
+      </p>
+    )}
+    <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-muted)' }}>
+      DETERMINISTIC FILMIC PASS — HALATION · TONE · GRAIN · WEAVE. SD-TURBO IMG2IMG: GATED SLOT (WEBGPU), FALLBACK IS THIS PASS.
+    </p>
+  </div>
+);
+
 const SOURCE_COLOR = {
   performed: 'var(--cw-red)',
   stunt: 'var(--cw-red)',
   bank: 'var(--cw-amber)',
   synthetic: 'var(--cw-amber)',
+  still: 'var(--cw-text-2)',
 };
 
 /* Ω.5 — THE EPISODE. An ordered cut assembled from many sources, with the
@@ -202,8 +245,9 @@ export const EpisodePanel = ({ shots, ledger, totalDur, selected, onAdd, onSelec
               </div>
               <div className="flex items-center gap-2 mt-1">
                 <span className="mono text-[9px] flex-1" style={{ color: 'var(--cw-text-2)' }}>
-                  {s.rig.toUpperCase()} · {s.world.toUpperCase()} · {s.duration.toFixed(1)}s
+                  {s.still ? '2.5D DOLLY' : `${s.rig.toUpperCase()} · ${s.world.toUpperCase()}`} · {s.duration.toFixed(1)}s
                   {s.stunt ? ` · ⌁ ${s.stunt.key.toUpperCase()}` : ''}
+                  {s.cinema > 0 ? ` · ◎ ${Math.round(s.cinema * 100)}%` : ''}
                 </span>
                 <button className="mono text-[10px]" style={{ color: 'var(--cw-muted)' }} disabled={i === 0}
                   data-testid={`omega-shot-up-${i}`} onClick={(e) => { e.stopPropagation(); onMove(i, -1); }}>▲</button>
