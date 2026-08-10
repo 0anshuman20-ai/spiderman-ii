@@ -3,7 +3,7 @@
    in final screen space. ImageSegmenter produces a person confidence mask so the real
    background can be replaced with the 3D space world. No puppet — the suit is painted
    onto YOUR pixels. */
-import { FilesetResolver, FaceLandmarker, PoseLandmarker, ImageSegmenter } from '@mediapipe/tasks-vision';
+import { FilesetResolver, FaceLandmarker, PoseLandmarker, HandLandmarker, ImageSegmenter } from '@mediapipe/tasks-vision';
 
 export function makeRig() {
   return {
@@ -53,6 +53,8 @@ export class Tracker {
         mouth: { x: 0.5, y: 0.5 }, mouthW: 0.05, mouthOpen: 0,
       },
       pose: { ok: 0, lm: null }, // raw normalized pose landmarks (already in crop space)
+      // up to two hands, 21 landmarks each, smoothed in crop space — drives real gloved fingers
+      hands: { list: [ { ok: 0, lm: null }, { ok: 0, lm: null } ] },
       seg: { ok: false, data: null, w: SEG_W, h: SEG_H, version: 0 },
     };
   }
@@ -73,6 +75,7 @@ export class Tracker {
           ...base('/models/face_landmarker.task'), numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
         });
         this.pose = await PoseLandmarker.createFromOptions(fileset, { ...base('/models/pose_landmarker_lite.task'), numPoses: 1 });
+        this.hand = await HandLandmarker.createFromOptions(fileset, { ...base('/models/hand_landmarker.task'), numHands: 2 });
         this.seg = await ImageSegmenter.createFromOptions(fileset, {
           ...base('/models/selfie_segmenter.tflite'), outputConfidenceMasks: true, outputCategoryMask: false,
         });
@@ -192,6 +195,38 @@ export class Tracker {
       }
     } catch (_) { rig.tracking.pose = false; }
 
+    /* ---- HANDS (every frame — real gloved fingers glued to yours) ---- */
+    try {
+      const hr = this.hand.detectForVideo(this.canvas, now + 1);
+      const found = hr.landmarks || [];
+      // match each detected hand to the nearest previously tracked slot (wrist distance)
+      // so a hand never "jumps" between slots frame-to-frame
+      const claimed = [false, false];
+      const assign = new Array(found.length).fill(-1);
+      found.forEach((lm, fi) => {
+        let bestSlot = -1, bestD = 1e9;
+        for (let s = 0; s < 2; s++) {
+          if (claimed[s]) continue;
+          const slot = pts.hands.list[s];
+          const d = slot.lm ? Math.hypot(slot.lm[0].x - lm[0].x, slot.lm[0].y - lm[0].y) : 0.35 + s * 0.01;
+          if (d < bestD) { bestD = d; bestSlot = s; }
+        }
+        if (bestSlot >= 0) { claimed[bestSlot] = true; assign[fi] = bestSlot; }
+      });
+      for (let s = 0; s < 2; s++) {
+        const fi = assign.indexOf(s);
+        const slot = pts.hands.list[s];
+        if (fi >= 0) {
+          const lm = found[fi];
+          slot.ok = lerp(slot.ok, 1, kBody);
+          if (!slot.lm) slot.lm = lm.map((p) => ({ x: p.x, y: p.y }));
+          else lm.forEach((p, i) => { const q = slot.lm[i]; q.x = lerp(q.x, p.x, kPos); q.y = lerp(q.y, p.y, kPos); });
+        } else {
+          slot.ok = lerp(slot.ok, 0, kBody);
+        }
+      }
+    } catch (_) { pts.hands.list.forEach((s) => { s.ok = lerp(s.ok, 0, kBody); }); }
+
     /* ---- SEGMENTATION (every frame, small input — cuts you out of the room) ---- */
     try {
       this.segCtx.drawImage(this.canvas, 0, 0, SEG_W, SEG_H);
@@ -230,6 +265,7 @@ export class Tracker {
     try {
       if (this.stream) this.stream.getTracks().forEach((tr) => tr.stop());
       if (this.face) this.face.close(); if (this.pose) this.pose.close(); if (this.seg) this.seg.close();
+      if (this.hand) this.hand.close();
     } catch (_) {}
   }
 }

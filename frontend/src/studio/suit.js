@@ -45,9 +45,9 @@ const fragmentShader = /* glsl */ `
   uniform vec2 uChest;      // chest web origin
   uniform float uChestS;    // body web spacing
   uniform float uPoseOk;
-  uniform vec4 uSegs[10];   // limb segments a.xy -> b.xy
-  uniform float uSegCol[10];// 0 red, 1 blue, 2 shin(blue->red boot), 4 torso(red, blue sides)
-  uniform float uSegR[10];  // segment radius
+  uniform vec4 uSegs[32];   // limb + hand segments a.xy -> b.xy
+  uniform float uSegCol[32];// 0 red, 1 blue, 2 shin(blue->red boot), 4 torso, 5 glove palm, 6 finger
+  uniform float uSegR[32];  // segment radius
   uniform vec3 uRim;        // world rim-light color
   uniform float uSuitMix;   // 0 raw video -> 1 full suit
 
@@ -114,20 +114,29 @@ const fragmentShader = /* glsl */ `
     }
     if (alpha < 0.004) discard;
 
-    /* ---- region classification against the live skeleton ---- */
+    /* ---- region classification against the live skeleton + hands ---- */
     float best = 1e9; float bid = 0.0; float bt = 0.0;
     vec2 bA = uChest; float bR = 0.1;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 32; i++) {
       vec2 a = uSegs[i].xy, b = uSegs[i].zw;
       vec2 ba = b - a; vec2 pa = q - a;
       float tt = clamp(dot(pa, ba) / (dot(ba, ba) + 1e-6), 0.0, 1.0);
       float d = length(pa - ba * tt) / max(uSegR[i], 1e-4);
+      // gloves win ties against the coarse forearm capsule so fingers stay crisp
+      if (uSegCol[i] > 4.5) d *= 0.72;
       if (d < best) { best = d; bid = uSegCol[i]; bt = tt; bA = a; bR = uSegR[i]; }
     }
-    float dHead = length(q - uFaceC);
-    bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 2.05;
+    /* head region: rolled ellipse that hugs the real face — taller than wide,
+       so the mask reads as a mask, not a red disc */
+    vec2 hd2 = q - uFaceC;
+    float hcs = cos(uFaceRoll), hsn = sin(uFaceRoll);
+    hd2 = vec2(hd2.x * hcs - hd2.y * hsn, hd2.x * hsn + hd2.y * hcs);
+    hd2.y /= 1.34;                                  // skull is ~1.34x taller than wide
+    hd2.y += uFaceR * 0.10;                         // bias downward to cover the jaw
+    float dHead = length(hd2);
+    bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 1.85;
     if (isHead) bid = 3.0;
-    if (uPoseOk < 0.3 && !isHead) { bid = 0.0; best = 0.5; }
+    if (uPoseOk < 0.3 && !isHead && bid < 4.5) { bid = 0.0; best = 0.5; }
 
     /* ---- base color + web distance field per region ---- */
     vec3 base;
@@ -139,8 +148,17 @@ const fragmentShader = /* glsl */ `
       wd = webDist(q, uFaceC, uFaceRoll, sp, 16.0);
       webSpacing = sp;
       // fade webbing out right at the mask boundary
-      float edge = smoothstep(2.05, 1.75, dHead / max(uFaceR, 1e-4));
+      float edge = smoothstep(1.85, 1.55, dHead / max(uFaceR, 1e-4));
       wd = mix(99.0, wd, edge);
+    } else if (bid == 5.0) {
+      // glove back/palm: webbing radiates from the wrist exactly like the film suits
+      base = RED;
+      float sp = max(bR, 0.015) * 0.85;
+      wd = webDist(q, bA, 0.0, sp, 10.0);
+      webSpacing = sp;
+    } else if (bid == 6.0) {
+      // fingers: plain red spandex, no webbing — seams and shading come later
+      base = RED;
     } else if (bid == 1.0) {
       base = BLUE;
     } else if (bid == 2.0) {
@@ -192,6 +210,30 @@ const fragmentShader = /* glsl */ `
     float scuff = smoothstep(0.72, 0.95, vnoise(q * 120.0 + 51.0)); // rare pale wear spots
     base = mix(base, base * 1.35 + vec3(0.04), scuff * 0.10);
 
+    /* ---- tension wrinkles: fabric bunches at the ends of every limb capsule ---- */
+    float wrinkle = 0.0;
+    if (bid < 2.5 || bid > 4.5) {
+      float endPinch = smoothstep(0.16, 0.0, bt) + smoothstep(0.84, 1.0, bt);
+      float folds = sin(bt * 46.0 + vnoise(q * 60.0) * 6.0);
+      wrinkle = endPinch * folds * 0.5;
+      base *= 1.0 - max(0.0, -wrinkle) * 0.16;                      // fold shadow
+    }
+
+    /* ---- fingers/gloves: cylindrical rounding + stitched seams ---- */
+    float cyl = 0.0;
+    if (bid > 4.5) {
+      cyl = smoothstep(0.45, 1.0, best);                            // edges curve away
+      base *= 1.0 - cyl * 0.30;
+      // center seam highlight running along each finger / the glove back
+      float seam = smoothstep(0.10, 0.02, abs(best - 0.06));
+      base = mix(base, base * 0.72, seam * 0.5 * step(5.5, bid));   // finger seam stitch line
+      // knuckle micro-pads on the glove back
+      if (bid == 5.0) {
+        float kn = smoothstep(0.3, 0.05, hexCells(q * 420.0));
+        base *= 1.0 + kn * 0.05;
+      }
+    }
+
     /* ---- screen-space relighting from YOUR real shading ---- */
     float luma = dot(video.rgb, vec3(0.299, 0.587, 0.114));
     vec2 texel = vec2(1.0 / 720.0, 1.0 / 1280.0);
@@ -240,6 +282,9 @@ const fragmentShader = /* glsl */ `
     vec3 lit = base * shade;
     vec3 suit = mix(dyedDark, lit, smoothstep(0.22, 0.44, sLuma)); // thresholds match the compressed luma range
     suit *= 1.0 + micro + form * 0.6;                              // weave + recovered form
+    suit *= 1.0 + max(0.0, wrinkle) * 0.14;                        // lit tops of tension folds
+    // fingers get a bright cylindrical core highlight — reads as tight spandex over skin
+    if (bid > 5.5) suit += vec3(0.9, 0.5, 0.45) * pow(1.0 - best, 3.0) * 0.16;
     suit += vec3(1.0, 0.88, 0.82) * pow(sLuma, 4.5) * 0.42;        // broad fabric sheen
     suit += vec3(1.0) * pow(max(form, 0.0), 1.5) * 0.35;           // key-light specular
     // dye chroma push: keeps the costume reading as saturated spandex, never
@@ -296,6 +341,21 @@ function drawLens(g, x, y, size, angle, mirror, squash, glow) {
   g.save(); g.scale(1.26, 1.32); lensPath(g); g.fillStyle = '#060609'; g.fill(); g.restore();
   g.save(); g.scale(1.24, 1.30); g.translate(-0.015, -0.02); lensPath(g);
   g.strokeStyle = 'rgba(120,120,140,0.35)'; g.lineWidth = 0.05; g.stroke(); g.restore();
+
+  // gunmetal mechanical frame seated between rubber and lens (film-suit hardware)
+  g.save(); g.scale(1.10, 1.14); lensPath(g);
+  const fr = g.createLinearGradient(-0.8, -0.9, 0.7, 0.9);
+  fr.addColorStop(0, '#565e70');
+  fr.addColorStop(0.4, '#22262f');
+  fr.addColorStop(0.75, '#3a4150');
+  fr.addColorStop(1, '#14171d');
+  g.strokeStyle = fr; g.lineWidth = 0.11; g.stroke();
+  // tiny frame screws catch the light
+  g.fillStyle = 'rgba(200,205,220,0.5)';
+  [[-0.82, -0.1], [0.5, -0.62], [0.62, 0.42]].forEach(([sx, sy]) => {
+    g.beginPath(); g.arc(sx, sy, 0.035, 0, Math.PI * 2); g.fill();
+  });
+  g.restore();
 
   if (glow > 1.15) { g.shadowColor = 'rgba(255,255,255,0.8)'; g.shadowBlur = size * 0.45 * glow; }
 
@@ -391,9 +451,9 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     uChest: { value: new THREE.Vector2(0.5, 0.75) },
     uChestS: { value: 0.11 },
     uPoseOk: { value: 0 },
-    uSegs: { value: Array.from({ length: 10 }, () => new THREE.Vector4(0.5, 0.9, 0.5, 1.4)) },
-    uSegCol: { value: new Array(10).fill(0) },
-    uSegR: { value: new Array(10).fill(0.08) },
+    uSegs: { value: Array.from({ length: 32 }, () => new THREE.Vector4(-9, -9, -9, -9)) },
+    uSegCol: { value: new Array(32).fill(0) },
+    uSegR: { value: new Array(32).fill(0.0001) },
     uRim: { value: new THREE.Color(0x5a4bff) },
     uSuitMix: { value: 0 },
   };
@@ -455,6 +515,43 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     uniforms.uChestS.value = sw * 0.42;
   }
 
+  /* real gloves: 11 capsules per hand (palm, thumb x2, four fingers x2 each)
+     land in shader slots 10..31, glued to the HandLandmarker skeleton */
+  function updateHands() {
+    const hands = tracker.points.hands;
+    const set = (i, ax, ay, bx, by, col, r) => {
+      uniforms.uSegs.value[i].set(ax, ay, bx, by);
+      uniforms.uSegCol.value[i] = col;
+      uniforms.uSegR.value[i] = r;
+    };
+    for (let h = 0; h < 2; h++) {
+      const baseI = 10 + h * 11;
+      const slot = hands && hands.list[h];
+      if (!slot || slot.ok < 0.35 || !slot.lm) {
+        for (let i = 0; i < 11; i++) set(baseI + i, -9, -9, -9, -9, 0, 0.0001);
+        continue;
+      }
+      const L = slot.lm;
+      const P = (i) => [L[i].x, L[i].y * ASPECT];
+      const wrist = P(0), midMcp = P(9);
+      const handLen = Math.max(0.02, Math.hypot(midMcp[0] - wrist[0], midMcp[1] - wrist[1]));
+      const fingerR = handLen * 0.19;
+      // palm: wrist -> middle MCP, wide — carries the wrist-web origin
+      set(baseI, wrist[0], wrist[1], midMcp[0], midMcp[1], 5, handLen * 0.62);
+      // thumb: two capsules so a bent thumb stays covered
+      const t2 = P(2), t3 = P(3), t4 = P(4);
+      set(baseI + 1, t2[0], t2[1], t3[0], t3[1], 6, fingerR * 1.15);
+      set(baseI + 2, t3[0], t3[1], t4[0], t4[1], 6, fingerR * 1.05);
+      // four fingers: MCP -> PIP, PIP -> TIP (two capsules each survives a fist)
+      const fingers = [[5, 6, 8], [9, 10, 12], [13, 14, 16], [17, 18, 20]];
+      fingers.forEach(([mcp, pip, tip], fi) => {
+        const a = P(mcp), b = P(pip), c = P(tip);
+        set(baseI + 3 + fi * 2, a[0], a[1], b[0], b[1], 6, fingerR);
+        set(baseI + 4 + fi * 2, b[0], b[1], c[0], c[1], 6, fingerR * 0.92);
+      });
+    }
+  }
+
   function drawOverlay(t) {
     og.clearRect(0, 0, CROP_W, CROP_H);
     const f = tracker.points.face;
@@ -467,19 +564,92 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       const size = eyeDistPx * 0.5;
       const angle = f.angle;
       const ca = Math.cos(angle), sa = Math.sin(angle);
-      // mouth shading — the mask visibly dents and stretches as you talk
+      /* ---- mask center seam: forehead over the nose bridge to the chin ---- */
+      const fhx = f.forehead.x * CROP_W, fhy = f.forehead.y * CROP_H;
+      const chx = f.chin.x * CROP_W, chy = f.chin.y * CROP_H;
+      const ncx = f.center.x * CROP_W, ncy = f.center.y * CROP_H;
+      og.save();
+      og.globalAlpha = 0.16 * Math.min(1, f.ok) * suitOn;
+      og.strokeStyle = 'rgba(10,2,6,1)';
+      og.lineWidth = Math.max(1, eyeDistPx * 0.022);
+      og.beginPath();
+      og.moveTo(fhx, fhy - eyeDistPx * 0.55);
+      og.quadraticCurveTo(ncx, ncy, chx, chy + eyeDistPx * 0.18);
+      og.stroke();
+      // seam catch-light one thread to the side — sells it as a raised stitch
+      og.globalAlpha = 0.09 * Math.min(1, f.ok) * suitOn;
+      og.strokeStyle = 'rgba(255,220,210,1)';
+      og.beginPath();
+      og.moveTo(fhx + og.lineWidth, fhy - eyeDistPx * 0.55);
+      og.quadraticCurveTo(ncx + og.lineWidth, ncy, chx + og.lineWidth, chy + eyeDistPx * 0.18);
+      og.stroke();
+      og.restore();
+
+      /* ---- mouth: the fabric visibly dents, stretches and creases as you talk ---- */
       const mx = f.mouth.x * CROP_W, my = f.mouth.y * CROP_H;
       const mw = Math.max(f.mouthW * CROP_W * 0.95, eyeDistPx * 0.5);
       const mh = f.mouthOpen * CROP_W * 1.25 + eyeDistPx * 0.12;
-      const mAlpha = 0.14 + rig.jaw * 0.38;
-      const mg = og.createRadialGradient(mx, my + mh * 0.2, 0, mx, my + mh * 0.2, mw);
-      mg.addColorStop(0, `rgba(20,0,4,${mAlpha})`);
-      mg.addColorStop(1, 'rgba(20,0,4,0)');
+      const jaw = rig.jaw, smile = rig.smile;
+      // 1) deep dent — fabric sucked into the open mouth
+      const mAlpha = 0.16 + jaw * 0.46;
+      const mg = og.createRadialGradient(mx, my + mh * 0.25, 0, mx, my + mh * 0.25, mw);
+      mg.addColorStop(0, `rgba(16,0,3,${mAlpha})`);
+      mg.addColorStop(0.55, `rgba(16,0,3,${mAlpha * 0.45})`);
+      mg.addColorStop(1, 'rgba(16,0,3,0)');
       og.fillStyle = mg;
       og.save();
-      og.translate(mx, my + mh * 0.2); og.rotate(angle); og.scale(1, Math.max(0.35, (mh / mw) * 1.6));
+      og.translate(mx, my + mh * 0.25); og.rotate(angle); og.scale(1, Math.max(0.35, (mh / mw) * 1.6));
       og.beginPath(); og.arc(0, 0, mw, 0, Math.PI * 2); og.fill();
       og.restore();
+      // 2) stretched-fabric highlight riding the upper lip — brightens as the jaw drops
+      og.save();
+      og.translate(mx, my); og.rotate(angle);
+      og.globalAlpha = (0.10 + jaw * 0.22) * suitOn;
+      og.strokeStyle = 'rgba(255,200,190,1)';
+      og.lineWidth = Math.max(1.5, eyeDistPx * 0.045);
+      og.lineCap = 'round';
+      og.beginPath();
+      og.moveTo(-mw * 0.55, -mh * 0.30);
+      og.quadraticCurveTo(0, -mh * 0.30 - eyeDistPx * 0.05, mw * 0.55, -mh * 0.30);
+      og.stroke();
+      // 3) tension creases fanning from each mouth corner (talking / smiling)
+      const creaseA = Math.min(0.5, jaw * 0.5 + smile * 0.35) * suitOn;
+      if (creaseA > 0.02) {
+        og.globalAlpha = creaseA;
+        og.strokeStyle = 'rgba(20,2,6,1)';
+        og.lineWidth = Math.max(1, eyeDistPx * 0.02);
+        [-1, 1].forEach((s) => {
+          for (let c = 0; c < 3; c++) {
+            const spread = (c - 1) * 0.28;
+            og.beginPath();
+            og.moveTo(s * mw * 0.62, mh * 0.05);
+            og.quadraticCurveTo(
+              s * mw * (0.95 + c * 0.08), mh * 0.05 + spread * mw * 0.5,
+              s * mw * (1.28 + c * 0.12), spread * mw * (0.9 + jaw * 0.4)
+            );
+            og.stroke();
+          }
+        });
+      }
+      og.restore();
+
+      /* ---- brow ridge: the mask darkens over a frown, lifts on raised brows ---- */
+      const browShade = Math.min(0.4, rig.browDown * 0.45 + jaw * 0.06) * suitOn;
+      if (browShade > 0.02) {
+        og.save();
+        og.globalAlpha = browShade;
+        og.strokeStyle = 'rgba(14,1,5,1)';
+        og.lineWidth = eyeDistPx * 0.16;
+        og.lineCap = 'round';
+        [[f.eyeL, -1], [f.eyeR, 1]].forEach(([eye, s]) => {
+          const bx = eye.x * CROP_W, by = eye.y * CROP_H - eyeDistPx * 0.42;
+          og.beginPath();
+          og.moveTo(bx - s * eyeDistPx * 0.28, by + eyeDistPx * 0.06);
+          og.quadraticCurveTo(bx, by - eyeDistPx * 0.08, bx + s * eyeDistPx * 0.30, by + eyeDistPx * 0.02);
+          og.stroke();
+        });
+        og.restore();
+      }
       // lenses ride slightly outward + above your real eyes
       const offOut = eyeDistPx * 0.11, offUp = eyeDistPx * 0.08;
       const exL = f.eyeL.x * CROP_W - ca * offOut + sa * offUp;
@@ -524,6 +694,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     uniforms.uFaceR.value = Math.max(0.04, f.eyeDist * 1.55);
     uniforms.uFaceRoll.value = -f.angle;
     updateSegments();
+    updateHands();
 
     // person matte
     const seg = tracker.points.seg;
