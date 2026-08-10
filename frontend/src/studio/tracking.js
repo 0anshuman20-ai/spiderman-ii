@@ -198,7 +198,13 @@ export class Tracker {
       const res = this.seg.segmentForVideo(this.segCanvas, now);
       const mask = res.confidenceMasks && res.confidenceMasks[0];
       if (mask) {
-        pts.seg.data = mask.getAsFloat32Array();
+        const fresh = mask.getAsFloat32Array();
+        // temporal blend: the matte edge stops flickering frame-to-frame
+        if (pts.seg.data && pts.seg.data.length === fresh.length) {
+          const prev = pts.seg.data;
+          for (let i = 0; i < fresh.length; i++) fresh[i] = prev[i] * 0.38 + fresh[i] * 0.62;
+        }
+        pts.seg.data = fresh;
         pts.seg.w = mask.width; pts.seg.h = mask.height;
         pts.seg.version++;
         pts.seg.ok = true;

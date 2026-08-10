@@ -4,7 +4,20 @@
    wrinkles and facial motion. When you open your mouth, the mask visibly moves,
    because it is literally your video. Landmark-locked white lenses and a chest
    spider are drawn on top. The AI person-matte cuts your room away so the 3D
-   space world shows behind you. */
+   space world shows behind you.
+
+   REALISM PASS (movie-suit grade):
+   - Raised rubber webbing: embossed top-edge specular + groove ambient occlusion,
+     organic line wobble so nothing reads as computer-drawn.
+   - Per-limb web origins: webs radiate from the mask center, chest, shoulders,
+     wrists and knees exactly like the screen-used costumes.
+   - Red panels carry a hexagonal micro-texture (Raimi suit); blue panels carry a
+     diagonal twill ballistic weave.
+   - Filmic fabric response: shadows sink toward a dyed dark, highlights desaturate
+     toward sheen white, midtones get a chroma push — no flat tinting.
+   - Screen-space relighting: luma-gradient pseudo-normals add a key-light specular
+     and world-colored rim wrap around your true silhouette.
+   - Refined matte: multi-tap edge erode + feather kills halo and flicker. */
 import * as THREE from 'three';
 import { CROP_W, CROP_H } from './tracking';
 
@@ -38,23 +51,44 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uRim;        // world rim-light color
   uniform float uSuitMix;   // 0 raw video -> 1 full suit
 
-  const vec3 RED = vec3(0.66, 0.045, 0.075);
-  const vec3 BLUE = vec3(0.055, 0.10, 0.34);
+  const vec3 RED  = vec3(0.62, 0.052, 0.075);
+  const vec3 BLUE = vec3(0.055, 0.105, 0.36);
+  const vec2 KEY_DIR = vec2(-0.42, -0.82);   // key light falls from upper-left
 
-  // spider-web pattern: concentric rings + radial spokes around a center
-  float webLines(vec2 q, vec2 c, float roll, float spacing, float radial) {
+  float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1, 0)), f.x),
+               mix(hash21(i + vec2(0, 1)), hash21(i + vec2(1, 1)), f.x), f.y);
+  }
+
+  /* normalized distance to the nearest web line (rings + radial spokes).
+     0 = line center, 1 = line edge, >1 = open fabric. Lines get a hand-worn
+     wobble so they never read as vector art. */
+  float webDist(vec2 q, vec2 c, float roll, float spacing, float radial) {
     vec2 d = q - c;
     float cs = cos(roll), sn = sin(roll);
     d = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
     float r = length(d);
     float ang = atan(d.y, d.x);
-    float lw = spacing * 0.075;
+    // organic wobble: rings breathe, spokes bend slightly
+    r += (vnoise(vec2(ang * 2.2 + 7.0, r * 26.0)) - 0.5) * spacing * 0.22;
+    float lw = spacing * 0.062;
     float ringD = abs(fract(r / spacing + 0.5) - 0.5) * spacing;
-    float ring = 1.0 - smoothstep(lw * 0.45, lw, ringD);
     float sector = 6.28318530 / radial;
-    float arcD = abs(fract(ang / sector + 0.5) - 0.5) * sector * max(r, 1e-4);
-    float spoke = 1.0 - smoothstep(lw * 0.45, lw, arcD);
-    return max(ring, spoke);
+    float angW = ang + (vnoise(vec2(r * 14.0, 3.3)) - 0.5) * 0.05;
+    float arcD = abs(fract(angW / sector + 0.5) - 0.5) * sector * max(r, 1e-4);
+    return min(ringD, arcD) / max(lw, 1e-5);
+  }
+
+  /* hexagonal micro-cell texture — the Raimi-suit raised hex weave */
+  float hexCells(vec2 p) {
+    vec2 h = vec2(1.0, 1.7320508);
+    vec2 a = mod(p, h) - h * 0.5;
+    vec2 b = mod(p + h * 0.5, h) - h * 0.5;
+    vec2 g = dot(a, a) < dot(b, b) ? a : b;
+    return length(g); // 0 at cell center
   }
 
   void main() {
@@ -62,58 +96,136 @@ const fragmentShader = /* glsl */ `
     vec2 q = vec2(pt.x, pt.y * ${ASPECT.toFixed(5)});
 
     vec4 video = texture2D(uVideo, vUv);
-    float m = uHasMask > 0.5 ? texture2D(uMask, vec2(vUv.x, 1.0 - vUv.y)).r : 1.0;
-    float alpha = smoothstep(0.32, 0.62, m);
+
+    /* ---- refined person matte: erode + feather (kills halo + flicker) ---- */
+    float alpha = 1.0;
+    float m = 1.0;
+    if (uHasMask > 0.5) {
+      vec2 mUv = vec2(vUv.x, 1.0 - vUv.y);
+      vec2 px = vec2(1.0 / 288.0, 1.0 / 512.0);
+      float m0 = texture2D(uMask, mUv).r;
+      float m1 = texture2D(uMask, mUv + vec2(px.x, 0.0)).r;
+      float m2 = texture2D(uMask, mUv - vec2(px.x, 0.0)).r;
+      float m3 = texture2D(uMask, mUv + vec2(0.0, px.y)).r;
+      float m4 = texture2D(uMask, mUv - vec2(0.0, px.y)).r;
+      float mAvg = (m0 + m1 + m2 + m3 + m4) * 0.2;
+      m = mix(mAvg, min(m0, mAvg), 0.55);       // slight erode pulls the edge inward
+      alpha = smoothstep(0.36, 0.60, m);
+    }
     if (alpha < 0.004) discard;
 
-    // ---- region classification against the live skeleton ----
+    /* ---- region classification against the live skeleton ---- */
     float best = 1e9; float bid = 0.0; float bt = 0.0;
+    vec2 bA = uChest; float bR = 0.1;
     for (int i = 0; i < 10; i++) {
       vec2 a = uSegs[i].xy, b = uSegs[i].zw;
       vec2 ba = b - a; vec2 pa = q - a;
       float tt = clamp(dot(pa, ba) / (dot(ba, ba) + 1e-6), 0.0, 1.0);
       float d = length(pa - ba * tt) / max(uSegR[i], 1e-4);
-      if (d < best) { best = d; bid = uSegCol[i]; bt = tt; }
+      if (d < best) { best = d; bid = uSegCol[i]; bt = tt; bA = a; bR = uSegR[i]; }
     }
     float dHead = length(q - uFaceC);
     bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 2.05;
     if (isHead) bid = 3.0;
     if (uPoseOk < 0.3 && !isHead) { bid = 0.0; best = 0.5; }
 
-    // ---- base color per region ----
+    /* ---- base color + web distance field per region ---- */
     vec3 base;
-    float web = 0.0;
+    float wd = 99.0;       // web distance (0 = line center)
+    float webSpacing = max(uChestS, 0.03) * 0.5;
     if (bid == 3.0 || isHead) {
       base = RED;
-      web = webLines(q, uFaceC, uFaceRoll, max(uFaceR, 0.02) * 0.42, 14.0);
-      web *= smoothstep(2.05, 1.7, dHead / max(uFaceR, 1e-4)); // fade at mask edge
+      float sp = max(uFaceR, 0.02) * 0.40;
+      wd = webDist(q, uFaceC, uFaceRoll, sp, 16.0);
+      webSpacing = sp;
+      // fade webbing out right at the mask boundary
+      float edge = smoothstep(2.05, 1.75, dHead / max(uFaceR, 1e-4));
+      wd = mix(99.0, wd, edge);
     } else if (bid == 1.0) {
       base = BLUE;
     } else if (bid == 2.0) {
       base = mix(BLUE, RED, smoothstep(0.52, 0.70, bt)); // boots
-      web = webLines(q, uChest, 0.0, max(uChestS, 0.03) * 0.5, 18.0) * smoothstep(0.52, 0.72, bt);
+      float sp = max(bR, 0.02) * 0.55;
+      float bootMask = smoothstep(0.52, 0.72, bt);
+      wd = mix(99.0, webDist(q, bA, 0.0, sp, 12.0), bootMask);
+      webSpacing = sp;
     } else if (bid == 4.0) {
       base = mix(RED, BLUE, smoothstep(0.74, 0.97, best)); // blue flanks
-      web = webLines(q, uChest, 0.0, max(uChestS, 0.03) * 0.5, 18.0) * (1.0 - smoothstep(0.70, 0.95, best));
+      float torsoMask = 1.0 - smoothstep(0.70, 0.95, best);
+      wd = mix(99.0, webDist(q, uChest, 0.0, webSpacing, 20.0), torsoMask);
     } else {
       base = RED;
-      web = webLines(q, uChest, 0.0, max(uChestS, 0.03) * 0.5, 18.0);
+      // limbs: webs radiate from their own joint (shoulder / wrist), like the suit
+      float sp = max(bR, 0.02) * 0.62;
+      wd = webDist(q, bA, 0.0, sp, 12.0);
+      webSpacing = sp;
     }
 
-    // ---- relight the suit with YOUR real shading ----
+    /* ---- raised rubber webbing: line + emboss + groove AO ---- */
+    float line = 1.0 - smoothstep(0.45, 1.0, wd);                 // black web line
+    float ao = (1.0 - smoothstep(0.9, 2.4, wd)) * 0.24;           // groove shadow
+    float emboss = 0.0;
+    if (wd < 3.0) {
+      // re-evaluate the field a hair toward the key light: the lit top edge pops
+      vec2 off = normalize(KEY_DIR) * webSpacing * 0.10;
+      float wdL;
+      if (bid == 3.0 || isHead) wdL = webDist(q + off, uFaceC, uFaceRoll, webSpacing, 16.0);
+      else if (bid == 4.0)      wdL = webDist(q + off, uChest, 0.0, webSpacing, 20.0);
+      else                      wdL = webDist(q + off, bA, 0.0, webSpacing, 12.0);
+      emboss = clamp((wdL - wd) * 1.4, 0.0, 1.0) * (1.0 - smoothstep(1.2, 2.0, wd));
+    }
+
+    /* ---- fabric micro-structure ---- */
+    float micro;
+    if (bid == 1.0 || (bid == 2.0 && bt < 0.52)) {
+      // blue: diagonal twill ballistic weave
+      micro = sin((q.x + q.y) * 1350.0) * sin((q.x - q.y) * 1350.0) * 0.045;
+    } else {
+      // red: hexagonal raised cells
+      float hd = hexCells(q * 780.0);
+      micro = (smoothstep(0.18, 0.46, hd) - 0.5) * 0.075;
+    }
+
+    /* ---- dye mottle + wear: no real costume is one flat color ---- */
+    float mottle = vnoise(q * 34.0) * 0.6 + vnoise(q * 9.0) * 0.4;  // large soft dye variation
+    base *= 0.93 + mottle * 0.14;
+    float scuff = smoothstep(0.72, 0.95, vnoise(q * 120.0 + 51.0)); // rare pale wear spots
+    base = mix(base, base * 1.35 + vec3(0.04), scuff * 0.10);
+
+    /* ---- screen-space relighting from YOUR real shading ---- */
     float luma = dot(video.rgb, vec3(0.299, 0.587, 0.114));
-    float shade = 0.20 + 1.75 * pow(luma, 0.85);
-    vec3 suit = base * shade;
-    suit += vec3(1.0, 0.86, 0.8) * pow(luma, 5.0) * 0.55;          // fabric sheen
-    suit = mix(suit, suit * 0.10, clamp(web, 0.0, 1.0) * 0.92);    // black webbing
-    float fab = sin(q.x * 1500.0) * sin(q.y * 1500.0);             // micro-weave
-    suit *= 1.0 + fab * 0.03;
+    vec2 texel = vec2(1.0 / 720.0, 1.0 / 1280.0);
+    float lR = dot(texture2D(uVideo, vUv + vec2(texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
+    float lU = dot(texture2D(uVideo, vUv + vec2(0.0, texel.y)).rgb, vec3(0.299, 0.587, 0.114));
+    // denoised luma for tonality: 4-tap cross blur kills sensor-noise sparkle
+    float lL = dot(texture2D(uVideo, vUv - vec2(texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
+    float lD = dot(texture2D(uVideo, vUv - vec2(0.0, texel.y)).rgb, vec3(0.299, 0.587, 0.114));
+    float sLuma = (luma * 2.0 + lR + lU + lL + lD) / 6.0;
+    vec2 grad = vec2(lR - lL, lU - lD) * 0.5;                      // pseudo surface normal
+    float form = clamp(dot(normalize(grad + 1e-5), normalize(KEY_DIR)) * length(grad) * 30.0, -0.35, 0.5);
+
+    // filmic fabric response: dyed-dark shadows, chroma-pushed mids, sheen highs
+    float shade = 0.16 + 1.9 * pow(sLuma, 0.9);
+    vec3 dyedDark = base * vec3(0.28, 0.22, 0.30);                 // shadows keep dye hue
+    vec3 lit = base * shade;
+    vec3 suit = mix(dyedDark, lit, smoothstep(0.02, 0.30, sLuma));
+    suit *= 1.0 + micro + form * 0.6;                              // weave + recovered form
+    suit += vec3(1.0, 0.88, 0.82) * pow(sLuma, 4.5) * 0.42;        // broad fabric sheen
+    suit += vec3(1.0) * pow(max(form, 0.0), 1.5) * 0.35;           // key-light specular
+
+    // webbing: near-black rubber, AO groove, lit top edge
+    suit *= 1.0 - ao;
+    vec3 rubber = vec3(0.016, 0.014, 0.02) * (0.6 + luma * 1.4);
+    suit = mix(suit, rubber, clamp(line, 0.0, 1.0) * 0.96);
+    suit += vec3(0.9, 0.85, 0.8) * emboss * (0.10 + luma * 0.30);  // embossed highlight
 
     vec3 col = mix(video.rgb, suit, uSuitMix);
 
-    // rim light from the space world wraps around your silhouette
-    float rimB = smoothstep(0.32, 0.5, m) * (1.0 - smoothstep(0.5, 0.8, m));
-    col += uRim * rimB * (0.5 + 0.2 * sin(uTime * 1.7));
+    // world rim light wraps the silhouette (uses the eroded matte band)
+    float rimB = smoothstep(0.36, 0.52, m) * (1.0 - smoothstep(0.52, 0.86, m));
+    col += uRim * rimB * (0.55 + 0.18 * sin(uTime * 1.7));
+    // faint world bounce fill in the darkest folds keeps blacks alive
+    col += uRim * (1.0 - smoothstep(0.0, 0.22, luma)) * 0.05 * uSuitMix;
 
     gl_FragColor = vec4(col, alpha);
   }
@@ -134,17 +246,59 @@ function drawLens(g, x, y, size, angle, mirror, squash, glow) {
   g.translate(x, y);
   g.rotate(angle);
   g.scale(mirror * size, size * Math.max(0.12, squash));
-  if (glow > 1.15) { g.shadowColor = 'rgba(255,255,255,0.85)'; g.shadowBlur = size * 0.5 * glow; }
-  // black rim
   g.lineJoin = 'round';
+
+  // soft shadow bed so the rim reads as raised from the mask
+  g.save();
+  g.scale(1.42, 1.5);
   lensPath(g);
-  g.fillStyle = '#07070c';
-  g.save(); g.scale(1.24, 1.3); lensPath(g); g.fill(); g.restore();
-  // white lens with cool gradient
-  const gr = g.createLinearGradient(-1, -1, 0.8, 1);
-  gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.55, '#eef1f8'); gr.addColorStop(1, '#c9d2e4');
+  const bed = g.createRadialGradient(0, 0.1, 0.2, 0, 0.1, 1.4);
+  bed.addColorStop(0, 'rgba(0,0,0,0.55)');
+  bed.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = bed; g.fill();
+  g.restore();
+
+  // thick black rubber rim with a faint top-edge sheen
+  g.save(); g.scale(1.26, 1.32); lensPath(g); g.fillStyle = '#060609'; g.fill(); g.restore();
+  g.save(); g.scale(1.24, 1.30); g.translate(-0.015, -0.02); lensPath(g);
+  g.strokeStyle = 'rgba(120,120,140,0.35)'; g.lineWidth = 0.05; g.stroke(); g.restore();
+
+  if (glow > 1.15) { g.shadowColor = 'rgba(255,255,255,0.8)'; g.shadowBlur = size * 0.45 * glow; }
+
+  // white lens: bright key reflection top-left, cool ambient falloff bottom-right
+  const gr = g.createLinearGradient(-0.9, -0.9, 0.75, 0.95);
+  gr.addColorStop(0, '#ffffff');
+  gr.addColorStop(0.45, '#f2f4fa');
+  gr.addColorStop(0.8, '#cdd6e8');
+  gr.addColorStop(1, '#aab6cf');
   lensPath(g);
   g.fillStyle = gr; g.fill();
+  g.shadowBlur = 0;
+
+  // environment reflection: soft blue-violet pool in the lower lens
+  const env = g.createRadialGradient(0.25, 0.35, 0.05, 0.25, 0.35, 0.8);
+  env.addColorStop(0, 'rgba(120,110,220,0.16)');
+  env.addColorStop(1, 'rgba(120,110,220,0)');
+  lensPath(g); g.fillStyle = env; g.fill();
+
+  // crisp specular streak — the "wet lens" catchlight
+  g.save();
+  g.beginPath();
+  g.ellipse(-0.34, -0.42, 0.34, 0.10, -0.5, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(255,255,255,0.85)';
+  g.fill();
+  g.beginPath();
+  g.ellipse(0.30, 0.18, 0.10, 0.045, -0.4, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(255,255,255,0.35)';
+  g.fill();
+  g.restore();
+
+  // thin inner frame line seats the lens into the rim
+  lensPath(g);
+  g.strokeStyle = 'rgba(10,10,16,0.65)';
+  g.lineWidth = 0.055;
+  g.stroke();
+
   g.restore();
 }
 
@@ -167,6 +321,9 @@ function drawSpider(g, x, y, s, ang) {
   });
   g.beginPath(); g.ellipse(0, -s * 0.16, s * 0.10, s * 0.17, 0, 0, Math.PI * 2); g.fill();
   g.beginPath(); g.ellipse(0, s * 0.16, s * 0.13, s * 0.27, 0, 0, Math.PI * 2); g.fill();
+  // faint highlight along the abdomen so the emblem reads as embossed
+  g.beginPath(); g.ellipse(-s * 0.03, s * 0.08, s * 0.035, s * 0.14, 0.1, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(120,120,140,0.28)'; g.fill();
   g.restore();
 }
 
