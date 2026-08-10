@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { createStage } from '../studio/stage';
+import { PerfRecorder } from '../studio/perf';
+import { vault, PERFORMANCES } from '../studio/vault';
 import { Tracker, makeRig } from '../studio/tracking';
 import { VoiceEngine } from '../studio/voice';
 import { Recorder } from '../studio/recorder';
@@ -29,6 +32,7 @@ export default function Studio() {
   const trackerRef = useRef(null);
   const voiceRef = useRef(null);
   const recorderRef = useRef(new Recorder());
+  const perfRecRef = useRef(new PerfRecorder());
   const scriptRef = useRef(null);
   const beatRef = useRef(0);
   const recStartRef = useRef(0);
@@ -106,6 +110,8 @@ export default function Studio() {
 
     stage.start(rig, tracker, (t, dt) => {
       tracker.tick(t, dt);
+      // Inversion 1: the take is a rig timeline — sample it beside the video
+      perfRecRef.current.sample(dt, rig, tracker);
       if (voice.ready && rig.tracking.mode !== 'sim') {
         rig.level += (Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel())) - rig.level) * 0.35;
       }
@@ -153,10 +159,15 @@ export default function Studio() {
       stage.setHud(script ? `COSMIC WEAVER ── TRANSMISSION #${String(script.number).padStart(2, '0')}` : 'COSMIC WEAVER ── LIVE');
       beatRef.current = 0; setBeatIdx(0);
       recStartRef.current = performance.now();
+      perfRecRef.current.start({
+        name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'veyl-freestyle',
+        world: stage.worldKey,
+      });
       rec.start(stage, voiceRef.current && voiceRef.current.ready ? voiceRef.current.stream : null);
       setRecording(true);
     } else {
       const take = await rec.stop();
+      const perf = perfRecRef.current.stop();
       setRecording(false); setElapsed(0);
       stage.setHud('COSMIC WEAVER ── STANDBY');
       if (take) {
@@ -164,6 +175,11 @@ export default function Studio() {
         const name = script ? `transmission-${String(script.number).padStart(2, '0')}-take` : 'veyl-freestyle-take';
         const entry = { ...take, id: `${Date.now()}`, name: `${name}-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}` };
         setTakes((p) => [entry, ...p]);
+        // the take as DATA: a `.veyl` rig timeline into the Vault for the Omega Room
+        if (perf && perf.frames > 15) {
+          perf.name = entry.name;
+          vault.put(PERFORMANCES, perf).catch(() => {});
+        }
         // auto-download
         const a = document.createElement('a');
         a.href = take.url; a.download = `${entry.name}.${take.ext || 'webm'}`; a.click();
@@ -255,6 +271,9 @@ export default function Studio() {
           {booted === 'sim' ? 'SIM PERFORMER' : booted === 'live' ? 'LIVE TRACKING' : 'OFFLINE'}
         </span>
         <div className="flex-1" />
+        <Link to="/omega" className="cw-chip mono text-[10px]" style={{ padding: '8px 14px', textDecoration: 'none' }} data-testid="omega-link">
+          <span>Ω OMEGA ROOM</span>
+        </Link>
         {recording && <span className="mono text-sm" style={{ color: 'var(--cw-red)' }} data-testid="rec-timer">● {fmtClock(elapsed)}</span>}
         <button className={`cw-rec ${recording ? 'live' : ''}`} disabled={!booted} data-testid="record-btn" onClick={toggleRec}>
           {recording ? '■ STOP & SAVE' : '● REC'}
