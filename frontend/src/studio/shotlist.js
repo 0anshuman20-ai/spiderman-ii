@@ -35,6 +35,7 @@ export function makeEpisode({ name = 'episode-01' } = {}) {
 
 /** derive the honest source badge for a shot from its data — never from a claim */
 export function shotSource(shot, perf) {
+  if (shot.still) return 'still';
   if (shot.stunt) return 'stunt';
   if (!perf) return 'synthetic';
   if (perf.source === 'performed') return 'performed';
@@ -43,16 +44,19 @@ export function shotSource(shot, perf) {
 }
 
 /** freeze the Omega Room's current state into a shot reference */
-export function makeShot({ perf, rig = 'medium', world = 'nebula-drift', stuntKey = null, stuntStart = 0, stuntLen = 0 }) {
-  const duration = perf ? perf.duration : 3;
-  const stunt = stuntKey && STUNT_BY_KEY[stuntKey]
+export function makeShot({ perf, rig = 'medium', world = 'nebula-drift', stuntKey = null, stuntStart = 0, stuntLen = 0, still = null, stillDur = 4, cinema = 0 }) {
+  const duration = still ? stillDur : perf ? perf.duration : 3;
+  const stunt = !still && stuntKey && STUNT_BY_KEY[stuntKey]
     ? { key: stuntKey, t0: Math.max(0, Math.min(duration - 1.2, stuntStart)), len: stuntLen }
     : null;
   const shot = {
     id: `s${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`,
-    perfId: perf ? perf.id : null,
-    perfName: perf ? perf.name : 'procedural idle',
+    perfId: still ? null : perf ? perf.id : null,
+    perfName: still ? '2.5D frozen frame' : perf ? perf.name : 'procedural idle',
     rig, world, duration, stunt,
+    still,                               // {src, w, h, seed} — the frame persists inside the shot
+    cinema: Math.max(0, Math.min(1, cinema)),
+    cinemaSeed: still ? still.seed || 11 : 11,
   };
   shot.source = shotSource(shot, perf);
   return shot;
@@ -91,6 +95,14 @@ export function checkContinuity(shots) {
     if (shot.stunt && shot.stunt.t0 + shot.stunt.len > shot.duration + 0.05) {
       flag(shot, 'warn', 'WINDOW OVERRUN', 'stunt window extends past the end of the shot');
     }
+    // 6 · Ω.3: two 2.5D stills back to back read as a slideshow, not a scene
+    if (prev && prev.still && shot.still) {
+      flag(shot, 'warn', 'STILL RUN', 'consecutive 2.5D stills — cut a moving source between them');
+    }
+    // 7 · Ω.3: a hard cinema-strength jump between adjacent shots breaks the grade match
+    if (prev && Math.abs((prev.cinema || 0) - (shot.cinema || 0)) > 0.45) {
+      flag(shot, 'info', 'GRADE JUMP', 'cinema finish strength jumps across the cut — ease it for a matched grade');
+    }
   });
 
   // 6 · the close-out: the truth lives in performed frames
@@ -112,13 +124,19 @@ export function stageShot(shot, perf) {
     const s1 = Math.min(shot.duration - 0.05, s0 + shot.stunt.len);
     solver = createStunt(STUNT_BY_KEY[shot.stunt.key].make(s0, s1));
   }
-  const badge = shot.stunt
-    ? `stunt · ${STUNT_BY_KEY[shot.stunt.key].name.toLowerCase()}`
-    : shot.source;
+  const badge = shot.still
+    ? 'still · 2.5d dolly'
+    : shot.stunt
+      ? `stunt · ${STUNT_BY_KEY[shot.stunt.key].name.toLowerCase()}`
+      : shot.source;
   return {
     performance: perf || null, rig: shot.rig, world: shot.world,
     in: 0, out: shot.duration, stunt: solver,
-    label: `${badge} · ${(RIG_BY_KEY[shot.rig] || RIG_BY_KEY.medium).badge}`,
+    still: shot.still || null,
+    cinema: shot.cinema || 0, cinemaSeed: shot.cinemaSeed || 11,
+    label: shot.still
+      ? `${badge}${shot.cinema ? ' · cinema' : ''}`
+      : `${badge} · ${(RIG_BY_KEY[shot.rig] || RIG_BY_KEY.medium).badge}${shot.cinema ? ' · cinema' : ''}`,
   };
 }
 

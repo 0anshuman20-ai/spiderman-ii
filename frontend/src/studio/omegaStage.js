@@ -17,6 +17,8 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { buildWorld } from './worlds';
 import { createActor } from './actor';
 import { sampleAt, meanVisibility, FACE_CH, J } from './perf';
+import { createCinema } from './synth';
+import { createNovelView, stillCamera } from './novelview';
 
 const W = 1080, H = 1920;
 
@@ -135,11 +137,22 @@ export function createOmegaStage(canvas) {
   try { composerTarget = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, samples: 4 }); } catch (_) { composerTarget = undefined; }
   const composer = composerTarget ? new EffectComposer(renderer, composerTarget) : new EffectComposer(renderer);
   composer.setSize(W, H);
-  composer.addPass(new RenderPass(scene, camera));
+  const renderPass = new RenderPass(scene, camera);
+  composer.addPass(renderPass);
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(W / 2, H / 2), 0.62, 0.68, 0.76));
   const grade = new ShaderPass(GradeShader);
   composer.addPass(grade);
+  /* Ω.3 — the Cinema Finish: deterministic photographic pass, per shot, A/B-able */
+  const cinema = createCinema();
+  composer.addPass(cinema.pass);
   composer.addPass(new OutputPass());
+
+  /* Ω.3 — the still scene: a 2.5D depth mesh lives in its own graph so a STILL
+     shot swaps the RenderPass scene instead of fighting the world for the frame */
+  const stillScene = new THREE.Scene();
+  stillScene.background = new THREE.Color(0x000000);
+  let stillView = null;
+  let stillReady = false;
 
   /* burned-in source badge: no synthetic frame ever leaves this studio unlabelled */
   const badgeCanvas = document.createElement('canvas'); badgeCanvas.width = 1024; badgeCanvas.height = 96;
@@ -206,6 +219,22 @@ export function createOmegaStage(canvas) {
     const u = Math.max(0, Math.min(1, t / dur));
     const perf = shot.performance;
 
+    /* Ω.3 — STILL shot: the depth mesh IS the frame; a seeded dolly moves through it */
+    if (shot.still) {
+      if (!stillReady) return;                      // image still decoding — first frame lands on resolve
+      const s = stillCamera(u, stillView.planeH, shot.still.seed || 11);
+      camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+      camera.fov = s.fov;
+      camera.updateProjectionMatrix();
+      camera.lookAt(s.look[0], s.look[1], s.look[2]);
+      grade.uniforms.uGlitch.value = 0;
+      grade.uniforms.uTime.value = t;
+      cinema.tick(t);
+      composer.render();
+      if (onTick) onTick(t, dur);
+      return;
+    }
+
     if (perf) {
       const pt = shot.in + t;
       sampleAt(perf, pt, jointBuf, faceBuf);
@@ -224,6 +253,7 @@ export function createOmegaStage(canvas) {
     solveCamera(u);
     world.update(t + (shot.worldPhase || 0), 1 / 30);
     grade.uniforms.uTime.value = t;
+    cinema.tick(t);
     composer.render();
     if (onTick) onTick(t, dur);
   }
@@ -252,18 +282,50 @@ export function createOmegaStage(canvas) {
     get time() { return clock; },
     get duration() { return shot ? Math.max(0.033, shot.out - shot.in) : 0; },
 
-    /** load a shot: performance (or null for procedural idle) + camera rig + world */
+    /** load a shot: performance (or null for procedural idle) OR a 2.5D still,
+        + camera rig + world + cinema finish strength — all direction-track values */
     load(next) {
       shot = {
         performance: null, rig: 'medium', world: worldKey, in: 0, out: 3,
-        worldPhase: 0, label: '', ...next,
+        worldPhase: 0, label: '', still: null, cinema: 0, cinemaSeed: 11, ...next,
       };
-      setWorld(shot.world);
       stuntSolver = shot.stunt || null;
       setBadge(shot.label);
+      cinema.strength = shot.cinema || 0;
+      cinema.seed = shot.cinemaSeed || 11;
       clock = 0;
-      renderAt(0);
+
+      /* tear down any previous still view */
+      if (stillView) { stillScene.remove(stillView.group); stillView.dispose(); stillView = null; }
+      stillReady = false;
+
+      if (shot.still) {
+        /* STILL shot: swap the render graph, rebuild the depth mesh, first frame on resolve */
+        const mine = shot;
+        stillScene.add(camera);
+        renderPass.scene = stillScene;
+        createNovelView(shot.still).then((view) => {
+          if (shot !== mine) { view.dispose(); return; }   // superseded while decoding
+          stillView = view;
+          stillScene.add(view.group);
+          stillReady = true;
+          renderAt(clock);
+        }).catch(() => { /* undecodable still: shot renders black, never throws */ });
+      } else {
+        scene.add(camera);
+        renderPass.scene = scene;
+        setWorld(shot.world);
+        renderAt(0);
+      }
       return api;
+    },
+
+    /** Ω.3 — live strength / A-B without reloading the shot; re-renders the held frame */
+    setCinema(strength) {
+      if (!shot) return;
+      shot.cinema = strength;
+      cinema.strength = strength;
+      if (!playing) renderAt(clock);
     },
     setBadgeOn(on) { badgeOn = on; setBadge(shot ? shot.label : ''); },
     setLabel(text) { if (shot) shot.label = text; setBadge(text); },
@@ -281,6 +343,7 @@ export function createOmegaStage(canvas) {
     captureStream(fps = 60) { return canvas.captureStream(fps); },
     dispose() {
       playing = false; cancelAnimationFrame(raf);
+      if (stillView) { stillScene.remove(stillView.group); stillView.dispose(); stillView = null; }
       world.dispose(); actor.dispose();
       floor.geometry.dispose(); floorMat.dispose();
       badge.geometry.dispose(); badge.material.dispose();

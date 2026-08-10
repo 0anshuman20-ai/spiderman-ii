@@ -16,7 +16,10 @@ import { buildBank, assemble } from '../studio/motion';
 import { makeEpisode, makeShot, checkContinuity, episodeDuration, playEpisode, downloadEpisode } from '../studio/shotlist';
 import { vault, PERFORMANCES, EPISODES } from '../studio/vault';
 import { Recorder } from '../studio/recorder';
-import { SourcePanel, RigPanel, OmegaWorldPanel, StuntPanel, MotionBankPanel, EpisodePanel } from '../components/studio/OmegaPanels';
+import { captureStill } from '../studio/novelview';
+import { SourcePanel, RigPanel, OmegaWorldPanel, StuntPanel, MotionBankPanel, EpisodePanel, CinemaPanel } from '../components/studio/OmegaPanels';
+
+const STILL_DUR = 4;
 
 const STUNT_BY_KEY = STUNT_PRESETS.reduce((m, s) => { m[s.key] = s; return m; }, {});
 const FORGE_BEATS = [
@@ -44,6 +47,12 @@ export default function OmegaRoom() {
   const [duration, setDuration] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [ready, setReady] = useState(false);
+
+  /* Ω.3 — neural cinema: finish strength + the 2.5D still. Strength lives in a
+     ref too so a slider move retunes the pass live instead of reloading the shot. */
+  const [cinema, setCinema] = useState(0);
+  const cinemaRef = useRef(0);
+  const [still, setStill] = useState(null);
 
   /* Ω.2 — motion bank */
   const [bankBeats, setBankBeats] = useState([]);
