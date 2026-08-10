@@ -112,7 +112,7 @@ export const StuntPanel = ({ stunt, onStunt, start, len, dur, onStart, onLen }) 
 /* Ω.2 — THE MOTION BANK. Performance without performing: beats in, a take made of
    your own recorded frames out. Honest by design — the coverage meter states
    exactly which vocabulary the Vault can speak, and how many real seconds back it. */
-export const MotionBankPanel = ({ bank, beats, onBeats, onAssemble, busy }) => {
+export const MotionBankPanel = ({ bank, beats, onBeats, onAssemble, busy, continuation }) => {
   const coverage = bank ? bank.coverage() : {};
   const maxCov = Math.max(0.001, ...Object.values(coverage));
   return (
@@ -166,7 +166,15 @@ export const MotionBankPanel = ({ bank, beats, onBeats, onAssemble, busy }) => {
         <span>{busy ? '▤ MATCHING…' : '▤ ASSEMBLE FROM VAULT'}</span><small>MOTION MATCH</small>
       </button>
       <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-muted)' }}>
-        EVERY FRAME IT EMITS IS A FRAME YOU PERFORMED · NO MODEL · DETERMINISTIC
+        EVERY FRAME IT EMITS IS A FRAME YOU PERFORMED · MATCHING IS DETERMINISTIC
+      </p>
+      {/* Ω.2b — the gated continuation model. Honest either way: trained on your
+         corpus, or gated off with the linear blend named as the fallback. */}
+      <p className="mono text-[9px] mt-1" data-testid="omega-bank-continuation"
+        style={{ color: continuation ? 'var(--cw-amber)' : 'var(--cw-muted)' }}>
+        {continuation
+          ? `Ω.2b CONTINUATION: AR2 FIT ON ${continuation.corpus.toFixed(1)}s OF YOUR MOTION — SEAMS KEEP MOMENTUM`
+          : 'Ω.2b CONTINUATION: GATED — UNDER 8s IN THE VAULT · SEAMS USE LINEAR BLEND'}
       </p>
     </div>
   );
@@ -224,11 +232,23 @@ const SOURCE_COLOR = {
 
 /* Ω.5 — THE EPISODE. An ordered cut assembled from many sources, with the
    continuity ledger surfaced inline: a broken cut is flagged before export. */
-export const EpisodePanel = ({ shots, ledger, totalDur, selected, onAdd, onSelect, onMove, onRemove, onRender, onDownload, rendering, renderIdx, canAdd }) => {
+export const EpisodePanel = ({ shots, ledger, totalDur, selected, onAdd, onSelect, onMove, onRemove, onRender, onDownload, rendering, renderIdx, canAdd, phase, debt, onDismissDebt }) => {
   const flagsFor = (id) => ledger.filter((f) => f.shotId === id);
   return (
     <div className="cw-panel" data-testid="omega-episode-panel">
       <h2>▦ Episode — .veylep</h2>
+      {/* Ω.0 — the render ledger surfaces an interrupted render truthfully:
+         which cut, how far it got. Re-render is from the top, deterministic. */}
+      {debt && !rendering && (
+        <div className="mono text-[9px] mb-2 flex items-center gap-2" data-testid="omega-render-debt"
+          style={{ color: 'var(--cw-amber)' }}>
+          <span className="flex-1">
+            ⚠ LAST RENDER OF “{(debt.name || 'EPISODE').toUpperCase()}” STOPPED AT SHOT {String((debt.done || 0) + 1).padStart(2, '0')}/{String(debt.shots || 0).padStart(2, '0')} — RE-RENDER IS FROM THE TOP, SAME FRAMES
+          </span>
+          <button className="underline" style={{ color: 'var(--cw-muted)' }}
+            data-testid="omega-render-debt-dismiss" onClick={onDismissDebt}>DISMISS</button>
+        </div>
+      )}
       <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1 mb-2" data-testid="omega-shot-list">
         {shots.map((s, i) => {
           const flags = flagsFor(s.id);
@@ -279,7 +299,11 @@ export const EpisodePanel = ({ shots, ledger, totalDur, selected, onAdd, onSelec
       <div className="flex gap-1.5">
         <button className="cw-rec flex-1" disabled={shots.length === 0 || rendering}
           data-testid="omega-episode-render" onClick={onRender}>
-          {rendering ? `● SHOT ${String((renderIdx || 0) + 1).padStart(2, '0')}/${String(shots.length).padStart(2, '0')}` : '● RENDER EPISODE'}
+          {rendering
+            ? phase === 'breather'
+              ? '● BREATHER — RECORDER PAUSED'
+              : `● SHOT ${String((renderIdx || 0) + 1).padStart(2, '0')}/${String(shots.length).padStart(2, '0')}`
+            : '● RENDER EPISODE'}
         </button>
         <button className="cw-chip" style={{ padding: '8px 12px' }} disabled={shots.length === 0}
           data-testid="omega-episode-download" onClick={onDownload}>

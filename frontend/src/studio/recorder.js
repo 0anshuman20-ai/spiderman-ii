@@ -43,6 +43,18 @@ export class Recorder {
     return true;
   }
 
+  /* breathers (Ω.0): the conductor pauses the file through the cool-down so the
+     export has no dead air. Both are no-ops if the recorder isn't rolling. */
+  pause() {
+    if (!this.recording || !this.rec || this.rec.state !== 'recording') return false;
+    try { this.rec.pause(); return true; } catch (_) { return false; }
+  }
+
+  resume() {
+    if (!this.recording || !this.rec || this.rec.state !== 'paused') return false;
+    try { this.rec.resume(); return true; } catch (_) { return false; }
+  }
+
   stop() {
     return new Promise((resolve) => {
       if (!this.recording) { resolve(null); return; }

@@ -84,6 +84,91 @@ export function buildBank(performances) {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Ω.2b — LEARNED CONTINUATION (the gated upgrade, the fallback layer)
+
+   The last and only trained component in the plan, and the only one the plan
+   can live entirely without. A tiny per-channel AR(2) motion model — next
+   frame from the two before it — fit by ridge-regularized least squares over
+   every frame in YOUR bank, in-browser, in milliseconds, deterministic (no
+   random init: closed-form normal equations, same corpus = same weights).
+
+   It never replaces the bank. It fills the seams: where motion matching cuts
+   between two spans, the model free-runs the outgoing motion's momentum and
+   eases it into the incoming span — a transition the bank itself lacks —
+   instead of a straight-line blend. Gated on corpus size; below the gate the
+   linear blend remains, and behavior degrades to exactly what shipped. */
+
+const CONT_MIN_SECONDS = 8;    // the gate: don't fit a model to a corpus this small
+const CONT_RIDGE = 1e-3;
+
+/** fit the continuation model over the bank. Returns null when gated off. */
+export function trainContinuation(bank, { minSeconds = CONT_MIN_SECONDS, ridge = CONT_RIDGE } = {}) {
+  if (!bank || !bank.count || bank.seconds < minSeconds) return null;
+  const C = J * 3;
+  const coef = new Float64Array(C * 3);      // per channel: [a (x_t), b (x_{t-1}), c (bias)]
+  // per-channel 3x3 normal equations, accumulated across every span in the bank
+  const XtX = new Float64Array(C * 9);
+  const Xty = new Float64Array(C * 3);
+  let samples = 0;
+  bank.performances.forEach((p) => {
+    for (let f = 2; f < p.frames; f++) {
+      const a0 = (f - 2) * C, a1 = (f - 1) * C, a2 = f * C;
+      for (let c = 0; c < C; c++) {
+        const x0 = p.joints[a0 + c], x1 = p.joints[a1 + c], y = p.joints[a2 + c];
+        const m = c * 9, v = c * 3;
+        XtX[m + 0] += x1 * x1; XtX[m + 1] += x1 * x0; XtX[m + 2] += x1;
+        XtX[m + 3] += x0 * x1; XtX[m + 4] += x0 * x0; XtX[m + 5] += x0;
+        XtX[m + 6] += x1;      XtX[m + 7] += x0;      XtX[m + 8] += 1;
+        Xty[v + 0] += x1 * y;  Xty[v + 1] += x0 * y;  Xty[v + 2] += y;
+      }
+      samples++;
+    }
+  });
+  if (samples < FPS) return null;
+  // solve each 3x3 (ridge on the diagonal) by Cramer's rule
+  for (let c = 0; c < C; c++) {
+    const m = c * 9, v = c * 3;
+    const a = XtX[m] + ridge, b = XtX[m + 1], cc = XtX[m + 2];
+    const d = XtX[m + 3], e = XtX[m + 4] + ridge, f2 = XtX[m + 5];
+    const g = XtX[m + 6], h = XtX[m + 7], i2 = XtX[m + 8] + ridge;
+    const det = a * (e * i2 - f2 * h) - b * (d * i2 - f2 * g) + cc * (d * h - e * g);
+    if (Math.abs(det) < 1e-12) { coef[v] = 1; coef[v + 1] = 0; coef[v + 2] = 0; continue; }
+    const y0 = Xty[v], y1 = Xty[v + 1], y2 = Xty[v + 2];
+    coef[v + 0] = (y0 * (e * i2 - f2 * h) - b * (y1 * i2 - f2 * y2) + cc * (y1 * h - e * y2)) / det;
+    coef[v + 1] = (a * (y1 * i2 - f2 * y2) - y0 * (d * i2 - f2 * g) + cc * (d * y2 - y1 * g)) / det;
+    coef[v + 2] = (a * (e * y2 - y1 * h) - b * (d * y2 - y1 * g) + y0 * (d * h - e * g)) / det;
+  }
+  return { coef, channels: C, order: 2, corpus: bank.seconds, samples };
+}
+
+/**
+ * free-run the model from two poses and ease into a target pose over `steps`
+ * frames — a momentum-preserving transition instead of a straight line.
+ * Deterministic: no sampling, no noise. Returns steps × (J*3) floats.
+ */
+export function continueMotion(model, prevPose, curPose, steps, targetPose) {
+  const C = model.channels;
+  const out = new Float32Array(steps * C);
+  let x0 = Float64Array.from(prevPose);
+  let x1 = Float64Array.from(curPose);
+  for (let s = 0; s < steps; s++) {
+    const nx = new Float64Array(C);
+    for (let c = 0; c < C; c++) {
+      const v = c * 3;
+      nx[c] = model.coef[v] * x1[c] + model.coef[v + 1] * x0[c] + model.coef[v + 2];
+    }
+    if (targetPose) {
+      const k = (s + 1) / (steps + 1);
+      const w = k * k * (3 - 2 * k);          // smoothstep into the incoming span
+      for (let c = 0; c < C; c++) nx[c] = nx[c] * (1 - w) + targetPose[c] * w;
+    }
+    for (let c = 0; c < C; c++) out[s * C + c] = nx[c];
+    x0 = x1; x1 = nx;
+  }
+  return out;
+}
+
 function cost(bank, i, target, to) {
   let s = 0;
   const b = i * FEAT;
@@ -100,7 +185,7 @@ function cost(bank, i, target, to) {
  * continuing the span it is already playing, so the output is long runs of genuine
  * motion joined at phase-matched points — not a per-frame nearest-neighbour mush.
  */
-export function assemble(bank, { beats = ['settle', 'turn', 'point', 'settle'], name = 'bank-shot', world = 'nebula-drift', seed = 11, continuity = 0.55, blendFrames = 5 } = {}) {
+export function assemble(bank, { beats = ['settle', 'turn', 'point', 'settle'], name = 'bank-shot', world = 'nebula-drift', seed = 11, continuity = 0.55, blendFrames = 5, continuation = null } = {}) {
   if (!bank || !bank.count) return null;
   const target = synthesizePerformance({ name: 'query', beats, world, seed });
   const tFeat = new Float32Array(target.frames * FEAT);
@@ -161,8 +246,25 @@ export function assemble(bank, { beats = ['settle', 'turn', 'point', 'settle'], 
     if (fsrc.length === FACE_CH) out.face.set(fsrc, f * FACE_CH);
     for (let k = 0; k < J; k++) out.vis[f * J + k] = p.vis[lf * J + k] || 1;
   }
+  let continuationCuts = 0;
   for (let f = 1; f < out.frames; f++) {
     if (picks[f] === picks[f - 1] + 1) continue;
+    /* Ω.2b: where the model exists, the seam is a momentum-preserving
+       continuation eased into the incoming span — never a straight line.
+       Where it doesn't (gated), the linear blend below remains, unchanged. */
+    if (continuation && f >= 2 && f + blendFrames < out.frames) {
+      const C = J * 3;
+      const gen = continueMotion(
+        continuation,
+        out.joints.subarray((f - 2) * C, (f - 2) * C + C),
+        out.joints.subarray((f - 1) * C, (f - 1) * C + C),
+        blendFrames,
+        out.joints.subarray((f + blendFrames) * C, (f + blendFrames) * C + C),
+      );
+      for (let b = 0; b < blendFrames; b++) out.joints.set(gen.subarray(b * C, (b + 1) * C), (f + b) * C);
+      continuationCuts++;
+      continue;
+    }
     for (let b = 1; b <= blendFrames && f + b < out.frames; b++) {
       const k = b / (blendFrames + 1);
       const a = (f - 1) * J * 3, c = (f + b) * J * 3;
@@ -171,5 +273,8 @@ export function assemble(bank, { beats = ['settle', 'turn', 'point', 'settle'], 
   }
   out.direction = target.direction.map((d) => ({ ...d }));
   out.direction.push({ t: 0, kind: 'bank', value: `${bank.performances.length} takes · ${bank.seconds.toFixed(1)}s indexed` });
+  if (continuation && continuationCuts > 0) {
+    out.direction.push({ t: 0, kind: 'continuation', value: `AR2 · ${continuationCuts} seams · trained on ${continuation.corpus.toFixed(1)}s` });
+  }
   return out;
 }
