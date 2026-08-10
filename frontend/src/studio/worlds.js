@@ -20,7 +20,7 @@ function tex(path, srgb = true) {
   if (!texCache[path]) {
     const t = texLoader.load(path);
     if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-    t.anisotropy = 4;
+    t.anisotropy = 16;
     texCache[path] = t;
   }
   return texCache[path];
@@ -28,14 +28,21 @@ function tex(path, srgb = true) {
 
 /* ------------------------------------------------------------------ */
 /* GPU star dome — real 3D shell of round, twinkling shader points     */
-function starDome(count = 3000, radius = 90) {
+function starDome(count = 4600, radius = 90) {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(count * 3);
   const col = new Float32Array(count * 3);
   const attr = new Float32Array(count * 2); // size, twinkle phase
   const c = new THREE.Color();
+  const bandNormal = new THREE.Vector3(0.35, 1, 0.2).normalize(); // tilted galactic plane
   for (let i = 0; i < count; i++) {
-    const v = new THREE.Vector3().randomDirection().multiplyScalar(radius * (0.75 + Math.random() * 0.25));
+    const v = new THREE.Vector3().randomDirection();
+    // ~40% of stars condense into a tilted milky-way band across the dome
+    if (i < count * 0.4) {
+      const d = v.dot(bandNormal);
+      v.addScaledVector(bandNormal, -d * 0.86).normalize();
+    }
+    v.multiplyScalar(radius * (0.75 + Math.random() * 0.25));
     pos.set([v.x, v.y, v.z], i * 3);
     const k = Math.random();
     if (k > 0.97) c.setHSL(0.08, 0.7, 0.75);       // orange giants
@@ -114,7 +121,8 @@ function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
         vec3 col = vec3(0.0);
         float trans = 1.0;
         float t = 8.0;
-        for (int i = 0; i < 14; i++){
+        // higher-fidelity march: more, finer steps + self-shadow density lift
+        for (int i = 0; i < 22; i++){
           vec3 p = cameraPosition + rd * t;
           vec3 q = p * 0.045 + vec3(uTime * 0.008, 0.0, uTime * 0.005);
           float d = fbm(q);
@@ -123,12 +131,14 @@ function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
             float hue = fbm(q * 0.5 + 3.7);
             vec3 c = mix(uColA, uColB, smoothstep(0.3, 0.7, hue));
             c = mix(c, uColC, smoothstep(0.55, 0.9, fbm(q * 0.25 - 1.3)));
-            float a = d * 0.16;
+            // cheap self-shadowing: denser clouds glow hotter at their cores
+            c *= 0.75 + d * 0.65;
+            float a = d * 0.115;
             col += c * a * trans;
             trans *= 1.0 - a;
-            if (trans < 0.05) break;
+            if (trans < 0.04) break;
           }
-          t += 3.4;
+          t += 2.5;
         }
         // keep the zenith darker so the subject reads
         float horizon = smoothstep(-0.15, 0.55, rd.y);

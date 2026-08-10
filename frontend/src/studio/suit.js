@@ -201,6 +201,12 @@ const fragmentShader = /* glsl */ `
     float lL = dot(texture2D(uVideo, vUv - vec2(texel.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
     float lD = dot(texture2D(uVideo, vUv - vec2(0.0, texel.y)).rgb, vec3(0.299, 0.587, 0.114));
     float sLuma = (luma * 2.0 + lR + lU + lL + lD) / 6.0;
+    /* costume normalization: compress the camera's tonal range so shirt prints,
+       logos, skin tone and fabric patterns can NOT read through the suit —
+       only the broad light/shadow form of your body survives the recolor */
+    sLuma = clamp(sLuma, 0.0, 1.0);
+    sLuma = 0.5 + (sLuma - 0.5) * 0.60;                            // flatten real-clothing contrast
+    sLuma = pow(sLuma, 0.92);                                      // lift the compressed mids
     vec2 grad = vec2(lR - lL, lU - lD) * 0.5;                      // pseudo surface normal
     float form = clamp(dot(normalize(grad + 1e-5), normalize(KEY_DIR)) * length(grad) * 30.0, -0.35, 0.5);
 
@@ -208,10 +214,14 @@ const fragmentShader = /* glsl */ `
     float shade = 0.16 + 1.9 * pow(sLuma, 0.9);
     vec3 dyedDark = base * vec3(0.28, 0.22, 0.30);                 // shadows keep dye hue
     vec3 lit = base * shade;
-    vec3 suit = mix(dyedDark, lit, smoothstep(0.02, 0.30, sLuma));
+    vec3 suit = mix(dyedDark, lit, smoothstep(0.22, 0.44, sLuma)); // thresholds match the compressed luma range
     suit *= 1.0 + micro + form * 0.6;                              // weave + recovered form
     suit += vec3(1.0, 0.88, 0.82) * pow(sLuma, 4.5) * 0.42;        // broad fabric sheen
     suit += vec3(1.0) * pow(max(form, 0.0), 1.5) * 0.35;           // key-light specular
+    // dye chroma push: keeps the costume reading as saturated spandex, never
+    // as tinted video of your real clothes
+    float sg = dot(suit, vec3(0.299, 0.587, 0.114));
+    suit = mix(vec3(sg), suit, 1.18);
 
     // webbing: near-black rubber, AO groove, lit top edge
     suit *= 1.0 - ao;
@@ -331,7 +341,7 @@ const EXPR = {
   calm: { lens: 1, asym: 0, glow: 1 },
   fury: { lens: 0.42, asym: 0, glow: 1.6 },
   narrow: { lens: 0.6, asym: 0, glow: 1.2 },
-  shock: { lens: 1.35, asym: 0, glow: 1.4 },
+  shock: { lens: 1.18, asym: 0, glow: 1.4 },
   smirk: { lens: 0.85, asym: 0.4, glow: 1.1 },
 };
 
@@ -428,7 +438,9 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       og.save();
       og.globalAlpha = Math.min(1, f.ok) * suitOn;
       const eyeDistPx = f.eyeDist * CROP_W;
-      const size = eyeDistPx * 0.68;
+      // screen-accurate lens proportion: on the film suits the lens spans roughly
+      // half the interpupillary distance — big enough to read, never bug-eyed
+      const size = eyeDistPx * 0.5;
       const angle = f.angle;
       const ca = Math.cos(angle), sa = Math.sin(angle);
       // mouth shading — the mask visibly dents and stretches as you talk
@@ -445,7 +457,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       og.beginPath(); og.arc(0, 0, mw, 0, Math.PI * 2); og.fill();
       og.restore();
       // lenses ride slightly outward + above your real eyes
-      const offOut = eyeDistPx * 0.14, offUp = eyeDistPx * 0.10;
+      const offOut = eyeDistPx * 0.11, offUp = eyeDistPx * 0.08;
       const exL = f.eyeL.x * CROP_W - ca * offOut + sa * offUp;
       const eyL = f.eyeL.y * CROP_H - sa * offOut - ca * offUp;
       const exR = f.eyeR.x * CROP_W + ca * offOut + sa * offUp;
