@@ -79,6 +79,15 @@ export default function Studio() {
     axios.get(`${API}/progress`).then((r) => setProgress(r.data)).catch(() => {});
   }, []);
 
+  // unmount (e.g. navigating to the Omega Room): silence the score, drop the countdown
+  useEffect(() => () => {
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    if (paramsTimerRef.current) clearTimeout(paramsTimerRef.current);
+    if (musicRef.current) { try { musicRef.current.dispose(); } catch (_) {} }
+    if (voiceRef.current) { try { voiceRef.current.dispose(); } catch (_) {} }
+    if (stageRef.current) { try { stageRef.current.dispose(); } catch (_) {} }
+  }, []);
+
   // attach webcam PIP once the element mounts (live mode only)
   useEffect(() => {
     if (booted === 'live' && pipOn && pipRef.current && trackerRef.current && trackerRef.current.stream) {
@@ -152,6 +161,16 @@ export default function Studio() {
       setBooted('sim');
     }
 
+    // THE SOUND LAYER — borrows the voice ctx when the mic came up, else owns its own.
+    // Boot is a user gesture, so the context is allowed to start here.
+    const music = new MusicEngine(voice);
+    musicRef.current = music;
+    if (music.init()) {
+      await music.resume();
+      music.setWorld(stage.worldKey);
+      setMusicReady(true);
+    }
+
     stage.start(rig, tracker, (t, dt) => {
       tracker.tick(t, dt);
         // Inversion 1: the take is a rig timeline — sample it beside the video
@@ -169,7 +188,9 @@ export default function Studio() {
           beatRef.current = idx;
           const b = script.beats[idx];
           rig.expression = EMOTE_TO_EXPR[b.emote] || 'calm';
-          (FX_MAP[b.fx] || FX_MAP.none)(stage, voice);
+          (FX_MAP[b.fx] || FX_MAP.none)(stage, voice, musicRef.current);
+          // caption burn-in: the beat line lands in the composited frame itself
+          if (captionsRef.current) stage.setCaption(b.text);
         }
       }
     });
@@ -185,6 +206,10 @@ export default function Studio() {
       setFps(rig.tracking.fps);
       setLevel(rig.level);
       setExprState(rig.expression);
+      // sidechain-lite: the bed ducks ~4 dB whenever the voice gate is open
+      if (musicRef.current && voiceRef.current) {
+        musicRef.current.duck(!!(voiceRef.current.level && voiceRef.current.level.gateOpen));
+      }
       if (recorderRef.current.recording) {
         const el = recorderRef.current.elapsed;
         setElapsed(el);
@@ -194,26 +219,66 @@ export default function Studio() {
     return () => clearInterval(id);
   }, [booted]);
 
+  /* the actual roll — everything timing-sensitive lives HERE, after the countdown,
+     so recStartRef / perfRec.start keep beat timing exactly as before */
+  const startRecording = useCallback(() => {
+    const rec = recorderRef.current;
+    const stage = stageRef.current;
+    if (!stage || rec.recording) return;
+    const script = scriptRef.current;
+    stage.setHud(script ? `COSMIC WEAVER ── TRANSMISSION #${String(script.number).padStart(2, '0')}` : 'COSMIC WEAVER ── LIVE');
+    beatRef.current = 0; setBeatIdx(0);
+    recStartRef.current = performance.now();
+    perfRecRef.current.start({
+      name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'veyl-freestyle',
+      world: stage.worldKey,
+    });
+    // burn the first beat's caption from frame one
+    if (script && captionsRef.current && script.beats.length) stage.setCaption(script.beats[0].text);
+    // audio for the file: processed voice when the mic is up; else the music
+    // engine's own MediaStreamDestination so a video-only session still ships with score
+    const voice = voiceRef.current;
+    const music = musicRef.current;
+    const audioStream = voice && voice.ready ? voice.stream : (music && music.stream) || null;
+    rec.start(stage, audioStream);
+    setRecording(true);
+  }, []);
+
   const toggleRec = useCallback(async () => {
     const rec = recorderRef.current;
     const stage = stageRef.current;
     if (!stage) return;
+    // Space/REC during the countdown CANCELS it — the HUD never left STANDBY
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+      setCountdown(null);
+      return;
+    }
     if (!rec.recording) {
-      const script = scriptRef.current;
-      stage.setHud(script ? `COSMIC WEAVER ── TRANSMISSION #${String(script.number).padStart(2, '0')}` : 'COSMIC WEAVER ── LIVE');
-      beatRef.current = 0; setBeatIdx(0);
-      recStartRef.current = performance.now();
-       perfRecRef.current.start({
-        name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'veyl-freestyle',
-        world: stage.worldKey,
-      });
-      rec.start(stage, voiceRef.current && voiceRef.current.ready ? voiceRef.current.stream : null);
-      setRecording(true);
+      // 3-2-1 before the roll; ticks are synth blips (silent if audio never came up)
+      let n = 3;
+      setCountdown(n);
+      if (musicRef.current) musicRef.current.blip(false);
+      countdownRef.current = setInterval(() => {
+        n -= 1;
+        if (n > 0) {
+          setCountdown(n);
+          if (musicRef.current) musicRef.current.blip(false);
+        } else {
+          clearInterval(countdownRef.current);
+          countdownRef.current = null;
+          setCountdown(null);
+          if (musicRef.current) musicRef.current.blip(true);
+          startRecording();
+        }
+      }, 1000);
     } else {
       const take = await rec.stop();
       const perf = perfRecRef.current.stop();
       setRecording(false); setElapsed(0);
       stage.setHud('COSMIC WEAVER ── STANDBY');
+      stage.setCaption(null);
       if (take) {
         const script = scriptRef.current;
         const name = script ? `transmission-${String(script.number).padStart(2, '0')}-take` : 'veyl-freestyle-take';
@@ -237,7 +302,7 @@ export default function Studio() {
         }
       }
     }
-  }, []);
+  }, [startRecording]);
 
   const pickScript = useCallback((s) => {
     scriptRef.current = s;
@@ -249,8 +314,51 @@ export default function Studio() {
 
   const closeScript = useCallback(() => {
     scriptRef.current = null; setActiveScript(null);
-    if (stageRef.current) stageRef.current.setHud('COSMIC WEAVER ── STANDBY');
+    if (stageRef.current) {
+      stageRef.current.setHud('COSMIC WEAVER ── STANDBY');
+      stageRef.current.setCaption(null);
+    }
   }, []);
+
+  /* CC toggle — mirrored into a ref so the frame callback reads it without re-binding */
+  const toggleCaptions = useCallback(() => {
+    setCaptionsOn((prev) => {
+      const next = !prev;
+      captionsRef.current = next;
+      if (!next && stageRef.current) stageRef.current.setCaption(null);
+      return next;
+    });
+  }, []);
+
+  /* THE SOUND LAYER — panel wiring */
+  const onMusicOn = useCallback((on) => {
+    setMusicOn(on);
+    if (musicRef.current) musicRef.current.setEnabled(on);
+  }, []);
+  const onBedVol = useCallback((v) => {
+    setBedVol(v);
+    if (musicRef.current) musicRef.current.setBedVolume(v);
+  }, []);
+  const onSfxVol = useCallback((v) => {
+    setSfxVol(v);
+    if (musicRef.current) musicRef.current.setSfxVolume(v);
+  }, []);
+  const onMusicMonitor = useCallback((on) => {
+    setMusicMonitor(on);
+    if (musicRef.current) musicRef.current.setMonitor(on);
+  }, []);
+
+  /* WORLD EDITOR — named preset shelf, persisted per world */
+  const onSaveWorldPreset = useCallback((name) => {
+    const k = stageRef.current ? stageRef.current.worldKey : 'nebula-drift';
+    setWPresets(savePreset(k, name, wParams));
+  }, [wParams]);
+  const onApplyWorldPreset = useCallback((p) => applyWorldParams(p.params), [applyWorldParams]);
+  const onDeleteWorldPreset = useCallback((name) => {
+    const k = stageRef.current ? stageRef.current.worldKey : 'nebula-drift';
+    setWPresets(deletePreset(k, name));
+  }, []);
+  const onResetWorldParams = useCallback(() => applyWorldParams(null), [applyWorldParams]);
 
   // hotkeys
   useEffect(() => {
@@ -330,7 +438,12 @@ export default function Studio() {
         <div className="lg:col-span-3 space-y-3 order-2 lg:order-1">
           <VoicePanel params={voiceParams} preset={preset} onPreset={onPreset} onParam={onParam}
             monitor={monitor} onMonitor={onMonitor} level={level} micOk={micOk} />
+          <MusicPanel on={musicOn} onOn={onMusicOn} bedVol={bedVol} onBedVol={onBedVol}
+            sfxVol={sfxVol} onSfxVol={onSfxVol} monitor={musicMonitor} onMonitor={onMusicMonitor} ready={musicReady} />
           <ScenePanel world={world} onWorld={setWorld} />
+          <WorldEditorPanel world={world} params={wParams} onParam={onWorldParam}
+            presets={wPresets} onSavePreset={onSaveWorldPreset} onApplyPreset={onApplyWorldPreset}
+            onDeletePreset={onDeleteWorldPreset} onReset={onResetWorldParams} isDefault={isDefaultParams(wParams)} />
           <ExpressionPanel expr={expr} onExpr={setExpr} onGlitch={doGlitch} />
         </div>
 
@@ -345,7 +458,26 @@ export default function Studio() {
             <button className="mono absolute top-2 right-2 text-[9px] bg-black/60 border px-2 py-1 cursor-pointer z-10"
               style={{ borderColor: 'var(--cw-border)', color: 'var(--cw-muted)' }}
               data-testid="pip-toggle" onClick={() => setPipOn((p) => !p)}>PIP {pipOn ? 'ON' : 'OFF'}</button>
+            {activeScript && (
+              <button className="mono absolute top-2 left-2 text-[9px] bg-black/60 border px-2 py-1 cursor-pointer z-10"
+                style={{ borderColor: captionsOn ? 'var(--cw-red)' : 'var(--cw-border)', color: captionsOn ? 'var(--cw-text-2)' : 'var(--cw-muted)' }}
+                data-testid="captions-toggle" onClick={toggleCaptions}>CC {captionsOn ? 'ON' : 'OFF'}</button>
+            )}
             <Prompter script={activeScript} beatIdx={beatIdx} recording={recording} elapsed={elapsed} onClose={closeScript} />
+            {/* 3-2-1 countdown — full-viewport, big mono digit, red ring; REC/Space cancels */}
+            {countdown !== null && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4"
+                style={{ background: 'rgba(0,0,0,0.55)' }} data-testid="countdown-overlay"
+                role="status" aria-live="assertive">
+                <div className="flex items-center justify-center rounded-full"
+                  style={{ width: 140, height: 140, border: '3px solid var(--cw-red)', boxShadow: '0 0 40px rgba(255,26,46,0.4)' }}>
+                  <span className="mono font-bold" style={{ fontSize: 72, color: 'var(--cw-red)' }} data-testid="countdown-digit">{countdown}</span>
+                </div>
+                <span className="mono text-[10px]" style={{ color: 'var(--cw-text-2)', letterSpacing: '0.3em' }}>
+                  ROLLING IN {countdown}… · SPACE / REC CANCELS
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
