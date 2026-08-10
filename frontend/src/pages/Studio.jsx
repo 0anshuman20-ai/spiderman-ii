@@ -104,7 +104,7 @@ export default function Studio() {
       setBooted('sim');
     }
 
-    stage.start(rig, (t, dt) => {
+    stage.start(rig, tracker, (t, dt) => {
       tracker.tick(t, dt);
       if (voice.ready && rig.tracking.mode !== 'sim') {
         rig.level += (Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel())) - rig.level) * 0.35;
@@ -235,8 +235,8 @@ export default function Studio() {
           <div className="cw-boot-inner">
             <div className="mono text-[10px] mb-3" style={{ color: 'var(--cw-red)', letterSpacing: '0.3em' }}>SIGNAL ORIGIN: UNKNOWN SECTOR</div>
             <h1 className="mono text-4xl sm:text-5xl font-bold mb-2 tracking-tight">COSMIC<br />WEAVER</h1>
-            <p className="text-sm mb-1" style={{ color: 'var(--cw-text-2)' }}>VEYL performance studio — your face, body and hands drive the avatar. Your webcam is never recorded. Your voice leaves as a transmission.</p>
-            <p className="mono text-[10px] mb-8" style={{ color: 'var(--cw-muted)' }}>FACE · BODY · HANDS TRACKING — 1080×1920 · 60FPS · $0</p>
+            <p className="text-sm mb-1" style={{ color: 'var(--cw-text-2)' }}>AR suit studio — the suit is painted onto YOUR real video. Your mouth, blinks and every move stay yours. AI matting drops you into deep space.</p>
+            <p className="mono text-[10px] mb-8" style={{ color: 'var(--cw-muted)' }}>REAL VIDEO SUIT · AI BACKGROUND MATTE — 1080×1920 · 60FPS · $0</p>
             <div className="flex flex-col gap-3 items-start">
               <button className="cw-rec" data-testid="boot-live-btn" disabled={booting}
                 onClick={() => boot('live')}>{booting ? 'INITIALIZING…' : '⦿ INITIALIZE FULL RIG'}</button>

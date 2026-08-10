@@ -88,7 +88,7 @@ export const StatusPanel = ({ tracking, micOk, fps, mode }) => {
       <div className="mono text-[10px] space-y-2 text-[color:var(--cw-text-2)]">
         <div className="flex items-center gap-2" data-testid="status-face"><span className={dot(tracking.face)} />FACE TRACK {mode === 'sim' ? '· SIM' : tracking.face ? '· LOCKED' : '· SEARCHING'}</div>
         <div className="flex items-center gap-2" data-testid="status-pose"><span className={dot(tracking.pose)} />BODY TRACK {mode === 'sim' ? '· SIM' : tracking.pose ? '· LOCKED' : '· SEARCHING'}</div>
-        <div className="flex items-center gap-2" data-testid="status-hands"><span className={dot(tracking.hands)} />HAND TRACK {mode === 'sim' ? '· SIM' : tracking.hands ? '· LOCKED' : '· SEARCHING'}</div>
+        <div className="flex items-center gap-2" data-testid="status-hands"><span className={dot(tracking.hands)} />AI MATTE {mode === 'sim' ? '· SIM' : tracking.hands ? '· LOCKED' : '· SEARCHING'}</div>
         <div className="flex items-center gap-2" data-testid="status-voice"><span className={`cw-dot ${micOk ? 'ok' : 'err'}`} />VOICE ENGINE {micOk ? '· ONLINE' : '· OFFLINE'}</div>
         <div className="flex items-center justify-between pt-1" style={{ borderTop: '1px solid var(--cw-border)' }}>
           <span>RENDER</span><span style={{ color: 'var(--cw-cyan)' }} data-testid="fps-readout">{fps} FPS</span>
