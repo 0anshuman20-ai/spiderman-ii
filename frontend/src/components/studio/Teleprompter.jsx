@@ -1,15 +1,29 @@
 import { useMemo, useState } from 'react';
 import { TRANSMISSIONS, PILLARS } from '../../studio/scripts';
 
-export const ScriptLog = ({ active, onPick, progress }) => {
+export const ScriptLog = ({ active, onPick, progress, recording = false, beatIdx = 0 }) => {
   const [filter, setFilter] = useState('all');
   const list = useMemo(
     () => (filter === 'all' ? TRANSMISSIONS : TRANSMISSIONS.filter((s) => s.pillar === filter)),
     [filter]
   );
+  /* coverage: how much of the whole transmission slate is on tape */
+  const recorded = useMemo(
+    () => TRANSMISSIONS.reduce((n, s) => n + (progress[s.number] ? 1 : 0), 0),
+    [progress]
+  );
+  const pct = Math.round((recorded / TRANSMISSIONS.length) * 100);
   return (
     <div className="cw-panel flex flex-col min-h-0" data-testid="script-log" style={{ flex: 1 }}>
       <h2>▤ Transmission Log — {TRANSMISSIONS.length} Scripts</h2>
+      <div className="flex items-center gap-2 mb-2" data-testid="coverage-meter">
+        <div className="cw-meter flex-1" style={{ height: 4 }}>
+          <div style={{ width: `${pct}%`, background: 'var(--cw-green)' }} />
+        </div>
+        <span className="mono text-[9px]" style={{ color: pct === 100 ? 'var(--cw-green)' : 'var(--cw-muted)', whiteSpace: 'nowrap' }}>
+          {recorded}/{TRANSMISSIONS.length} · {pct}%
+        </span>
+      </div>
       <div className="flex flex-wrap gap-1 mb-2">
         <div className={`cw-chip ${filter === 'all' ? 'on' : ''}`} style={{ padding: '4px 7px', fontSize: 9 }}
           data-testid="pillar-filter-all" onClick={() => setFilter('all')}>ALL</div>
@@ -19,19 +33,28 @@ export const ScriptLog = ({ active, onPick, progress }) => {
         ))}
       </div>
       <div className="overflow-y-auto space-y-1" style={{ maxHeight: 320 }}>
-        {list.map((s) => (
-          <div key={s.id}
-            className={`cw-chip ${active && active.id === s.id ? 'on' : ''}`}
-            style={{ justifyContent: 'flex-start', gap: 10 }}
-            data-testid={`script-item-${s.number}`}
-            onClick={() => onPick(s)}>
-            <span className="mono" style={{ color: progress[s.number] ? 'var(--cw-green)' : 'var(--cw-muted)', minWidth: 26 }}>
-              {progress[s.number] ? '✓' : '#'}{String(s.number).padStart(2, '0')}
-            </span>
-            <span className="flex-1 truncate" style={{ fontSize: 10 }}>{s.title}</span>
-            <small style={{ color: PILLARS[s.pillar].color }}>{PILLARS[s.pillar].label}</small>
-          </div>
-        ))}
+        {list.map((s) => {
+          const isActive = active && active.id === s.id;
+          return (
+            <div key={s.id}
+              className={`cw-chip ${isActive ? 'on' : ''}`}
+              style={{ justifyContent: 'flex-start', gap: 10, flexWrap: 'wrap' }}
+              data-testid={`script-item-${s.number}`}
+              onClick={() => onPick(s)}>
+              <span className="mono" style={{ color: progress[s.number] ? 'var(--cw-green)' : 'var(--cw-muted)', minWidth: 26 }}>
+                {progress[s.number] ? '✓' : '#'}{String(s.number).padStart(2, '0')}
+              </span>
+              <span className="flex-1 truncate" style={{ fontSize: 10 }}>{s.title}</span>
+              <small className="mono" style={{ color: 'var(--cw-muted)' }}>{s.beats.length}B · {s.durationSec}s</small>
+              <small style={{ color: PILLARS[s.pillar].color }}>{PILLARS[s.pillar].label}</small>
+              {isActive && recording && (
+                <div className="cw-meter w-full" style={{ height: 3 }} data-testid={`script-beat-progress-${s.number}`}>
+                  <div style={{ width: `${Math.min(100, ((beatIdx + 1) / s.beats.length) * 100)}%` }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

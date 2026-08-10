@@ -484,7 +484,7 @@ export default function Studio() {
         {/* right rail */}
         <div className="lg:col-span-4 space-y-3 order-3 flex flex-col">
           <StatusPanel tracking={tracking} micOk={micOk} fps={fps} mode={booted === 'sim' ? 'sim' : rigRef.current.tracking.mode} />
-          <ScriptLog active={activeScript} onPick={pickScript} progress={progress} />
+          <ScriptLog active={activeScript} onPick={pickScript} progress={progress} recording={recording} beatIdx={beatIdx} />
           <TakesPanel takes={takes} onDelete={(id) => {
             setTakes((p) => p.filter((t) => t.id !== id));
             axios.delete(`${API}/takes/${id}`).catch(() => {});

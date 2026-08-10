@@ -49,6 +49,11 @@ export default function OmegaRoom() {
   const [exporting, setExporting] = useState(false);
   const [ready, setReady] = useState(false);
 
+  /* A4 — .veyl file transport + vault health line */
+  const [importError, setImportError] = useState(null);
+  const [usage, setUsage] = useState(null);
+  const [persisted, setPersisted] = useState(false);
+
   /* Ω.3 — neural cinema: finish strength + the 2.5D still. Strength lives in a
      ref too so a slider move retunes the pass live instead of reloading the shot. */
   const [cinema, setCinema] = useState(0);
@@ -99,6 +104,13 @@ export default function OmegaRoom() {
       setWorld(list[0].world || 'nebula-drift');
       setEpisode(ep);
       setReady(true);
+      /* vault health: quota usage + whether the browser granted persistence */
+      try {
+        if (navigator.storage) {
+          if (navigator.storage.estimate) navigator.storage.estimate().then((e) => { if (alive) setUsage(e); }).catch(() => {});
+          if (navigator.storage.persisted) navigator.storage.persisted().then((p) => { if (alive) setPersisted(!!p); }).catch(() => {});
+        }
+      } catch (_) { /* storage API unavailable */ }
     })();
     return () => { alive = false; if (epRunRef.current) epRunRef.current.stop(); stage.dispose(); };
   }, []);
@@ -230,6 +242,33 @@ export default function OmegaRoom() {
     setActiveId(perf.id);
     setBankBeats([]);
   }, [bank, bankBeats, banking, world, continuation]);
+
+  /* A4 — .veyl transport: export a performance to disk, import one into the Vault */
+  const exportVeyl = useCallback((perf) => {
+    const blob = exportPerf(perf);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(perf.name || 'performance').replace(/[^a-z0-9-_]+/gi, '-')}.veyl`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }, []);
+
+  const importVeyl = useCallback(async (file) => {
+    setImportError(null);
+    try {
+      const record = await importPerf(file);
+      await vault.put(PERFORMANCES, record);
+      const list = await vault.all(PERFORMANCES);
+      setPerfs(list);
+      setActiveId(record.id);
+      if (navigator.storage && navigator.storage.estimate) {
+        navigator.storage.estimate().then(setUsage).catch(() => {});
+      }
+    } catch (err) {
+      setImportError(err && err.message ? err.message : 'import failed');
+    }
+  }, []);
 
   /* Ω.5 — episode editing. Every mutation persists and re-runs the ledger. */
   const saveEpisode = useCallback(async (next) => {
@@ -370,7 +409,9 @@ export default function OmegaRoom() {
         {/* left rail: what drives the body, where it stands, what the bank can build */}
         <div className="lg:col-span-3 space-y-3 order-2 lg:order-1">
           <SourcePanel perfs={perfs} activeId={activeId} memoryOnly={vault.isMemoryOnly}
-            onPick={(id) => setActiveId(id)} onForge={forge} />
+            onPick={(id) => setActiveId(id)} onForge={forge}
+            onExport={exportVeyl} onImport={importVeyl} importError={importError}
+            usage={usage} persisted={persisted} />
           <MotionBankPanel bank={bank} beats={bankBeats} onBeats={setBankBeats}
             onAssemble={assembleFromBank} busy={banking} continuation={continuation} />
           <OmegaWorldPanel world={world} onWorld={setWorld} />

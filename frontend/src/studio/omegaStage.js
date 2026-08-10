@@ -15,6 +15,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { buildWorld } from './worlds';
+import { readActiveParams } from './worldPresets';
 import { createActor } from './actor';
 import { sampleAt, meanVisibility, FACE_CH, J } from './perf';
 import { createCinema } from './synth';
@@ -118,8 +119,9 @@ export function createOmegaStage(canvas) {
   const camera = new THREE.PerspectiveCamera(34, W / H, 0.1, 400);
   scene.add(camera);
 
+  /* episodes honor whatever the live studio dialed in — same preset lookup */
   let worldKey = 'nebula-drift';
-  let world = buildWorld(scene, worldKey);
+  let world = buildWorld(scene, worldKey, readActiveParams(worldKey));
 
   const actor = createActor();
   actor.setRim(WORLD_RIM[worldKey]);
@@ -199,7 +201,7 @@ export function createOmegaStage(canvas) {
     if (!k || k === worldKey) return;
     world.dispose();
     worldKey = k;
-    world = buildWorld(scene, worldKey);
+    world = buildWorld(scene, worldKey, readActiveParams(worldKey));
     actor.setRim(WORLD_RIM[worldKey] || 0x7a5aff);
   }
 
