@@ -64,8 +64,20 @@ export function createStage(canvas) {
   camera.position.copy(baseCam);
   scene.add(camera);
 
-  let world = buildWorld(scene, 'nebula-drift');
+  let worldParams = null; // WORLD EDITOR overrides {hueShift, density, motion}
+  let world = buildWorld(scene, 'nebula-drift', worldParams);
   let worldKey = 'nebula-drift';
+
+  /* rim color follows the editor's hue shift so the suit stays lit in-palette */
+  function rimFor(k) {
+    const base = new THREE.Color(WORLD_RIM[k] || 0x7a5aff);
+    if (worldParams && worldParams.hueShift) {
+      const hsl = { h: 0, s: 0, l: 0 };
+      base.getHSL(hsl);
+      base.setHSL((hsl.h + worldParams.hueShift / 360 + 1) % 1, hsl.s, hsl.l);
+    }
+    return base;
+  }
 
   // ---- camera-anchored person layer (always fills the frame exactly) ----
   const PLANE_D = 2.0;
@@ -113,6 +125,49 @@ export function createStage(canvas) {
   }
   setHud('COSMIC WEAVER ── STANDBY');
 
+  // ---- CAPTION lower-third burned into the recording (bottom of frame) ----
+  const capCanvas = document.createElement('canvas'); capCanvas.width = 1024; capCanvas.height = 220;
+  const capCtx = capCanvas.getContext('2d');
+  const capTex = new THREE.CanvasTexture(capCanvas);
+  capTex.colorSpace = THREE.SRGBColorSpace;
+  const cap = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.30, 0.064),
+    new THREE.MeshBasicMaterial({ map: capTex, transparent: true, depthTest: false, depthWrite: false }),
+  );
+  cap.position.set(0, -0.20, -1);
+  cap.renderOrder = 1000; // above the suit layer
+  camera.add(cap);
+
+  function setCaption(text) {
+    capCtx.clearRect(0, 0, 1024, 220);
+    if (text) {
+      capCtx.font = '500 42px "JetBrains Mono", monospace';
+      capCtx.textAlign = 'center';
+      // word-wrap into at most 3 lines
+      const words = String(text).toUpperCase().split(/\s+/);
+      const lines = [];
+      let line = '';
+      for (const w2 of words) {
+        const next = line ? `${line} ${w2}` : w2;
+        if (capCtx.measureText(next).width > 940 && line) { lines.push(line); line = w2; }
+        else line = next;
+        if (lines.length === 3) break;
+      }
+      if (line && lines.length < 3) lines.push(line);
+      const lh = 58;
+      const y0 = 110 - ((lines.length - 1) * lh) / 2;
+      lines.forEach((l, i) => {
+        const w3 = capCtx.measureText(l).width;
+        // subtle backing bar so the line reads over any world
+        capCtx.fillStyle = 'rgba(0,0,0,0.55)';
+        capCtx.fillRect(512 - w3 / 2 - 18, y0 + i * lh - 40, w3 + 36, 54);
+        capCtx.fillStyle = 'rgba(255,255,255,0.94)';
+        capCtx.fillText(l, 512, y0 + i * lh);
+      });
+    }
+    capTex.needsUpdate = true;
+  }
+
   let punchT = -10, glitchT = 0, running = true, lastT = performance.now() / 1000;
   let fpsAcc = 0, fpsN = 0, fps = 0;
 
@@ -125,11 +180,15 @@ export function createStage(canvas) {
     if (onFrame) onFrame(t, dt, fps);
     const rig = stage.rig;
     if (suitLayer && rig) suitLayer.update(t, dt);
+    // audio-reactive worlds: the smoothed voice level pulses the scene
+    if (world.setEnergy) world.setEnergy(rig ? rig.level : 0);
     world.update(t, dt);
 
     // parallax: the space world shifts opposite your real head movement -> true depth
     const rootX = rig ? rig.root.x : 0;
     const rootZ = rig ? rig.root.z : 0;
+    // per-world far-layer counter-shift strengthens the depth read
+    if (world.parallax) world.parallax(rootX, rig ? rig.root.y || 0 : 0);
     const drift = 0.05;
     camera.position.x = baseCam.x + Math.sin(t * 0.11) * drift - rootX * 0.45;
     camera.position.y = baseCam.y + Math.sin(t * 0.09 + 2) * drift * 0.5;
