@@ -5,8 +5,12 @@ import { GESTURES } from '../../studio/perf';
 
 const fmtDur = (s) => `${s.toFixed(1)}s`;
 
-/* which take drives the body — every entry is honest about its source */
-export const SourcePanel = ({ perfs, activeId, onPick, onForge, memoryOnly }) => (
+const fmtBytes = (b) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`);
+
+/* which take drives the body — every entry is honest about its source.
+   Each performance exports to disk as a `.veyl` file; the IMPORT input
+   parses one back into the Vault under a fresh id. */
+export const SourcePanel = ({ perfs, activeId, onPick, onForge, memoryOnly, onExport, onImport, importError, usage, persisted }) => (
   <div className="cw-panel" data-testid="omega-source-panel">
     <h2>◈ Performance Source</h2>
     <div className="grid grid-cols-1 gap-1.5 max-h-56 overflow-y-auto pr-1">
@@ -17,6 +21,11 @@ export const SourcePanel = ({ perfs, activeId, onPick, onForge, memoryOnly }) =>
           <small style={{ color: p.source === 'performed' ? 'var(--cw-red)' : p.source === 'bank' ? 'var(--cw-amber)' : 'var(--cw-amber)' }}>
             {(p.source || 'synthetic').toUpperCase()} · {fmtDur(p.duration)}
           </small>
+          <button className="bg-transparent border-0 cursor-pointer mono"
+            style={{ color: 'var(--cw-green)', fontSize: 9 }}
+            aria-label={`Export ${p.name} as .veyl`}
+            data-testid={`omega-perf-export-${p.id}`}
+            onClick={(e) => { e.stopPropagation(); onExport(p); }}>▼ .VEYL</button>
         </div>
       ))}
       {perfs.length === 0 && (
@@ -29,6 +38,22 @@ export const SourcePanel = ({ perfs, activeId, onPick, onForge, memoryOnly }) =>
       data-testid="omega-forge-btn" onClick={onForge}>
       <span>⚗ FORGE SYNTHETIC TAKE</span><small>FK</small>
     </button>
+    <label className="cw-chip w-full mt-1.5 cursor-pointer" style={{ color: 'var(--cw-cyan)' }}
+      data-testid="omega-import-label">
+      <span>⇪ IMPORT .VEYL FILE</span><small>VAULT</small>
+      <input type="file" accept=".veyl,application/octet-stream" className="sr-only"
+        data-testid="omega-import-input"
+        onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) onImport(f); e.target.value = ''; }} />
+    </label>
+    {importError && (
+      <p className="mono text-[9px] mt-1" style={{ color: 'var(--cw-red)' }} data-testid="omega-import-error">
+        ⚠ {String(importError).toUpperCase()}
+      </p>
+    )}
+    <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-muted)' }} data-testid="omega-vault-usage">
+      VAULT: {usage && usage.quota ? `${fmtBytes(usage.usage)} OF ${fmtBytes(usage.quota)}` : 'USAGE UNKNOWN'}
+      {' · '}{persisted ? 'PERSISTENT — SURVIVES EVICTION' : 'BEST-EFFORT STORAGE'}
+    </p>
     {memoryOnly && (
       <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-amber)' }}>
         VAULT: MEMORY ONLY — takes will not survive reload

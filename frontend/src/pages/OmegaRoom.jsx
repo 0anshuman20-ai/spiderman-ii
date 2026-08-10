@@ -15,7 +15,7 @@ import { synthesizePerformance } from '../studio/perf';
 import { buildBank, assemble, trainContinuation } from '../studio/motion';
 import { makeEpisode, makeShot, checkContinuity, episodeDuration, downloadEpisode } from '../studio/shotlist';
 import { conductEpisode, readRenderLedger, clearRenderLedger } from '../studio/omega';
-import { vault, PERFORMANCES, EPISODES } from '../studio/vault';
+import { vault, PERFORMANCES, EPISODES, exportPerf, importPerf } from '../studio/vault';
 import { Recorder } from '../studio/recorder';
 import { captureStill } from '../studio/novelview';
 import { SourcePanel, RigPanel, OmegaWorldPanel, StuntPanel, MotionBankPanel, EpisodePanel, CinemaPanel } from '../components/studio/OmegaPanels';
