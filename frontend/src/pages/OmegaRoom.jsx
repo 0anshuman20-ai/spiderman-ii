@@ -12,8 +12,9 @@ import { Link } from 'react-router-dom';
 import { createOmegaStage, RIG_BY_KEY } from '../studio/omegaStage';
 import { createStunt, STUNT_PRESETS } from '../studio/stunt';
 import { synthesizePerformance } from '../studio/perf';
-import { buildBank, assemble } from '../studio/motion';
-import { makeEpisode, makeShot, checkContinuity, episodeDuration, playEpisode, downloadEpisode } from '../studio/shotlist';
+import { buildBank, assemble, trainContinuation } from '../studio/motion';
+import { makeEpisode, makeShot, checkContinuity, episodeDuration, downloadEpisode } from '../studio/shotlist';
+import { conductEpisode, readRenderLedger, clearRenderLedger } from '../studio/omega';
 import { vault, PERFORMANCES, EPISODES } from '../studio/vault';
 import { Recorder } from '../studio/recorder';
 import { captureStill } from '../studio/novelview';
@@ -58,12 +59,21 @@ export default function OmegaRoom() {
   const [bankBeats, setBankBeats] = useState([]);
   const [banking, setBanking] = useState(false);
   const bank = useMemo(() => (perfs.length ? buildBank(perfs) : null), [perfs]);
+  /* Ω.2b — the gated continuation model, refit whenever the bank changes.
+     Null below the corpus gate; assemble degrades to the linear blend. */
+  const continuation = useMemo(() => (bank ? trainContinuation(bank) : null), [bank]);
 
   /* Ω.5 — the episode */
   const [episode, setEpisode] = useState(null);
   const [selectedShot, setSelectedShot] = useState(null);
   const [epRendering, setEpRendering] = useState(false);
   const [epShotIdx, setEpShotIdx] = useState(0);
+  const [epPhase, setEpPhase] = useState('shot');
+  /* Ω.0 — the render ledger: a truthful record of an interrupted render */
+  const [renderDebt, setRenderDebt] = useState(() => {
+    const l = readRenderLedger();
+    return l && l.state !== 'complete' ? l : null;
+  });
   const ledger = useMemo(() => (episode ? checkContinuity(episode.shots) : []), [episode]);
   const epDur = useMemo(() => (episode ? episodeDuration(episode.shots) : 0), [episode]);
 
@@ -211,7 +221,7 @@ export default function OmegaRoom() {
     const perf = assemble(bank, {
       beats: bankBeats,
       name: `bank-shot-${String(seed - 100).padStart(2, '0')}`,
-      world, seed,
+      world, seed, continuation,
     });
     setBanking(false);
     if (!perf) return;
@@ -219,7 +229,7 @@ export default function OmegaRoom() {
     setPerfs(await vault.all(PERFORMANCES));
     setActiveId(perf.id);
     setBankBeats([]);
-  }, [bank, bankBeats, banking, world]);
+  }, [bank, bankBeats, banking, world, continuation]);
 
   /* Ω.5 — episode editing. Every mutation persists and re-runs the ledger. */
   const saveEpisode = useCallback(async (next) => {
@@ -271,9 +281,10 @@ export default function OmegaRoom() {
     saveEpisode({ ...episode, shots: next });
   }, [episode, saveEpisode]);
 
-  /* Ω.5 — the episode render: one continuous recording across every shot and
-     every source. The recorder keeps rolling over shot boundaries; the export
-     IS the episode, end to end, in one file. */
+  /* Ω.5 + Ω.0 — the episode render, run by the OMEGA CONDUCTOR: a planned
+     shot queue rendered as one continuous recording, with breathers paused
+     into the file after hot shots and a truthful render ledger throughout.
+     The export IS the episode, end to end, in one file. */
   const renderEpisode = useCallback(async () => {
     const stage = stageRef.current;
     const rec = recorderRef.current;
@@ -286,17 +297,18 @@ export default function OmegaRoom() {
     }
     setEpRendering(true);
     setEpShotIdx(0);
+    setEpPhase('shot');
+    setRenderDebt(null);
     setDuration(episodeDuration(episode.shots));
     setTime(0);
     stage.pause();
-    rec.start(stage, null);
     setPlaying(true);
-    epRunRef.current = playEpisode(stage, episode, perfById, {
+    epRunRef.current = conductEpisode(stage, rec, episode, perfById, {
       onShot: (idx) => setEpShotIdx(idx),
       onTick: (total) => setTime(total),
-      onEnd: async () => {
+      onPhase: (phase) => setEpPhase(phase),
+      onEnd: (take) => {
         setPlaying(false);
-        const take = await rec.stop();
         setEpRendering(false);
         epRunRef.current = null;
         if (take) {
@@ -309,6 +321,8 @@ export default function OmegaRoom() {
       },
     });
   }, [episode, epRendering, loadShot]);
+
+  const dismissDebt = useCallback(() => { clearRenderLedger(); setRenderDebt(null); }, []);
 
   /* offline render of the single framed shot — unchanged path */
   const exportShot = useCallback(() => {
@@ -358,7 +372,7 @@ export default function OmegaRoom() {
           <SourcePanel perfs={perfs} activeId={activeId} memoryOnly={vault.isMemoryOnly}
             onPick={(id) => setActiveId(id)} onForge={forge} />
           <MotionBankPanel bank={bank} beats={bankBeats} onBeats={setBankBeats}
-            onAssemble={assembleFromBank} busy={banking} />
+            onAssemble={assembleFromBank} busy={banking} continuation={continuation} />
           <OmegaWorldPanel world={world} onWorld={setWorld} />
         </div>
 
@@ -398,7 +412,8 @@ export default function OmegaRoom() {
             selected={selectedShot} canAdd={ready && !epRendering}
             onAdd={addShot} onSelect={selectShot} onMove={moveShot} onRemove={removeShot}
             onRender={renderEpisode} onDownload={() => episode && downloadEpisode(episode)}
-            rendering={epRendering} renderIdx={epShotIdx} />
+            rendering={epRendering} renderIdx={epShotIdx} phase={epPhase}
+            debt={renderDebt} onDismissDebt={dismissDebt} />
           <div className="cw-panel" data-testid="omega-export-panel">
             <h2>⇩ Render Shot</h2>
             <button className="cw-rec w-full" disabled={!ready || exporting || playing || epRendering}
