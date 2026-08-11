@@ -50,8 +50,8 @@ export default function Studio() {
   const [elapsed, setElapsed] = useState(0);
   const [world, setWorldState] = useState('nebula-drift');
   const [expr, setExprState] = useState('calm');
-  const [preset, setPresetState] = useState('veyl-core');
-  const [voiceParams, setVoiceParams] = useState({ pitch: -3, sub: 0.3, reverb: 0.18, static: 0.015, drive: 0.2 });
+  const [preset, setPresetState] = useState('earbud-pro');
+  const [voiceParams, setVoiceParams] = useState({ pitch: 0, sub: 0.22, reverb: 0.05, static: 0, drive: 0 });
   const [monitor, setMonitor] = useState(false);
   const [level, setLevel] = useState(0);
   const [micOk, setMicOk] = useState(false);

@@ -8,6 +8,10 @@ export const VOICE_PRESETS = {
   // definitive creator voice: barely-shifted, zero grit, whisper of room + sub weight —
   // the polished "voiceover booth" sound for narration takes that must carry a channel
   'creator-broadcast': { pitch: -1, sub: 0.14, reverb: 0.07, static: 0, drive: 0.05, label: 'CREATOR BROADCAST' },
+  // tuned for recording on EARBUDS: no pitch shift (keeps you natural and intelligible),
+  // sub layer adds the chest weight an earbud capsule cannot pick up, a touch of room
+  // so it doesn't sound dry/in-your-head, and zero grit so nothing masks the words.
+  'earbud-pro': { pitch: 0, sub: 0.22, reverb: 0.05, static: 0, drive: 0, label: 'EARBUD PRO' },
   clean: { pitch: 0, sub: 0, reverb: 0, static: 0, drive: 0, label: 'CLEAN MIC' },
 };
 
@@ -35,8 +39,8 @@ function makeImpulse(ctx, seconds = 3.4, decay = 2.6) {
 export class VoiceEngine {
   constructor({ onLevel, onStatus } = {}) {
     this.onLevel = onLevel; this.onStatus = onStatus;
-    this.ready = false; this.params = { ...VOICE_PRESETS['veyl-core'] };
-    this.preset = 'veyl-core';
+    this.ready = false; this.params = { ...VOICE_PRESETS['earbud-pro'] };
+    this.preset = 'earbud-pro';
     this.level = { rms: 0, gateOpen: false };
   }
 
@@ -53,9 +57,30 @@ export class VoiceEngine {
       this.micStream = stream;
       const src = ctx.createMediaStreamSource(stream);
 
-      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 85; hp.Q.value = 0.7;
+      /* ---- earbud repair stage (runs before anything else) ----
+         Earbud/headset mics are small, far from the mouth and heavily band-limited:
+         thin low end, boxy 200-500Hz, harsh 3-6kHz, no air. This stage makes an
+         earbud take sit in the same tonal ballpark as a real broadcast mic. */
+      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 80; hp.Q.value = 0.7;
+      // chest/body weight the earbud capsule never captures
+      // chest/body weight the earbud capsule never captures. Kept moderate because
+      // the core layer adds another +2 dB low shelf and the sub layer adds weight
+      // on top — stacking all three would turn boomy and bury consonants.
+      const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 180; body.gain.value = 3.5;
+      // remove the boxy "talking into a cup" honk typical of headset mics
+      const box = ctx.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 300; box.Q.value = 1.1; box.gain.value = -3.5;
+      // tame the brittle earbud harshness band
+      const harsh = ctx.createBiquadFilter(); harsh.type = 'peaking'; harsh.frequency.value = 4200; harsh.Q.value = 1.4; harsh.gain.value = -3;
+      /* Input trim runs AFTER the gate, never before it. The gate's detector reads
+         whatever level it is fed, so boosting first would drag the effective
+         threshold down with it and open the gate on room tone, breaths and cable
+         rustle. Gate at the natural level, then make up the gain. */
+      const inTrim = ctx.createGain(); inTrim.gain.value = 2.2; // +6.8 dB
+
       this.gateNode = new AudioWorkletNode(ctx, 'transmission');
-      this.gateNode.parameters.get('gateThreshold').value = -48;
+      // low enough that soft sentence ends survive, high enough to reject the
+      // noise floor of a headset mic in a normal room
+      this.gateNode.parameters.get('gateThreshold').value = -52;
       this.gateNode.port.onmessage = (e) => {
         if (e.data && e.data.type === 'level') {
           this.level = e.data;
@@ -91,26 +116,45 @@ export class VoiceEngine {
       this.wet = ctx.createGain(); this.wet.gain.value = 0.18;
       this.dry = ctx.createGain(); this.dry.gain.value = 1;
 
+      /* two-stage dynamics = loud AND clear.
+         1) leveller: gentle, slow — evens out how far you are from the earbud mic
+         2) comp: faster, firmer — puts a consistent broadcast density on the voice */
+      const leveller = ctx.createDynamicsCompressor();
+      leveller.threshold.value = -30; leveller.knee.value = 12; leveller.ratio.value = 2;
+      leveller.attack.value = 0.02; leveller.release.value = 0.35;
+
       const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -18; comp.knee.value = 6; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.18;
-      // makeup gain: recover the level the compressor takes away so takes land at
-      // competitive loudness for platform audio; the limiter still owns the ceiling.
-      const makeup = ctx.createGain(); makeup.gain.value = 1.35; // +2.6 dB
+      comp.threshold.value = -24; comp.knee.value = 8; comp.ratio.value = 3.5; comp.attack.value = 0.004; comp.release.value = 0.14;
+
+      // de-esser: compressing upward pushes sibilance forward, so shave 6-9kHz back
+      // AFTER compression — keeps "s"/"t" crisp instead of spitty at high volume
+      const deEss = ctx.createBiquadFilter(); deEss.type = 'peaking'; deEss.frequency.value = 7200; deEss.Q.value = 2.0; deEss.gain.value = -3.5;
+      // clarity/intelligibility lift: the band that carries consonant definition
+      const clarity = ctx.createBiquadFilter(); clarity.type = 'peaking'; clarity.frequency.value = 1800; clarity.Q.value = 0.9; clarity.gain.value = 2;
+
+      // makeup gain: recover the level the compressors take away so takes land at
+      // competitive platform loudness; the limiter still owns the ceiling.
+      const makeup = ctx.createGain(); makeup.gain.value = 2.6; // +8.3 dB
       const limiter = ctx.createDynamicsCompressor();
-      limiter.threshold.value = -2; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.06;
+      // -1.2 dB ceiling, instant attack: maximum perceived loudness, no clipping
+      limiter.threshold.value = -1.2; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.05;
       this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
       this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 1024;
       this.dest = ctx.createMediaStreamDestination();
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
-      src.connect(hp); hp.connect(this.gateNode);
-      this.gateNode.connect(this.corePitch); this.corePitch.connect(presence); presence.connect(weight); weight.connect(demud); demud.connect(air); air.connect(this.coreGain); this.coreGain.connect(sum);
-      this.gateNode.connect(this.subPitch); this.subPitch.connect(subLp); subLp.connect(this.subGain); this.subGain.connect(sum);
-      this.gateNode.connect(bHp); bHp.connect(bLp); bLp.connect(this.commsGain); this.commsGain.connect(sum);
+      // mic -> earbud repair EQ -> gate (natural level) -> trim -> voice layers
+      src.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh);
+      harsh.connect(this.gateNode); this.gateNode.connect(inTrim);
+      inTrim.connect(this.corePitch); this.corePitch.connect(presence); presence.connect(weight); weight.connect(demud); demud.connect(air); air.connect(this.coreGain); this.coreGain.connect(sum);
+      inTrim.connect(this.subPitch); this.subPitch.connect(subLp); subLp.connect(this.subGain); this.subGain.connect(sum);
+      inTrim.connect(bHp); bHp.connect(bLp); bLp.connect(this.commsGain); this.commsGain.connect(sum);
       sum.connect(this.fxNode);
-      this.fxNode.connect(this.dry); this.dry.connect(comp);
-      this.fxNode.connect(this.convolver); this.convolver.connect(this.wet); this.wet.connect(comp);
-      comp.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
+      this.fxNode.connect(this.dry); this.dry.connect(leveller);
+      this.fxNode.connect(this.convolver); this.convolver.connect(this.wet); this.wet.connect(leveller);
+      // leveller -> comp -> de-ess -> clarity -> makeup -> limiter
+      leveller.connect(comp); comp.connect(deEss); deEss.connect(clarity);
+      clarity.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
       this.outGain.connect(this.analyser); this.outGain.connect(this.dest); this.outGain.connect(this.monitorGain);
       this.monitorGain.connect(ctx.destination);
 
