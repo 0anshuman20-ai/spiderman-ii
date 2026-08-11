@@ -19,9 +19,9 @@ export class Recorder {
 
   get elapsed() { return this.recording ? (performance.now() - this.startTs) / 1000 : 0; }
 
-  start(stage, voiceStream) {
+  start(stage, voiceStream, { fps = 60, videoBitsPerSecond = 20_000_000 } = {}) {
     if (this.recording) return false;
-    const canvasStream = stage.captureStream(60);
+    const canvasStream = stage.captureStream(fps);
     const tracks = [...canvasStream.getVideoTracks()];
     if (voiceStream) tracks.push(...voiceStream.getAudioTracks());
     const stream = new MediaStream(tracks);
@@ -31,8 +31,25 @@ export class Recorder {
     this.chunks = [];
     // 20 Mbps video: real headroom for 1080x1920@60 fine grain + starfields
     // (bitrate-starved noise/particles is the #1 way canvas recordings fall apart).
-    // 256 kbps audio: transparent for both Opus and AAC.
-    this.rec = new MediaRecorder(stream, { mimeType: pick.mime, videoBitsPerSecond: 20_000_000, audioBitsPerSecond: 256_000 });
+    // On weaker machines the conductor hands us lower fps/bitrate so the realtime
+    // encoder can't drown the main thread. 256 kbps audio: transparent for Opus and AAC.
+    // Bitrate ladder: full ask -> half -> browser default. A MediaRecorder that the
+    // engine refuses to build should degrade, never throw the take away.
+    const attempts = [
+      { mimeType: pick.mime, videoBitsPerSecond, audioBitsPerSecond: 256_000 },
+      { mimeType: pick.mime, videoBitsPerSecond: Math.round(videoBitsPerSecond / 2), audioBitsPerSecond: 192_000 },
+      { mimeType: pick.mime },
+    ];
+    this.rec = null;
+    for (const opts of attempts) {
+      try { this.rec = new MediaRecorder(stream, opts); break; } catch (_) { /* next rung */ }
+    }
+    if (!this.rec) {
+      try { this.rec = new MediaRecorder(stream); } catch (err) {
+        console.error('[recorder] MediaRecorder unavailable', err);
+        return false;
+      }
+    }
     this.rec.ondataavailable = (e) => { if (e.data.size) this.chunks.push(e.data); };
     this.rec.onerror = (e) => { console.error('[recorder] MediaRecorder error', e.error || e); };
     this.rec.start(500);

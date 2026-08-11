@@ -240,7 +240,18 @@ export default function Studio() {
     const voice = voiceRef.current;
     const music = musicRef.current;
     const audioStream = voice && voice.ready ? voice.stream : (music && music.stream) || null;
-    rec.start(stage, audioStream);
+    // capture settings follow the machine: a rig that renders at 60 gets the full
+    // 60fps/20Mbps ask; one struggling to hit 30 gets a rate the realtime encoder
+    // can actually keep up with instead of drowning the main thread mid-take
+    const measured = rigRef.current && rigRef.current.tracking ? rigRef.current.tracking.fps || 60 : 60;
+    const capFps = measured >= 48 ? 60 : measured >= 26 ? 30 : 24;
+    const capBits = capFps === 60 ? 20_000_000 : capFps === 30 ? 10_000_000 : 6_000_000;
+    const ok = rec.start(stage, audioStream, { fps: capFps, videoBitsPerSecond: capBits });
+    if (!ok) {
+      perfRecRef.current.stop();
+      stage.setHud('COSMIC WEAVER ── STANDBY');
+      return;
+    }
     setRecording(true);
   }, []);
 
