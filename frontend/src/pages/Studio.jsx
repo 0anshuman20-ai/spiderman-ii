@@ -240,7 +240,14 @@ export default function Studio() {
     const voice = voiceRef.current;
     const music = musicRef.current;
     const audioStream = voice && voice.ready ? voice.stream : (music && music.stream) || null;
-    rec.start(stage, audioStream);
+    const rolled = rec.start(stage, audioStream);
+    if (!rolled) {
+      // encoder refused at every tier — undo the roll cleanly instead of faking it
+      perfRecRef.current.stop();
+      stage.setHud('COSMIC WEAVER ── RECORDER OFFLINE');
+      stage.setCaption(null);
+      return;
+    }
     setRecording(true);
   }, []);
 

@@ -83,7 +83,13 @@ export function conductEpisode(stage, recorder, episode, perfById, { onShot, onT
     state: 'rendering', startedAt: new Date().toISOString(),
   };
   writeLedger(ledger);
-  recorder.start(stage, null);
+  if (!recorder.start(stage, null)) {
+    // encoder refused at every tier — an honest failure, not a phantom render
+    ledger.state = 'failed';
+    writeLedger(ledger);
+    if (onEnd) onEnd(null);
+    return { plan, stop() {} };
+  }
 
   const finishComplete = async () => {
     const take = await recorder.stop();

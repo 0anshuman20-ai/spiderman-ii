@@ -260,12 +260,16 @@ export function createOmegaStage(canvas) {
     if (onTick) onTick(t, dur);
   }
 
+  let fpsAcc = 0, fpsN = 0, fps = 0;
+
   function loop() {
     if (!playing) return;
     const now = performance.now() / 1000;
     const dt = Math.min(0.1, now - lastWall);
     lastWall = now;
     clock += dt;
+    fpsAcc += dt; fpsN++;
+    if (fpsAcc > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
     const dur = Math.max(0.033, shot.out - shot.in);
     if (clock >= dur) {
       renderAt(dur);
@@ -342,7 +346,9 @@ export function createOmegaStage(canvas) {
       raf = requestAnimationFrame(loop);
     },
     pause() { playing = false; cancelAnimationFrame(raf); },
-    captureStream(fps = 60) { return canvas.captureStream(fps); },
+    /* measured playback fps — the recorder reads this to pick its capture tier */
+    get fps() { return fps; },
+    captureStream(fpsWanted = 60) { return canvas.captureStream(fpsWanted); },
     dispose() {
       playing = false; cancelAnimationFrame(raf);
       if (stillView) { stillScene.remove(stillView.group); stillView.dispose(); stillView = null; }
