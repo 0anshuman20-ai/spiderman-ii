@@ -63,18 +63,24 @@ export class VoiceEngine {
          earbud take sit in the same tonal ballpark as a real broadcast mic. */
       const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 80; hp.Q.value = 0.7;
       // chest/body weight the earbud capsule never captures
-      const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 180; body.gain.value = 4.5;
+      // chest/body weight the earbud capsule never captures. Kept moderate because
+      // the core layer adds another +2 dB low shelf and the sub layer adds weight
+      // on top — stacking all three would turn boomy and bury consonants.
+      const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 180; body.gain.value = 3.5;
       // remove the boxy "talking into a cup" honk typical of headset mics
       const box = ctx.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 300; box.Q.value = 1.1; box.gain.value = -3.5;
       // tame the brittle earbud harshness band
       const harsh = ctx.createBiquadFilter(); harsh.type = 'peaking'; harsh.frequency.value = 4200; harsh.Q.value = 1.4; harsh.gain.value = -3;
-      // input trim: earbuds record quiet, so lift BEFORE the gate so soft speech
-      // comfortably clears the threshold instead of being chopped off
+      /* Input trim runs AFTER the gate, never before it. The gate's detector reads
+         whatever level it is fed, so boosting first would drag the effective
+         threshold down with it and open the gate on room tone, breaths and cable
+         rustle. Gate at the natural level, then make up the gain. */
       const inTrim = ctx.createGain(); inTrim.gain.value = 2.2; // +6.8 dB
 
       this.gateNode = new AudioWorkletNode(ctx, 'transmission');
-      // lower threshold + boosted input: quiet sentence starts/ends survive intact
-      this.gateNode.parameters.get('gateThreshold').value = -60;
+      // low enough that soft sentence ends survive, high enough to reject the
+      // noise floor of a headset mic in a normal room
+      this.gateNode.parameters.get('gateThreshold').value = -52;
       this.gateNode.port.onmessage = (e) => {
         if (e.data && e.data.type === 'level') {
           this.level = e.data;
@@ -137,12 +143,12 @@ export class VoiceEngine {
       this.dest = ctx.createMediaStreamDestination();
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
-      // mic -> earbud repair EQ -> input trim -> gate
+      // mic -> earbud repair EQ -> gate (natural level) -> trim -> voice layers
       src.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh);
-      harsh.connect(inTrim); inTrim.connect(this.gateNode);
-      this.gateNode.connect(this.corePitch); this.corePitch.connect(presence); presence.connect(weight); weight.connect(demud); demud.connect(air); air.connect(this.coreGain); this.coreGain.connect(sum);
-      this.gateNode.connect(this.subPitch); this.subPitch.connect(subLp); subLp.connect(this.subGain); this.subGain.connect(sum);
-      this.gateNode.connect(bHp); bHp.connect(bLp); bLp.connect(this.commsGain); this.commsGain.connect(sum);
+      harsh.connect(this.gateNode); this.gateNode.connect(inTrim);
+      inTrim.connect(this.corePitch); this.corePitch.connect(presence); presence.connect(weight); weight.connect(demud); demud.connect(air); air.connect(this.coreGain); this.coreGain.connect(sum);
+      inTrim.connect(this.subPitch); this.subPitch.connect(subLp); subLp.connect(this.subGain); this.subGain.connect(sum);
+      inTrim.connect(bHp); bHp.connect(bLp); bLp.connect(this.commsGain); this.commsGain.connect(sum);
       sum.connect(this.fxNode);
       this.fxNode.connect(this.dry); this.dry.connect(leveller);
       this.fxNode.connect(this.convolver); this.convolver.connect(this.wet); this.wet.connect(leveller);

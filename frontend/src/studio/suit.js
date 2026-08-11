@@ -155,8 +155,9 @@ const fragmentShader = /* glsl */ `
       float sp = max(uFaceR, 0.02) * 0.40;
       wd = webDist(q, uFaceC, uFaceRoll, sp, 16.0);
       webSpacing = sp;
-      // fade webbing out right at the mask boundary
-      float edge = smoothstep(1.85, 1.55, dHead / max(uFaceR, 1e-4));
+      // fade webbing out right at the mask boundary (must match the 2.02 cutoff
+      // used above, or a bare web-free ring appears around the edge of the mask)
+      float edge = smoothstep(2.02, 1.72, dHead / max(uFaceR, 1e-4));
       wd = mix(99.0, wd, edge);
     } else if (bid == 5.0) {
       // glove back/palm: webbing radiates from the wrist exactly like the film suits
@@ -279,31 +280,44 @@ const fragmentShader = /* glsl */ `
        logo edge cannot punch through the dye */
     float fine = clamp(sLuma - wLuma, -0.5, 0.5);
     fine = fine / (1.0 + 6.0 * abs(fine));                         // soft-knee compressor
-    /* a real mask HIDES the face completely. Inside the head region fine detail is
-       essentially gone (0.03) so eyebrows, eye sockets, nostrils, lips and stubble
-       cannot read. On the body it is cut hard too (0.14) so a shirt collar, print
-       or logo edge stays invisible while muscle/fold form still survives. */
-    float fineAmt = isHead ? 0.03 : 0.14;
-    sLuma = wLuma + fine * fineAmt;
+    /* Body detail is cut hard (0.14) so a shirt collar, print or logo edge stays
+       invisible while muscle/fold form still survives. (The head ignores this
+       entirely — see the synthetic mask shading below.) */
+    sLuma = wLuma + fine * 0.14;
 
     /* costume normalization: compress the camera's tonal range so nothing of
        your real clothing contrast survives the recolor. The head is flattened
        hardest and re-centered, so a pale face and dark hair collapse to the
        SAME even fabric tone. */
     sLuma = clamp(sLuma, 0.0, 1.0);
-    if (isHead) {
-      sLuma = 0.52 + (sLuma - 0.52) * 0.30;                        // near-flat mask fabric
-    } else {
-      sLuma = 0.5 + (sLuma - 0.5) * 0.42;                          // flatten real-clothing contrast
-    }
+    sLuma = 0.5 + (sLuma - 0.5) * 0.42;                            // flatten real-clothing contrast
     sLuma = pow(sLuma, 0.92);                                      // lift the compressed mids
     vec2 grad = vec2(lR - lL, lU - lD) * 0.5;                      // pseudo surface normal
     /* widen the pseudo-normal so broad muscle form — never a logo edge, hairline
-       or eye socket — drives the relight. On the head we use ONLY the wide-ring
-       gradient, otherwise the specular would trace the outline of your features. */
-    grad = mix(grad, vec2(w1 - w2, w3 - w4) * 0.5, isHead ? 1.0 : 0.82);
+       or eye socket — drives the relight. */
+    grad = mix(grad, vec2(w1 - w2, w3 - w4) * 0.5, 0.82);
     float form = clamp(dot(normalize(grad + 1e-5), normalize(KEY_DIR)) * length(grad) * 30.0, -0.35, 0.5);
-    if (isHead) form *= 0.45;                                      // soft, featureless mask shading
+
+    /* ================= MASK SHADING IS SYNTHETIC =================
+       Definitive concealment: on the head we throw the video signal away
+       ENTIRELY and shade from head GEOMETRY instead. A real mask's shading is
+       a function of skull shape and where the light is — it carries no
+       information about the face underneath. Because no facial pixel reaches
+       this path, eyebrows, eye sockets, nose, lips, stubble, skin tone and
+       hair are mathematically incapable of showing through. Only the overall
+       room brightness is sampled, so the mask still responds to your lighting. */
+    if (isHead) {
+      vec2 nx = hd2 / max(uFaceR * 2.02, 1e-4);                    // -1..1 across the capsule
+      float r2 = clamp(dot(nx, nx), 0.0, 1.0);
+      vec3 hn = vec3(nx, sqrt(1.0 - r2));                          // dome normal over the head
+      vec3 L = normalize(vec3(normalize(KEY_DIR), 0.9));
+      float lam = clamp(dot(hn, L), 0.0, 1.0);                     // smooth lambert falloff
+      float wrap = clamp(dot(hn, L) * 0.5 + 0.5, 0.0, 1.0);        // soft wrap keeps edges alive
+      // ambient: room light level only (a single very broad average, no detail)
+      float amb = clamp((wLuma - 0.5) * 0.30, -0.18, 0.18);
+      sLuma = clamp(0.30 + lam * 0.40 + wrap * 0.16 + amb, 0.0, 1.0);
+      form = clamp(lam * 0.55 - 0.10, -0.35, 0.5);                 // specular from geometry
+    }
 
     // filmic fabric response: dyed-dark shadows, chroma-pushed mids, sheen highs
     float shade = 0.16 + 1.9 * pow(sLuma, 0.9);
@@ -512,6 +526,8 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
 
   const exprState = { lens: 1, asym: 0, glow: 1 };
   let suitOn = 0;
+  let graceT = 0;          // hold timer that survives tracking dropouts
+  let everLocked = false;  // once true, the suit never reveals raw video again
 
   function updateSegments() {
     const p = tracker.points.pose;
@@ -714,16 +730,37 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     videoTex.needsUpdate = true;
     uniforms.uTime.value = t;
 
-    // suit fades in once tracking locks — no hard pop
+    /* suit fades in once tracking locks — no hard pop.
+       IDENTITY SAFETY: tracking flickers constantly (head turns, motion blur, a
+       hand crossing the face). A symmetric fade would race back toward raw video
+       and expose the real face within a few frames, so the release is deliberately
+       asymmetric: fast attack, and after the first lock the mix NEVER falls below
+       a high floor. A briefly stale suit is always better than a visible face. */
     const locked = tracker.points.face.ok > 0.4 || tracker.points.pose.ok > 0.4;
-    suitOn += ((locked ? 1 : 0) - suitOn) * k;
+    if (locked) graceT = 1.4;                       // seconds of hold after a dropout
+    else graceT = Math.max(0, graceT - dt);
+    const mixTarget = (locked || graceT > 0) ? 1 : 0.9;
+    const mixRate = mixTarget > suitOn ? k : 1 - Math.exp(-dt * 0.7);  // slow release
+    suitOn += (mixTarget - suitOn) * mixRate;
+    if (everLocked) suitOn = Math.max(suitOn, 0.9);  // hard floor: never reveal video
+    if (locked) everLocked = true;
     uniforms.uSuitMix.value = suitOn;
 
+    /* Only trust fresh landmarks. When the face detector blinks out we KEEP the
+       last good position, radius and roll, and keep reporting the region as valid
+       for the grace window — otherwise the mask would vanish mid-sentence and
+       uncover the real face for exactly as long as the dropout lasts. */
     const f = tracker.points.face;
-    uniforms.uFaceOk.value = f.ok;
-    uniforms.uFaceC.value.set(f.center.x, f.center.y * ASPECT);
-    uniforms.uFaceR.value = Math.max(0.04, f.eyeDist * 1.55);
-    uniforms.uFaceRoll.value = -f.angle;
+    if (f.ok > 0.4) {
+      uniforms.uFaceC.value.set(f.center.x, f.center.y * ASPECT);
+      uniforms.uFaceR.value = Math.max(0.04, f.eyeDist * 1.55);
+      uniforms.uFaceRoll.value = -f.angle;
+      uniforms.uFaceOk.value = f.ok;
+    } else if (graceT > 0 && everLocked) {
+      uniforms.uFaceOk.value = 1;                   // hold the mask in its last pose
+    } else {
+      uniforms.uFaceOk.value = f.ok;
+    }
     updateSegments();
     updateHands();
 
