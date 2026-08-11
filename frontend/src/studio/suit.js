@@ -126,15 +126,23 @@ const fragmentShader = /* glsl */ `
       if (uSegCol[i] > 4.5) d *= 0.72;
       if (d < best) { best = d; bid = uSegCol[i]; bt = tt; bA = a; bR = uSegR[i]; }
     }
-    /* head region: rolled ellipse that hugs the real face — taller than wide,
-       so the mask reads as a mask, not a red disc */
+    /* head region: rolled ellipse that hugs the real skull — taller than wide,
+       so the mask reads as a mask, not a red disc.
+       IMPORTANT: the mask must swallow HAIR too. Landmarks only describe the face,
+       so the capsule is grown upward (hair volume above the brow) and the overall
+       radius is widened — any hair left outside gets recolored as background-side
+       skin and instantly breaks the illusion. */
     vec2 hd2 = q - uFaceC;
     float hcs = cos(uFaceRoll), hsn = sin(uFaceRoll);
     hd2 = vec2(hd2.x * hcs - hd2.y * hsn, hd2.x * hsn + hd2.y * hcs);
-    hd2.y /= 1.34;                                  // skull is ~1.34x taller than wide
-    hd2.y += uFaceR * 0.10;                         // bias downward to cover the jaw
+    hd2.y /= 1.46;                                  // taller capsule: skull + hair mass
+    hd2.y += uFaceR * 0.16;                         // bias downward to cover the jaw
+    // asymmetric growth: extend well above the brow line so the hairline, fringe
+    // and crown are all inside the mask region
+    if (hd2.y < 0.0) hd2.y *= 0.70;                 // upper half reaches ~43% further
+    hd2.x /= 1.06;                                  // slight width for ears/sideburns
     float dHead = length(hd2);
-    bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 1.85;
+    bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 2.02;
     if (isHead) bid = 3.0;
     if (uPoseOk < 0.3 && !isHead && bid < 4.5) { bid = 0.0; best = 0.5; }
 
@@ -244,37 +252,58 @@ const fragmentShader = /* glsl */ `
     float lD = dot(texture2D(uVideo, vUv - vec2(0.0, texel.y)).rgb, vec3(0.299, 0.587, 0.114));
     float sLuma = (luma * 2.0 + lR + lU + lL + lD) / 6.0;
 
-    /* WIDE luma ring (8-texel radius): captures only the broad light/shadow
-       form of your body — shirt prints, logos and skin tone are far below
-       this frequency and vanish entirely */
-    vec2 wtex = texel * 8.0;
+    /* WIDE luma ring: captures only the broad light/shadow form of your body.
+       On the HEAD the radius is much larger (22 texels): hair, eyebrows, eye
+       sockets and beard are all high-frequency relative to this, so averaging
+       over that span erases them and leaves only "a smooth head-shaped volume
+       lit from somewhere" — exactly what a fabric mask looks like. */
+    float wr = isHead ? 22.0 : 10.0;
+    vec2 wtex = texel * wr;
     float w1 = dot(texture2D(uVideo, vUv + vec2( wtex.x,  0.0)).rgb, vec3(0.299, 0.587, 0.114));
     float w2 = dot(texture2D(uVideo, vUv + vec2(-wtex.x,  0.0)).rgb, vec3(0.299, 0.587, 0.114));
     float w3 = dot(texture2D(uVideo, vUv + vec2( 0.0,  wtex.y)).rgb, vec3(0.299, 0.587, 0.114));
     float w4 = dot(texture2D(uVideo, vUv + vec2( 0.0, -wtex.y)).rgb, vec3(0.299, 0.587, 0.114));
     float w5 = dot(texture2D(uVideo, vUv + wtex * 0.7).rgb, vec3(0.299, 0.587, 0.114));
     float w6 = dot(texture2D(uVideo, vUv - wtex * 0.7).rgb, vec3(0.299, 0.587, 0.114));
-    float wLuma = (w1 + w2 + w3 + w4 + w5 + w6 + sLuma * 2.0) * 0.125;
+    // second, even wider ring on the head kills the dark-hair / light-skin step
+    float w7 = sLuma, w8 = sLuma;
+    if (isHead) {
+      vec2 w2tex = texel * 40.0;
+      w7 = dot(texture2D(uVideo, vUv + w2tex * vec2(0.9, 0.6)).rgb, vec3(0.299, 0.587, 0.114));
+      w8 = dot(texture2D(uVideo, vUv - w2tex * vec2(0.9, 0.6)).rgb, vec3(0.299, 0.587, 0.114));
+    }
+    float wLuma = (w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8) * 0.125;
 
     /* detail firewall: base tonality comes from the WIDE blur (pure body form);
        only a whisper of fine luma survives, and it is soft-clipped so a bold
        logo edge cannot punch through the dye */
     float fine = clamp(sLuma - wLuma, -0.5, 0.5);
     fine = fine / (1.0 + 6.0 * abs(fine));                         // soft-knee compressor
-    // a real mask HIDES the face: inside the head region, eyebrows, eye sockets
-    // and beard shadow are suppressed even harder — only jaw/cheek form remains
-    float fineAmt = isHead ? 0.16 : 0.35;
+    /* a real mask HIDES the face completely. Inside the head region fine detail is
+       essentially gone (0.03) so eyebrows, eye sockets, nostrils, lips and stubble
+       cannot read. On the body it is cut hard too (0.14) so a shirt collar, print
+       or logo edge stays invisible while muscle/fold form still survives. */
+    float fineAmt = isHead ? 0.03 : 0.14;
     sLuma = wLuma + fine * fineAmt;
 
     /* costume normalization: compress the camera's tonal range so nothing of
-       your real clothing contrast survives the recolor */
+       your real clothing contrast survives the recolor. The head is flattened
+       hardest and re-centered, so a pale face and dark hair collapse to the
+       SAME even fabric tone. */
     sLuma = clamp(sLuma, 0.0, 1.0);
-    sLuma = 0.5 + (sLuma - 0.5) * 0.55;                            // flatten real-clothing contrast
+    if (isHead) {
+      sLuma = 0.52 + (sLuma - 0.52) * 0.30;                        // near-flat mask fabric
+    } else {
+      sLuma = 0.5 + (sLuma - 0.5) * 0.42;                          // flatten real-clothing contrast
+    }
     sLuma = pow(sLuma, 0.92);                                      // lift the compressed mids
     vec2 grad = vec2(lR - lL, lU - lD) * 0.5;                      // pseudo surface normal
-    // widen the pseudo-normal too, so muscle form (not logo edges) drives the relight
-    grad = mix(grad, vec2(w1 - w2, w3 - w4) * 0.5, 0.6);
+    /* widen the pseudo-normal so broad muscle form — never a logo edge, hairline
+       or eye socket — drives the relight. On the head we use ONLY the wide-ring
+       gradient, otherwise the specular would trace the outline of your features. */
+    grad = mix(grad, vec2(w1 - w2, w3 - w4) * 0.5, isHead ? 1.0 : 0.82);
     float form = clamp(dot(normalize(grad + 1e-5), normalize(KEY_DIR)) * length(grad) * 30.0, -0.35, 0.5);
+    if (isHead) form *= 0.45;                                      // soft, featureless mask shading
 
     // filmic fabric response: dyed-dark shadows, chroma-pushed mids, sheen highs
     float shade = 0.16 + 1.9 * pow(sLuma, 0.9);
@@ -292,11 +321,13 @@ const fragmentShader = /* glsl */ `
     float sg = dot(suit, vec3(0.299, 0.587, 0.114));
     suit = mix(vec3(sg), suit, 1.18);
 
-    // webbing: near-black rubber, AO groove, lit top edge
+    // webbing: near-black rubber, AO groove, lit top edge.
+    // driven by the FILTERED luma, never raw video — raw luma would let dark hair
+    // and bright skin print themselves into the web lines.
     suit *= 1.0 - ao;
-    vec3 rubber = vec3(0.016, 0.014, 0.02) * (0.6 + luma * 1.4);
+    vec3 rubber = vec3(0.016, 0.014, 0.02) * (0.6 + sLuma * 1.4);
     suit = mix(suit, rubber, clamp(line, 0.0, 1.0) * 0.96);
-    suit += vec3(0.9, 0.85, 0.8) * emboss * (0.10 + luma * 0.30);  // embossed highlight
+    suit += vec3(0.9, 0.85, 0.8) * emboss * (0.10 + sLuma * 0.30); // embossed highlight
 
     vec3 col = mix(video.rgb, suit, uSuitMix);
 
@@ -304,7 +335,7 @@ const fragmentShader = /* glsl */ `
     float rimB = smoothstep(0.36, 0.52, m) * (1.0 - smoothstep(0.52, 0.86, m));
     col += uRim * rimB * (0.55 + 0.18 * sin(uTime * 1.7));
     // faint world bounce fill in the darkest folds keeps blacks alive
-    col += uRim * (1.0 - smoothstep(0.0, 0.22, luma)) * 0.05 * uSuitMix;
+    col += uRim * (1.0 - smoothstep(0.0, 0.22, sLuma)) * 0.05 * uSuitMix;
 
     gl_FragColor = vec4(col, alpha);
   }
