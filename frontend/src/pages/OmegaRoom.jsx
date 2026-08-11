@@ -368,9 +368,9 @@ export default function OmegaRoom() {
     const stage = stageRef.current;
     const rec = recorderRef.current;
     if (!stage || rec.recording || exporting || epRendering) return;
-    setExporting(true);
     stage.pause(); stage.seek(0); setTime(0);
-    rec.start(stage, null);
+    if (!rec.start(stage, null)) return;   // encoder refused at every tier — no phantom export
+    setExporting(true);
     setPlaying(true);
     stage.play({
       onTick: (t) => setTime(t),

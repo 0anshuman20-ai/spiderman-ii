@@ -240,6 +240,8 @@ export function createStage(canvas) {
     setHud,
     setHudOn(on) { hudOn = on; },
     setCaption,
+    /* measured render fps — the recorder reads this to pick its capture tier */
+    get fps() { return fps; },
     captureStream(fpsWanted = 60) { return canvas.captureStream(fpsWanted); },
     dispose() { running = false; world.dispose(); if (suitLayer) suitLayer.dispose(); renderer.dispose(); },
   };
