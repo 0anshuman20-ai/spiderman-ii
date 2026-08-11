@@ -109,7 +109,9 @@ export function createStage(canvas) {
   const hud = new THREE.Mesh(new THREE.PlaneGeometry(0.30, 0.028), new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, depthTest: false, depthWrite: false }));
   hud.position.set(0, 0.265, -1); hud.renderOrder = 999;
   camera.add(hud);
-  let hudOn = true;
+  /* OFF by default: uploads must leave the studio with zero burned-in text.
+     The HUD only ever draws if the user explicitly turns it on. */
+  let hudOn = false;
 
   function setHud(text) {
     hudCtx.clearRect(0, 0, 1024, 96);
@@ -123,7 +125,6 @@ export function createStage(canvas) {
     }
     hudTex.needsUpdate = true;
   }
-  setHud('COSMIC WEAVER ── STANDBY');
 
   // ---- CAPTION lower-third burned into the recording (bottom of frame) ----
   const capCanvas = document.createElement('canvas'); capCanvas.width = 1024; capCanvas.height = 220;

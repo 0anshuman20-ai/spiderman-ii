@@ -168,7 +168,8 @@ export function createOmegaStage(canvas) {
   badge.position.set(0, 0.265, -1);
   badge.renderOrder = 999;
   camera.add(badge);
-  let badgeOn = true;
+  /* OFF by default: rendered shots ship with zero burned-in text */
+  let badgeOn = false;
 
   function setBadge(text) {
     badgeCtx.clearRect(0, 0, 1024, 96);

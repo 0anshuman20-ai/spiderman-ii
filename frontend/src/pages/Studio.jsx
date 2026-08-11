@@ -41,7 +41,7 @@ export default function Studio() {
   const beatRef = useRef(0);
   const recStartRef = useRef(0);
   const countdownRef = useRef(null);   // interval id while the 3-2-1 runs
-  const captionsRef = useRef(true);    // mirrored into the frame callback
+  const captionsRef = useRef(false);   // mirrored into the frame callback — OFF: clean uploads
   const paramsTimerRef = useRef(null); // debounce for world-editor rebuilds
 
   const [booted, setBooted] = useState(null); // null | 'live' | 'sim'
@@ -64,7 +64,7 @@ export default function Studio() {
   const [pipOn, setPipOn] = useState(true);
   const [glitchUi, setGlitchUi] = useState(false);
   const [countdown, setCountdown] = useState(null); // null | 3 | 2 | 1
-  const [captionsOn, setCaptionsOn] = useState(true);
+  const [captionsOn, setCaptionsOn] = useState(false); // default OFF: nothing written into the video
   // sound layer UI
   const [musicOn, setMusicOn] = useState(true);
   const [musicReady, setMusicReady] = useState(false);
