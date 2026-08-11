@@ -152,8 +152,9 @@ const fragmentShader = /* glsl */ `
     float webSpacing = max(uChestS, 0.03) * 0.5;
     if (bid == 3.0 || isHead) {
       base = RED;
-      float sp = max(uFaceR, 0.02) * 0.40;
-      wd = webDist(q, uFaceC, uFaceRoll, sp, 16.0);
+      // finer rings + more radial spokes = the classic comic/film mask web
+      float sp = max(uFaceR, 0.02) * 0.32;
+      wd = webDist(q, uFaceC, uFaceRoll, sp, 24.0);
       webSpacing = sp;
       // fade webbing out right at the mask boundary (must match the 2.02 cutoff
       // used above, or a bare web-free ring appears around the edge of the mask)
@@ -196,7 +197,7 @@ const fragmentShader = /* glsl */ `
       // re-evaluate the field a hair toward the key light: the lit top edge pops
       vec2 off = normalize(KEY_DIR) * webSpacing * 0.10;
       float wdL;
-      if (bid == 3.0 || isHead) wdL = webDist(q + off, uFaceC, uFaceRoll, webSpacing, 16.0);
+      if (bid == 3.0 || isHead) wdL = webDist(q + off, uFaceC, uFaceRoll, webSpacing, 24.0);
       else if (bid == 4.0)      wdL = webDist(q + off, uChest, 0.0, webSpacing, 20.0);
       else                      wdL = webDist(q + off, bA, 0.0, webSpacing, 12.0);
       emboss = clamp((wdL - wd) * 1.4, 0.0, 1.0) * (1.0 - smoothstep(1.2, 2.0, wd));
@@ -606,9 +607,10 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       og.save();
       og.globalAlpha = Math.min(1, f.ok) * suitOn;
       const eyeDistPx = f.eyeDist * CROP_W;
-      // screen-accurate lens proportion: on the film suits the lens spans roughly
-      // half the interpupillary distance — big enough to read, never bug-eyed
-      const size = eyeDistPx * 0.5;
+      // film-suit lens proportion: the big expressive teardrop is what makes the
+      // mask instantly read as Spider-Man — slightly larger than half the
+      // interpupillary distance, like the screen-used suits
+      const size = eyeDistPx * 0.58;
       const angle = f.angle;
       const ca = Math.cos(angle), sa = Math.sin(angle);
       /* ---- mask center seam: forehead over the nose bridge to the chin ---- */
@@ -632,71 +634,28 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       og.stroke();
       og.restore();
 
-      /* ---- mouth: the fabric visibly dents, stretches and creases as you talk ---- */
+      /* ---- mouth: ONE soft fabric dent that deepens as the jaw drops.
+         No line work here — every stroke drawn around a moving mouth
+         (corner creases, lip highlights) reads as whiskers or a drawn-on
+         mouth the moment you talk. A real mask only shows a soft shadow
+         where the fabric is pulled into the open mouth. ---- */
       const mx = f.mouth.x * CROP_W, my = f.mouth.y * CROP_H;
-      const mw = Math.max(f.mouthW * CROP_W * 0.95, eyeDistPx * 0.5);
-      const mh = f.mouthOpen * CROP_W * 1.25 + eyeDistPx * 0.12;
-      const jaw = rig.jaw, smile = rig.smile;
-      // 1) deep dent — fabric sucked into the open mouth
-      const mAlpha = 0.16 + jaw * 0.46;
+      const mw = Math.max(f.mouthW * CROP_W * 0.85, eyeDistPx * 0.45);
+      const mh = f.mouthOpen * CROP_W * 1.1 + eyeDistPx * 0.10;
+      const jaw = rig.jaw;
+      const mAlpha = 0.08 + jaw * 0.34;               // subtle at rest, real when talking
       const mg = og.createRadialGradient(mx, my + mh * 0.25, 0, mx, my + mh * 0.25, mw);
       mg.addColorStop(0, `rgba(16,0,3,${mAlpha})`);
-      mg.addColorStop(0.55, `rgba(16,0,3,${mAlpha * 0.45})`);
+      mg.addColorStop(0.55, `rgba(16,0,3,${mAlpha * 0.4})`);
       mg.addColorStop(1, 'rgba(16,0,3,0)');
       og.fillStyle = mg;
       og.save();
-      og.translate(mx, my + mh * 0.25); og.rotate(angle); og.scale(1, Math.max(0.35, (mh / mw) * 1.6));
+      og.translate(mx, my + mh * 0.25); og.rotate(angle); og.scale(1, Math.max(0.4, (mh / mw) * 1.5));
       og.beginPath(); og.arc(0, 0, mw, 0, Math.PI * 2); og.fill();
       og.restore();
-      // 2) stretched-fabric highlight riding the upper lip — brightens as the jaw drops
-      og.save();
-      og.translate(mx, my); og.rotate(angle);
-      og.globalAlpha = (0.10 + jaw * 0.22) * suitOn;
-      og.strokeStyle = 'rgba(255,200,190,1)';
-      og.lineWidth = Math.max(1.5, eyeDistPx * 0.045);
-      og.lineCap = 'round';
-      og.beginPath();
-      og.moveTo(-mw * 0.55, -mh * 0.30);
-      og.quadraticCurveTo(0, -mh * 0.30 - eyeDistPx * 0.05, mw * 0.55, -mh * 0.30);
-      og.stroke();
-      // 3) tension creases fanning from each mouth corner (talking / smiling)
-      const creaseA = Math.min(0.5, jaw * 0.5 + smile * 0.35) * suitOn;
-      if (creaseA > 0.02) {
-        og.globalAlpha = creaseA;
-        og.strokeStyle = 'rgba(20,2,6,1)';
-        og.lineWidth = Math.max(1, eyeDistPx * 0.02);
-        [-1, 1].forEach((s) => {
-          for (let c = 0; c < 3; c++) {
-            const spread = (c - 1) * 0.28;
-            og.beginPath();
-            og.moveTo(s * mw * 0.62, mh * 0.05);
-            og.quadraticCurveTo(
-              s * mw * (0.95 + c * 0.08), mh * 0.05 + spread * mw * 0.5,
-              s * mw * (1.28 + c * 0.12), spread * mw * (0.9 + jaw * 0.4)
-            );
-            og.stroke();
-          }
-        });
-      }
-      og.restore();
 
-      /* ---- brow ridge: the mask darkens over a frown, lifts on raised brows ---- */
-      const browShade = Math.min(0.4, rig.browDown * 0.45 + jaw * 0.06) * suitOn;
-      if (browShade > 0.02) {
-        og.save();
-        og.globalAlpha = browShade;
-        og.strokeStyle = 'rgba(14,1,5,1)';
-        og.lineWidth = eyeDistPx * 0.16;
-        og.lineCap = 'round';
-        [[f.eyeL, -1], [f.eyeR, 1]].forEach(([eye, s]) => {
-          const bx = eye.x * CROP_W, by = eye.y * CROP_H - eyeDistPx * 0.42;
-          og.beginPath();
-          og.moveTo(bx - s * eyeDistPx * 0.28, by + eyeDistPx * 0.06);
-          og.quadraticCurveTo(bx, by - eyeDistPx * 0.08, bx + s * eyeDistPx * 0.30, by + eyeDistPx * 0.02);
-          og.stroke();
-        });
-        og.restore();
-      }
+      /* NO brow strokes: a real Spider-Man mask has no eyebrows. Expression
+         lives entirely in the lens squash below — exactly like the films. */
       // lenses ride slightly outward + above your real eyes
       const offOut = eyeDistPx * 0.11, offUp = eyeDistPx * 0.08;
       const exL = f.eyeL.x * CROP_W - ca * offOut + sa * offUp;

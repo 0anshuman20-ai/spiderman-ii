@@ -51,8 +51,12 @@ export class VoiceEngine {
       this.ctx = ctx;
       await ctx.audioWorklet.addModule('/worklets/pitch-shift-processor.js');
       await ctx.audioWorklet.addModule('/worklets/transmission-processor.js');
+      /* Browser-native cleanup runs FIRST: noiseSuppression kills room hiss, fan
+         noise and keyboard rumble at the source; echoCancellation stops monitor
+         bleed. These are DSP the OS does better than any WebAudio graph can.
+         AGC stays off — our own two-stage leveller/comp owns the dynamics. */
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 },
       });
       this.micStream = stream;
       const src = ctx.createMediaStreamSource(stream);
@@ -78,9 +82,10 @@ export class VoiceEngine {
       const inTrim = ctx.createGain(); inTrim.gain.value = 2.2; // +6.8 dB
 
       this.gateNode = new AudioWorkletNode(ctx, 'transmission');
-      // low enough that soft sentence ends survive, high enough to reject the
-      // noise floor of a headset mic in a normal room
-      this.gateNode.parameters.get('gateThreshold').value = -52;
+      // with native noiseSuppression ahead of the chain the floor is much lower,
+      // so the gate can open earlier: soft sentence tails and breaths-into-words
+      // survive intact instead of getting chopped mid-syllable
+      this.gateNode.parameters.get('gateThreshold').value = -56;
       this.gateNode.port.onmessage = (e) => {
         if (e.data && e.data.type === 'level') {
           this.level = e.data;
