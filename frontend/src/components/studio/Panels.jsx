@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { WORLDS } from '../../studio/worlds';
-import { VOICE_PRESETS } from '../../studio/voice';
 
 export const ScenePanel = ({ world, onWorld }) => (
   <div className="cw-panel" data-testid="scene-panel">
@@ -42,42 +41,53 @@ export const ExpressionPanel = ({ expr, onExpr, onGlitch }) => (
   </div>
 );
 
-const SLIDERS = [
-  { key: 'pitch', label: 'Pitch Shift', min: -7, max: 0, step: 0.5, fmt: (v) => `${v} st` },
-  { key: 'sub', label: 'Sub-Octave', min: 0, max: 0.6, step: 0.02, fmt: (v) => `${Math.round(v * 100)}%` },
-  { key: 'reverb', label: 'Void Reverb', min: 0, max: 0.5, step: 0.02, fmt: (v) => `${Math.round(v * 100)}%` },
-  { key: 'static', label: 'Comms Static', min: 0, max: 0.1, step: 0.005, fmt: (v) => `${Math.round(v * 1000)}` },
-  { key: 'drive', label: 'Signal Drive', min: 0, max: 1, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
-];
-
-export const VoicePanel = ({ params, preset, onPreset, onParam, monitor, onMonitor, level, micOk }) => (
+/* SPIDER VOICE — script-first, mic-free. Shows the synthesized line queue and
+   which line is armed/playing; your lips fire each line during the take. */
+export const VoicePanel = ({ synthState, lines, currentLine, nextLine, monitor, onMonitor, level, voiceOk, onEditScript, recording }) => (
   <div className="cw-panel" data-testid="voice-panel">
-    <h2>◪ Voice Of The Void</h2>
-    <div className="flex flex-wrap gap-1.5 mb-3">
-      {Object.entries(VOICE_PRESETS).map(([k, p]) => (
-        <div key={k} className={`cw-chip ${preset === k ? 'on' : ''}`} style={{ padding: '5px 8px', fontSize: 9 }}
-          data-testid={`voice-preset-${k}`} onClick={() => onPreset(k)}>
-          {p.label}
-        </div>
-      ))}
-    </div>
-    {SLIDERS.map((s) => (
-      <div className="cw-slider" key={s.key}>
-        <div className="lab"><span>{s.label}</span><b>{s.fmt(params[s.key])}</b></div>
-        <input type="range" min={s.min} max={s.max} step={s.step} value={params[s.key]}
-          data-testid={`voice-slider-${s.key}`}
-          onChange={(e) => onParam(s.key, parseFloat(e.target.value))} />
+    <h2>◪ Spider Voice</h2>
+    <div className="flex items-center gap-1.5 mb-2">
+      <div className="cw-chip" style={{ padding: '5px 10px', fontSize: 9, color: 'var(--cw-cyan)' }}
+        data-testid="voice-edit-script" onClick={onEditScript}>
+        <span>✎ SCRIPT & VOICE</span>
       </div>
-    ))}
-    <label className="flex items-center gap-2 mono text-[10px] text-[color:var(--cw-text-2)] cursor-pointer mt-1">
-      <input type="checkbox" checked={monitor} data-testid="monitor-checkbox"
-        onChange={(e) => onMonitor(e.target.checked)} />
-      MONITOR (HEADPHONES!)
-    </label>
+      <div className={`cw-chip ${monitor ? 'on' : ''}`} style={{ padding: '5px 10px', fontSize: 9 }}
+        data-testid="monitor-checkbox" onClick={() => onMonitor(!monitor)}>
+        <span>MONITOR {monitor ? 'ON' : 'OFF'}</span>
+      </div>
+    </div>
+    <div className="mono text-[9px] mb-2" data-testid="voice-synth-status"
+      style={{ color: synthState === 'ready' ? 'var(--cw-green)' : synthState === 'error' ? 'var(--cw-red)' : 'var(--cw-amber)' }}>
+      {synthState === 'empty' && 'NO SCRIPT — REC WILL ASK FOR ONE FIRST'}
+      {synthState === 'working' && 'SYNTHESIZING SPIDER VOICE…'}
+      {synthState === 'ready' && `${lines.length} LINES VOICED · YOUR LIPS FIRE EACH LINE`}
+      {synthState === 'error' && 'TTS UNREACHABLE — CHECK CONNECTION, THEN RE-SYNTH'}
+    </div>
+    {lines.length > 0 && (
+      <div className="space-y-1 max-h-40 overflow-y-auto pr-1" data-testid="voice-line-queue">
+        {lines.map((l, i) => {
+          const state = i === currentLine ? 'live' : i < nextLine ? 'done' : i === nextLine ? 'armed' : 'wait';
+          return (
+            <div key={i} className="mono text-[9px] flex gap-2 items-start" data-testid={`voice-line-${i}`}
+              style={{
+                color: state === 'live' ? 'var(--cw-red)' : state === 'done' ? 'var(--cw-muted)' : state === 'armed' ? 'var(--cw-cyan)' : 'var(--cw-text-2)',
+                opacity: l.ok === false && synthState === 'ready' ? 0.4 : 1,
+              }}>
+              <span style={{ minWidth: 14 }}>{state === 'live' ? '●' : state === 'done' ? '✓' : String(i + 1).padStart(2, '0')}</span>
+              <span className="text-pretty">{l.text}</span>
+            </div>
+          );
+        })}
+      </div>
+    )}
     <div className="cw-meter mt-3" data-testid="voice-meter">
       <div style={{ width: `${Math.min(100, level * 130)}%` }} />
     </div>
-    {!micOk && <div className="mono text-[9px] mt-2" style={{ color: 'var(--cw-amber)' }}>MIC OFFLINE — video-only recording</div>}
+    <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-muted)' }}>
+      {recording
+        ? 'ROLLING — MOUTH THE NEXT LINE AND IT PLAYS INSTANTLY'
+        : voiceOk ? 'MIC IS NEVER USED · VOICE IS 100% SYNTHESIZED' : 'AUDIO ENGINE OFFLINE'}
+    </p>
   </div>
 );
 
@@ -195,7 +205,7 @@ export const StatusPanel = ({ tracking, micOk, fps, mode }) => {
         <div className="flex items-center gap-2" data-testid="status-face"><span className={dot(tracking.face)} />FACE TRACK {mode === 'sim' ? '· SIM' : tracking.face ? '· LOCKED' : '· SEARCHING'}</div>
         <div className="flex items-center gap-2" data-testid="status-pose"><span className={dot(tracking.pose)} />BODY TRACK {mode === 'sim' ? '· SIM' : tracking.pose ? '· LOCKED' : '· SEARCHING'}</div>
         <div className="flex items-center gap-2" data-testid="status-hands"><span className={dot(tracking.hands)} />AI MATTE {mode === 'sim' ? '· SIM' : tracking.hands ? '· LOCKED' : '· SEARCHING'}</div>
-        <div className="flex items-center gap-2" data-testid="status-voice"><span className={`cw-dot ${micOk ? 'ok' : 'err'}`} />VOICE ENGINE {micOk ? '· ONLINE' : '· OFFLINE'}</div>
+        <div className="flex items-center gap-2" data-testid="status-voice"><span className={`cw-dot ${micOk ? 'ok' : 'err'}`} />SPIDER VOICE {micOk ? '· ONLINE (NO MIC)' : '· OFFLINE'}</div>
         <div className="flex items-center justify-between pt-1" style={{ borderTop: '1px solid var(--cw-border)' }}>
           <span>RENDER</span><span style={{ color: 'var(--cw-cyan)' }} data-testid="fps-readout">{fps} FPS</span>
         </div>

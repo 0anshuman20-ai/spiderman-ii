@@ -42,6 +42,10 @@ const fragmentShader = /* glsl */ `
   uniform float uFaceR;     // face radius (aspect-corrected)
   uniform float uFaceRoll;
   uniform float uFaceOk;
+  uniform vec2 uMouthC;     // mouth center (aspect-corrected)
+  uniform float uMouthW;    // mouth width (aspect-corrected)
+  uniform float uMouthOpen; // lip separation (aspect-corrected)
+  uniform float uJaw;       // jawOpen blendshape 0..1
   uniform vec2 uChest;      // chest web origin
   uniform float uChestS;    // body web spacing
   uniform float uPoseOk;
@@ -154,7 +158,20 @@ const fragmentShader = /* glsl */ `
       base = RED;
       // finer rings + more radial spokes = the classic comic/film mask web
       float sp = max(uFaceR, 0.02) * 0.32;
-      wd = webDist(q, uFaceC, uFaceRoll, sp, 24.0);
+      /* LIP SYNC, fabric-style: as your jaw opens, the mask fabric over the
+         mouth stretches. The web lines are printed ON that fabric, so they
+         must spread apart around the opening — warp the sample point away
+         from the mouth center before evaluating the web field. This is what
+         a real spandex mask does when the wearer talks. */
+      vec2 qm = q;
+      if (uFaceOk > 0.3) {
+        vec2 mv = q - uMouthC;
+        float mrad = max(uMouthW, 0.02) * 2.1;
+        float mfall = exp(-dot(mv, mv) / max(mrad * mrad * 0.5, 1e-6));
+        float stretch = clamp(uJaw * 1.35 + uMouthOpen * 5.0, 0.0, 1.2);
+        qm -= normalize(mv + vec2(1e-5)) * mfall * stretch * max(uMouthW, 0.02) * 0.55;
+      }
+      wd = webDist(qm, uFaceC, uFaceRoll, sp, 24.0);
       webSpacing = sp;
       // fade webbing out right at the mask boundary (must match the 2.02 cutoff
       // used above, or a bare web-free ring appears around the edge of the mask)
@@ -284,7 +301,7 @@ const fragmentShader = /* glsl */ `
     /* Body detail is cut hard (0.14) so a shirt collar, print or logo edge stays
        invisible while muscle/fold form still survives. (The head ignores this
        entirely — see the synthetic mask shading below.) */
-    sLuma = wLuma + fine * 0.14;
+    sLuma = wLuma + fine * 0.09;
 
     /* costume normalization: compress the camera's tonal range so nothing of
        your real clothing contrast survives the recolor. The head is flattened
@@ -318,6 +335,38 @@ const fragmentShader = /* glsl */ `
       float amb = clamp((wLuma - 0.5) * 0.30, -0.18, 0.18);
       sLuma = clamp(0.30 + lam * 0.40 + wrap * 0.16 + amb, 0.0, 1.0);
       form = clamp(lam * 0.55 - 0.10, -0.35, 0.5);                 // specular from geometry
+
+      /* ---- MOUTH ARTICULATION: the mask visibly talks when you talk ----
+         The shading above is synthetic, so it hides your lips completely —
+         but a real mask still MOVES: fabric is pulled into the open mouth,
+         the stretched upper-lip ridge catches the key light, and the chin
+         casts a shadow that drops with the jaw. All of it is driven by mouth
+         GEOMETRY (landmarks + jawOpen), never by lip pixels, so nothing of
+         your real mouth shows — only the motion. */
+      if (uFaceOk > 0.3) {
+        vec2 md = q - uMouthC;
+        // rotate into head space so the mouth stays glued during head tilt
+        md = vec2(md.x * hcs - md.y * hsn, md.x * hsn + md.y * hcs);
+        float mw = max(uMouthW, 0.015);
+        float openA = clamp(uJaw * 1.5 + uMouthOpen * 5.0, 0.0, 1.0);
+        // cavity: fabric sucked into the open mouth — grows taller as jaw drops
+        vec2 mc = vec2(md.x / (mw * 1.30), (md.y - mw * 0.18 * openA) / (mw * (0.50 + openA * 1.15)));
+        float cav = exp(-dot(mc, mc) * 2.1);
+        sLuma -= cav * (0.08 + openA * 0.46);
+        // upper-lip ridge: stretched fabric over the top lip catches the light
+        vec2 ml = vec2(md.x / (mw * 1.10), (md.y + mw * (0.40 + openA * 0.22)) / (mw * 0.26));
+        float ridge = exp(-dot(ml, ml) * 2.0);
+        sLuma += ridge * (0.03 + openA * 0.15);
+        // chin crease: drops away and darkens as the jaw opens
+        vec2 mj = vec2(md.x / (mw * 1.55), (md.y - mw * (1.15 + openA * 0.85)) / (mw * 0.55));
+        sLuma -= exp(-dot(mj, mj) * 2.0) * (0.02 + openA * 0.12);
+        // subtle smile/talk corner tension either side of the mouth
+        vec2 ct = vec2(abs(md.x) - mw * 1.05, md.y * 1.4);
+        sLuma -= exp(-dot(ct, ct) / max(mw * mw * 0.16, 1e-6)) * openA * 0.08;
+        sLuma = clamp(sLuma, 0.0, 1.0);
+        // the cavity also kills the specular so the opening reads as a hole in the light
+        form -= cav * openA * 0.35;
+      }
     }
 
     // filmic fabric response: dyed-dark shadows, chroma-pushed mids, sheen highs
@@ -494,6 +543,10 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     uFaceR: { value: 0.16 },
     uFaceRoll: { value: 0 },
     uFaceOk: { value: 0 },
+    uMouthC: { value: new THREE.Vector2(0.5, 0.5 * ASPECT) },
+    uMouthW: { value: 0.05 },
+    uMouthOpen: { value: 0 },
+    uJaw: { value: 0 },
     uChest: { value: new THREE.Vector2(0.5, 0.75) },
     uChestS: { value: 0.11 },
     uPoseOk: { value: 0 },
@@ -641,9 +694,9 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
          where the fabric is pulled into the open mouth. ---- */
       const mx = f.mouth.x * CROP_W, my = f.mouth.y * CROP_H;
       const mw = Math.max(f.mouthW * CROP_W * 0.85, eyeDistPx * 0.45);
-      const mh = f.mouthOpen * CROP_W * 1.1 + eyeDistPx * 0.10;
+      const mh = f.mouthOpen * CROP_W * 1.4 + eyeDistPx * 0.10;
       const jaw = rig.jaw;
-      const mAlpha = 0.08 + jaw * 0.34;               // subtle at rest, real when talking
+      const mAlpha = 0.10 + jaw * 0.46;               // subtle at rest, unmistakable when talking
       const mg = og.createRadialGradient(mx, my + mh * 0.25, 0, mx, my + mh * 0.25, mw);
       mg.addColorStop(0, `rgba(16,0,3,${mAlpha})`);
       mg.addColorStop(0.55, `rgba(16,0,3,${mAlpha * 0.4})`);
@@ -698,10 +751,13 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     const locked = tracker.points.face.ok > 0.4 || tracker.points.pose.ok > 0.4;
     if (locked) graceT = 1.4;                       // seconds of hold after a dropout
     else graceT = Math.max(0, graceT - dt);
-    const mixTarget = (locked || graceT > 0) ? 1 : 0.9;
+    const mixTarget = (locked || graceT > 0) ? 1 : 0.97;
     const mixRate = mixTarget > suitOn ? k : 1 - Math.exp(-dt * 0.7);  // slow release
     suitOn += (mixTarget - suitOn) * mixRate;
-    if (everLocked) suitOn = Math.max(suitOn, 0.9);  // hard floor: never reveal video
+    /* DEFINITIVE: after first lock the mix is pinned at 100%. Even a 10%
+       video bleed lets skin tone and clothing ghost through the dye — so
+       once you are Spider-Man, you are COMPLETELY Spider-Man. */
+    if (everLocked) suitOn = Math.max(suitOn, 1.0);
     if (locked) everLocked = true;
     uniforms.uSuitMix.value = suitOn;
 
@@ -715,6 +771,11 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       uniforms.uFaceR.value = Math.max(0.04, f.eyeDist * 1.55);
       uniforms.uFaceRoll.value = -f.angle;
       uniforms.uFaceOk.value = f.ok;
+      // live mouth geometry: drives the mask's visible lip-sync articulation
+      uniforms.uMouthC.value.set(f.mouth.x, f.mouth.y * ASPECT);
+      uniforms.uMouthW.value = Math.max(0.02, f.mouthW * 0.85);
+      uniforms.uMouthOpen.value = f.mouthOpen;
+      uniforms.uJaw.value = rig.jaw;
     } else if (graceT > 0 && everLocked) {
       uniforms.uFaceOk.value = 1;                   // hold the mask in its last pose
     } else {
