@@ -143,10 +143,10 @@ const fragmentShader = /* glsl */ `
     hd2.y += uFaceR * 0.16;                         // bias downward to cover the jaw
     // asymmetric growth: extend well above the brow line so the hairline, fringe
     // and crown are all inside the mask region
-    if (hd2.y < 0.0) hd2.y *= 0.70;                 // upper half reaches ~43% further
-    hd2.x /= 1.06;                                  // slight width for ears/sideburns
+    if (hd2.y < 0.0) hd2.y *= 0.74;                 // upper half reaches further for hair
+    hd2.x /= 1.03;                                  // slight width for ears/sideburns
     float dHead = length(hd2);
-    bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 2.02;
+    bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 1.86;
     if (isHead) bid = 3.0;
     if (uPoseOk < 0.3 && !isHead && bid < 4.5) { bid = 0.0; best = 0.5; }
 
@@ -168,14 +168,15 @@ const fragmentShader = /* glsl */ `
         vec2 mv = q - uMouthC;
         float mrad = max(uMouthW, 0.02) * 2.1;
         float mfall = exp(-dot(mv, mv) / max(mrad * mrad * 0.5, 1e-6));
-        float stretch = clamp(uJaw * 1.35 + uMouthOpen * 5.0, 0.0, 1.2);
+        // whisper of stretch only: enough to read as fabric, never as a mouth
+        float stretch = clamp(uJaw * 0.55 + uMouthOpen * 2.0, 0.0, 0.4);
         qm -= normalize(mv + vec2(1e-5)) * mfall * stretch * max(uMouthW, 0.02) * 0.55;
       }
       wd = webDist(qm, uFaceC, uFaceRoll, sp, 24.0);
       webSpacing = sp;
-      // fade webbing out right at the mask boundary (must match the 2.02 cutoff
+      // fade webbing out right at the mask boundary (must match the 1.86 cutoff
       // used above, or a bare web-free ring appears around the edge of the mask)
-      float edge = smoothstep(2.02, 1.72, dHead / max(uFaceR, 1e-4));
+      float edge = smoothstep(1.86, 1.58, dHead / max(uFaceR, 1e-4));
       wd = mix(99.0, wd, edge);
     } else if (bid == 5.0) {
       // glove back/palm: webbing radiates from the wrist exactly like the film suits
@@ -325,7 +326,7 @@ const fragmentShader = /* glsl */ `
        hair are mathematically incapable of showing through. Only the overall
        room brightness is sampled, so the mask still responds to your lighting. */
     if (isHead) {
-      vec2 nx = hd2 / max(uFaceR * 2.02, 1e-4);                    // -1..1 across the capsule
+      vec2 nx = hd2 / max(uFaceR * 1.86, 1e-4);                    // -1..1 across the capsule
       float r2 = clamp(dot(nx, nx), 0.0, 1.0);
       vec3 hn = vec3(nx, sqrt(1.0 - r2));                          // dome normal over the head
       vec3 L = normalize(vec3(normalize(KEY_DIR), 0.9));
@@ -333,39 +334,28 @@ const fragmentShader = /* glsl */ `
       float wrap = clamp(dot(hn, L) * 0.5 + 0.5, 0.0, 1.0);        // soft wrap keeps edges alive
       // ambient: room light level only (a single very broad average, no detail)
       float amb = clamp((wLuma - 0.5) * 0.30, -0.18, 0.18);
-      sLuma = clamp(0.30 + lam * 0.40 + wrap * 0.16 + amb, 0.0, 1.0);
-      form = clamp(lam * 0.55 - 0.10, -0.35, 0.5);                 // specular from geometry
+      /* TONALLY MATCHED TO THE BODY: the old head shading floated ~15% brighter
+         than the body's compressed-luma range, so the mask read as a lighter,
+         detached balloon. This curve centers on the same mids the body uses. */
+      sLuma = clamp(0.24 + lam * 0.34 + wrap * 0.12 + amb, 0.0, 1.0);
+      form = clamp(lam * 0.45 - 0.10, -0.35, 0.5);                 // specular from geometry
 
-      /* ---- MOUTH ARTICULATION: the mask visibly talks when you talk ----
-         The shading above is synthetic, so it hides your lips completely —
-         but a real mask still MOVES: fabric is pulled into the open mouth,
-         the stretched upper-lip ridge catches the key light, and the chin
-         casts a shadow that drops with the jaw. All of it is driven by mouth
-         GEOMETRY (landmarks + jawOpen), never by lip pixels, so nothing of
-         your real mouth shows — only the motion. */
+      /* NATURAL LIPS ONLY: no drawn mouth, no ridge, no chin crease, no corner
+         tension — all of that read as painted-on speaking lips. What remains is
+         a single barely-there fabric dent driven by your real jaw, invisible at
+         rest and only just perceptible while you talk: enough to know the mask
+         is speaking, nothing more. */
       if (uFaceOk > 0.3) {
         vec2 md = q - uMouthC;
-        // rotate into head space so the mouth stays glued during head tilt
+        // rotate into head space so the dent stays glued during head tilt
         md = vec2(md.x * hcs - md.y * hsn, md.x * hsn + md.y * hcs);
         float mw = max(uMouthW, 0.015);
         float openA = clamp(uJaw * 1.5 + uMouthOpen * 5.0, 0.0, 1.0);
-        // cavity: fabric sucked into the open mouth — grows taller as jaw drops
         vec2 mc = vec2(md.x / (mw * 1.30), (md.y - mw * 0.18 * openA) / (mw * (0.50 + openA * 1.15)));
         float cav = exp(-dot(mc, mc) * 2.1);
-        sLuma -= cav * (0.08 + openA * 0.46);
-        // upper-lip ridge: stretched fabric over the top lip catches the light
-        vec2 ml = vec2(md.x / (mw * 1.10), (md.y + mw * (0.40 + openA * 0.22)) / (mw * 0.26));
-        float ridge = exp(-dot(ml, ml) * 2.0);
-        sLuma += ridge * (0.03 + openA * 0.15);
-        // chin crease: drops away and darkens as the jaw opens
-        vec2 mj = vec2(md.x / (mw * 1.55), (md.y - mw * (1.15 + openA * 0.85)) / (mw * 0.55));
-        sLuma -= exp(-dot(mj, mj) * 2.0) * (0.02 + openA * 0.12);
-        // subtle smile/talk corner tension either side of the mouth
-        vec2 ct = vec2(abs(md.x) - mw * 1.05, md.y * 1.4);
-        sLuma -= exp(-dot(ct, ct) / max(mw * mw * 0.16, 1e-6)) * openA * 0.08;
+        sLuma -= cav * openA * 0.07;                 // zero at rest, whisper while talking
         sLuma = clamp(sLuma, 0.0, 1.0);
-        // the cavity also kills the specular so the opening reads as a hole in the light
-        form -= cav * openA * 0.35;
+        form -= cav * openA * 0.06;                  // the faintest matte spot in the light
       }
     }
 
@@ -579,6 +569,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
   group.add(overlay);
 
   const exprState = { lens: 1, asym: 0, glow: 1 };
+  const lensState = { init: false, lx: 0, ly: 0, rx: 0, ry: 0, size: 0, angle: 0 };
   let suitOn = 0;
   let graceT = 0;          // hold timer that survives tracking dropouts
   let everLocked = false;  // once true, the suit never reveals raw video again
@@ -687,38 +678,59 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       og.stroke();
       og.restore();
 
-      /* ---- mouth: ONE soft fabric dent that deepens as the jaw drops.
-         No line work here — every stroke drawn around a moving mouth
-         (corner creases, lip highlights) reads as whiskers or a drawn-on
-         mouth the moment you talk. A real mask only shows a soft shadow
-         where the fabric is pulled into the open mouth. ---- */
-      const mx = f.mouth.x * CROP_W, my = f.mouth.y * CROP_H;
-      const mw = Math.max(f.mouthW * CROP_W * 0.85, eyeDistPx * 0.45);
-      const mh = f.mouthOpen * CROP_W * 1.4 + eyeDistPx * 0.10;
+      /* ---- mouth: NOTHING is drawn at rest. Your natural lips drive a single
+         whisper-faint shadow that only exists while the jaw is actually open —
+         just enough to tell the mask is speaking, never a painted-on mouth. */
       const jaw = rig.jaw;
-      const mAlpha = 0.10 + jaw * 0.46;               // subtle at rest, unmistakable when talking
-      const mg = og.createRadialGradient(mx, my + mh * 0.25, 0, mx, my + mh * 0.25, mw);
-      mg.addColorStop(0, `rgba(16,0,3,${mAlpha})`);
-      mg.addColorStop(0.55, `rgba(16,0,3,${mAlpha * 0.4})`);
-      mg.addColorStop(1, 'rgba(16,0,3,0)');
-      og.fillStyle = mg;
-      og.save();
-      og.translate(mx, my + mh * 0.25); og.rotate(angle); og.scale(1, Math.max(0.4, (mh / mw) * 1.5));
-      og.beginPath(); og.arc(0, 0, mw, 0, Math.PI * 2); og.fill();
-      og.restore();
+      if (jaw > 0.06) {
+        const mx = f.mouth.x * CROP_W, my = f.mouth.y * CROP_H;
+        const mw = Math.max(f.mouthW * CROP_W * 0.7, eyeDistPx * 0.32);
+        const mh = f.mouthOpen * CROP_W * 1.1 + eyeDistPx * 0.06;
+        const mAlpha = Math.min(0.12, (jaw - 0.06) * 0.14);  // hard-capped: barely visible
+        const mg = og.createRadialGradient(mx, my + mh * 0.25, 0, mx, my + mh * 0.25, mw);
+        mg.addColorStop(0, `rgba(16,0,3,${mAlpha})`);
+        mg.addColorStop(0.55, `rgba(16,0,3,${mAlpha * 0.35})`);
+        mg.addColorStop(1, 'rgba(16,0,3,0)');
+        og.fillStyle = mg;
+        og.save();
+        og.translate(mx, my + mh * 0.25); og.rotate(angle); og.scale(1, Math.max(0.35, (mh / mw) * 1.3));
+        og.beginPath(); og.arc(0, 0, mw, 0, Math.PI * 2); og.fill();
+        og.restore();
+      }
 
       /* NO brow strokes: a real Spider-Man mask has no eyebrows. Expression
          lives entirely in the lens squash below — exactly like the films. */
       // lenses ride slightly outward + above your real eyes
       const offOut = eyeDistPx * 0.11, offUp = eyeDistPx * 0.08;
-      const exL = f.eyeL.x * CROP_W - ca * offOut + sa * offUp;
-      const eyL = f.eyeL.y * CROP_H - sa * offOut - ca * offUp;
-      const exR = f.eyeR.x * CROP_W + ca * offOut + sa * offUp;
-      const eyR = f.eyeR.y * CROP_H + sa * offOut - ca * offUp;
+      const rawL = {
+        x: f.eyeL.x * CROP_W - ca * offOut + sa * offUp,
+        y: f.eyeL.y * CROP_H - sa * offOut - ca * offUp,
+      };
+      const rawR = {
+        x: f.eyeR.x * CROP_W + ca * offOut + sa * offUp,
+        y: f.eyeR.y * CROP_H + sa * offOut - ca * offUp,
+      };
+      /* PERFECT EYES: raw landmarks jitter a pixel or two every frame, which
+         makes the lenses shimmer and drift out of symmetry. Both lenses are
+         smoothed through one shared filter (position, size, angle), so they
+         stay rock-steady AND perfectly mirrored around the mask seam. */
+      const ls = lensState;
+      if (!ls.init) {
+        ls.lx = rawL.x; ls.ly = rawL.y; ls.rx = rawR.x; ls.ry = rawR.y;
+        ls.size = size; ls.angle = angle; ls.init = true;
+      } else {
+        const sk = 0.4;                       // steady but never laggy
+        ls.lx += (rawL.x - ls.lx) * sk; ls.ly += (rawL.y - ls.ly) * sk;
+        ls.rx += (rawR.x - ls.rx) * sk; ls.ry += (rawR.y - ls.ry) * sk;
+        ls.size += (size - ls.size) * 0.25;   // scale changes even slower
+        let dA = angle - ls.angle;
+        if (dA > Math.PI) dA -= Math.PI * 2; else if (dA < -Math.PI) dA += Math.PI * 2;
+        ls.angle += dA * sk;
+      }
       const sqL = exprState.lens * (1 + exprState.asym * 0.4) * (1 - rig.blinkL * 0.62) * (1 + rig.browUp * 0.18);
       const sqR = exprState.lens * (1 - exprState.asym * 0.4) * (1 - rig.blinkR * 0.62) * (1 + rig.browUp * 0.18);
-      drawLens(og, exL, eyL, size, angle, -1, sqL, exprState.glow);
-      drawLens(og, exR, eyR, size, angle, 1, sqR, exprState.glow);
+      drawLens(og, ls.lx, ls.ly, ls.size, ls.angle, -1, sqL, exprState.glow);
+      drawLens(og, ls.rx, ls.ry, ls.size, ls.angle, 1, sqR, exprState.glow);
       og.restore();
     }
     const p = tracker.points.pose;
@@ -768,7 +780,9 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     const f = tracker.points.face;
     if (f.ok > 0.4) {
       uniforms.uFaceC.value.set(f.center.x, f.center.y * ASPECT);
-      uniforms.uFaceR.value = Math.max(0.04, f.eyeDist * 1.55);
+      // 1.40: hugs the real skull — the old 1.55 ballooned the head wider than
+      // the shoulders and made the mask read as oversized
+      uniforms.uFaceR.value = Math.max(0.04, f.eyeDist * 1.40);
       uniforms.uFaceRoll.value = -f.angle;
       uniforms.uFaceOk.value = f.ok;
       // live mouth geometry: drives the mask's visible lip-sync articulation

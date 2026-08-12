@@ -16,9 +16,11 @@
 
 const { MsEdgeTTS, OUTPUT_FORMAT } = require("msedge-tts");
 
-// The one perfect voice: Andrew — warm, confident, hyper-clear US male.
-const VOICE = "en-US-AndrewMultilingualNeural";
-const PROSODY = { rate: "+12%", pitch: "+10Hz", volume: "+0%" };
+// The one perfect voice: Brian — the youngest-reading neural US male Edge
+// ships. Pushed a touch faster and noticeably brighter, he lands squarely on
+// "wired teenage hero mid-swing" instead of Andrew's "warm adult narrator".
+const VOICE = "en-US-BrianMultilingualNeural";
+const PROSODY = { rate: "+14%", pitch: "+18Hz", volume: "+0%" };
 
 // tiny in-memory cache: re-synthesizing an unchanged line is pure waste
 const cache = new Map(); // text -> Buffer

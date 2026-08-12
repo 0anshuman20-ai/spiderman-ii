@@ -49,11 +49,11 @@ async def root():
 
 
 # THE ONE VOICE — locked server-side so every take carries the same narrator.
-# Andrew is the highest-quality keyless neural voice on the internet; prosody
-# is tuned once, here, to read as "young hero" instead of "news anchor".
-TTS_VOICE = "en-US-AndrewMultilingualNeural"
-TTS_RATE = "+12%"
-TTS_PITCH = "+10Hz"
+# Brian is the youngest-reading keyless neural US male; pushed faster and
+# brighter he reads as "wired teenage hero", never "news anchor".
+TTS_VOICE = "en-US-BrianMultilingualNeural"
+TTS_RATE = "+14%"
+TTS_PITCH = "+18Hz"
 
 
 @api_router.get("/tts")
