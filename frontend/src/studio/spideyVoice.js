@@ -95,17 +95,21 @@ export class SpideyVoice {
     }
   }
 
-  /* fetch one line as an AudioBuffer, walking the voice ladder on failure */
+  /* fetch one line as an AudioBuffer, walking the voice ladder on failure.
+     every request is hard-capped so a dead network can never hang the sheet. */
   async _fetchLine(text) {
     for (const voice of TTS_VOICES) {
+      const ctrl = new AbortController();
+      const kill = setTimeout(() => ctrl.abort(), 8000);
       try {
         const url = `${TTS_ENDPOINT}?voice=${voice}&text=${encodeURIComponent(text)}`;
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: ctrl.signal });
+        clearTimeout(kill);
         if (!res.ok) continue;
         const arr = await res.arrayBuffer();
         if (!arr || arr.byteLength < 200) continue;
         return await this.ctx.decodeAudioData(arr.slice(0));
-      } catch (_) { /* next voice */ }
+      } catch (_) { clearTimeout(kill); /* next voice */ }
     }
     return null;
   }
@@ -128,13 +132,22 @@ export class SpideyVoice {
       if (buf) okCount++;
       if (onProgress) onProgress(i + 1, this.lines.length);
     }
-    this.synthState = okCount > 0 ? 'ready' : 'error';
-    if (this.onStatus) {
-      this.onStatus(okCount > 0
-        ? { level: 'ok', message: `${okCount}/${this.lines.length} lines voiced` }
-        : { level: 'error', message: 'TTS unreachable — check your connection' });
+    if (okCount > 0) {
+      this.synthState = 'ready';
+      if (this.onStatus) this.onStatus({ level: 'ok', message: `${okCount}/${this.lines.length} lines voiced` });
+      return true;
     }
-    return okCount > 0;
+    /* free TTS unreachable — fall back to the browser's own voice so the
+       take is never blocked. lines with no buffer speak via speechSynthesis. */
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      this.lines.forEach((l) => { l.ok = true; });
+      this.synthState = 'fallback';
+      if (this.onStatus) this.onStatus({ level: 'warn', message: 'web TTS offline — using built-in browser voice' });
+      return true;
+    }
+    this.synthState = 'error';
+    if (this.onStatus) this.onStatus({ level: 'error', message: 'TTS unreachable — check your connection' });
+    return false;
   }
 
   /* rewind for a fresh take */
