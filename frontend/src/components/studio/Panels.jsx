@@ -61,6 +61,7 @@ export const VoicePanel = ({ synthState, lines, currentLine, nextLine, monitor, 
       {synthState === 'empty' && 'NO SCRIPT — REC WILL ASK FOR ONE FIRST'}
       {synthState === 'working' && 'SYNTHESIZING SPIDER VOICE…'}
       {synthState === 'ready' && `${lines.length} LINES VOICED · YOUR LIPS FIRE EACH LINE`}
+      {synthState === 'fallback' && `${lines.length} LINES ON THE BROWSER VOICE · TTS OFFLINE · SPEAKERS ONLY, NOT IN THE FILE`}
       {synthState === 'error' && 'TTS UNREACHABLE — CHECK CONNECTION, THEN RE-SYNTH'}
     </div>
     {lines.length > 0 && (

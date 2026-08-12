@@ -257,7 +257,10 @@ export default function Studio() {
     const voice = voiceRef.current;
     const music = musicRef.current;
     if (voice && voice.ready) voice.arm(); // rewind to line 1 — first mouth move fires it
-    const audioStream = voice && voice.ready ? voice.stream : (music && music.stream) || null;
+    // browser-voice fallback plays out of the speakers, not through our graph —
+    // in that case the score's own stream carries the take's audio instead
+    const voiceInGraph = !!(voice && voice.ready && voice.synthState !== 'fallback');
+    const audioStream = voiceInGraph ? voice.stream : (music && music.stream) || null;
     const rolled = rec.start(stage, audioStream);
     if (!rolled) {
       // encoder refused at every tier — undo the roll cleanly instead of faking it
@@ -284,7 +287,7 @@ export default function Studio() {
       // SCRIPT-FIRST: no take rolls until the script is voiced. REC opens the
       // script sheet instead, so the engine always knows the lines in advance.
       const voice = voiceRef.current;
-      if (voice && voice.ready && voice.synthState !== 'ready') {
+      if (voice && voice.ready && !voice.canRoll()) {
         setScriptOpen(true);
         return;
       }
@@ -435,6 +438,8 @@ export default function Studio() {
   }, []);
 
   const fmtClock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  // a take may roll once the script is voiced — decoded TTS, or the browser voice
+  const voiceRollable = voiceUi.synthState === 'ready' || voiceUi.synthState === 'fallback';
 
   return (
     <div className={`min-h-screen ${glitchUi ? 'cw-glitching' : ''}`} data-testid="studio-root">
@@ -469,7 +474,7 @@ export default function Studio() {
         </Link>
         {recording && <span className="mono text-sm" style={{ color: 'var(--cw-red)' }} data-testid="rec-timer">● {fmtClock(elapsed)}</span>}
         <button className={`cw-rec ${recording ? 'live' : ''}`} disabled={!booted} data-testid="record-btn" onClick={toggleRec}>
-          {recording ? '■ STOP & SAVE' : micOk && voiceUi.synthState !== 'ready' ? '● SCRIPT → REC' : '● REC'}
+          {recording ? '■ STOP & SAVE' : micOk && !voiceRollable ? '● SCRIPT → REC' : '● REC'}
         </button>
       </header>
 

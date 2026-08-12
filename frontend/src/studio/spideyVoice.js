@@ -49,6 +49,13 @@ export class SpideyVoice {
     this._quietT = 1;          // seconds of closed mouth accumulated
     this._cooldown = 0;
     this._src = null;
+    this._utter = null;        // live speechSynthesis utterance (fallback mode)
+  }
+
+  /* the take may roll once every line is voiced — either as decoded buffers or
+     via the browser's own speech engine when the free TTS is unreachable */
+  canRoll() {
+    return this.synthState === 'ready' || this.synthState === 'fallback';
   }
 
   async init() {
@@ -85,6 +92,13 @@ export class SpideyVoice {
       this.monitorGain.connect(ctx.destination);
 
       this._levelBuf = new Uint8Array(this.analyser.fftSize);
+      // warm the browser voice list so the offline fallback has one ready
+      if (window.speechSynthesis) {
+        try {
+          window.speechSynthesis.getVoices();
+          window.speechSynthesis.addEventListener('voiceschanged', () => { this._sysVoice = null; }, { once: true });
+        } catch (_) {}
+      }
       this.ready = true;
       if (this.onStatus) this.onStatus({ level: 'ok', message: 'spider voice online — mic never used' });
       return true;
@@ -159,10 +173,62 @@ export class SpideyVoice {
     this._cooldown = 0;
   }
 
+  /* pick the most "young US male" voice the browser itself offers */
+  _pickSystemVoice() {
+    if (this._sysVoice) return this._sysVoice;
+    // getVoices() is async-populated in some browsers, so re-query until it fills
+    const all = window.speechSynthesis.getVoices() || [];
+    const en = all.filter((v) => /^en(-|_|$)/i.test(v.lang || ''));
+    const pool = en.length ? en : all;
+    const liked = pool.find((v) => /(justin|alex|daniel|google us english|male)/i.test(v.name));
+    this._sysVoice = liked || pool[0] || null;
+    return this._sysVoice;
+  }
+
+  /* FALLBACK LINE — the browser speaks it live. Audible in the room and to the
+     performer; it is NOT inside the recorder's audio stream, which is why the
+     panel says so out loud. */
+  _speakLine(i) {
+    const line = this.lines[i];
+    const u = new window.SpeechSynthesisUtterance(line.text);
+    const v = this._pickSystemVoice();
+    if (v) u.voice = v;
+    u.lang = (v && v.lang) || 'en-US';
+    u.rate = 1.08; u.pitch = 1.18; u.volume = 1;
+    this.playing = true;
+    this.currentLine = i;
+    this.idx = i + 1;
+    this._utter = u;
+    const done = () => {
+      if (this._utter !== u) return;
+      this._utter = null;
+      this.playing = false;
+      this.currentLine = -1;
+      this._cooldown = 0.18;
+      this._quietT = 0;
+    };
+    u.onend = done;
+    u.onerror = done;
+    try {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+    } catch (_) { done(); }
+  }
+
   _playLine(i) {
-    // skip lines that failed to synthesize so a bad line never stalls the take
-    while (i < this.lines.length && !this.lines[i].buffer) i++;
+    if (this.synthState === 'fallback') {
+      if (i >= this.lines.length) { this.idx = this.lines.length; return; }
+      this._speakLine(i);
+      return;
+    }
     if (i >= this.lines.length) { this.idx = this.lines.length; return; }
+    // a single line the TTS refused still gets spoken — by the browser voice —
+    // so the queue never silently swallows one of your beats
+    if (!this.lines[i].buffer) {
+      if (typeof window !== 'undefined' && window.speechSynthesis) { this._speakLine(i); return; }
+      while (i < this.lines.length && !this.lines[i].buffer) i++;
+      if (i >= this.lines.length) { this.idx = this.lines.length; return; }
+    }
     const src = this.ctx.createBufferSource();
     src.buffer = this.lines[i].buffer;
     // a touch faster + brighter: the quick, wired Spidey cadence
@@ -209,6 +275,12 @@ export class SpideyVoice {
   stopPlayback() {
     if (this._src) { try { this._src.onended = null; this._src.stop(); } catch (_) {} }
     this._src = null;
+    if (this._utter) {
+      this._utter.onend = null; this._utter.onerror = null; this._utter = null;
+    }
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      try { window.speechSynthesis.cancel(); } catch (_) {}
+    }
     this.playing = false;
     this.currentLine = -1;
   }

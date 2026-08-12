@@ -16,6 +16,8 @@
     --cw-muted: #52525b;
     --cw-border: rgba(255, 255, 255, 0.1);
     --cw-border-hot: rgba(255, 26, 26, 0.5);
+    /* one mono stack, symbol-backstopped, so no glyph anywhere renders as tofu */
+    --cw-mono: 'JetBrains Mono', 'Noto Sans Symbols 2', ui-monospace, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -24,14 +26,16 @@ body {
     margin: 0;
     background: var(--cw-bg);
     color: var(--cw-text);
-    font-family: 'Chivo', sans-serif;
+    /* Noto Sans Symbols 2 backstops the geometric glyphs (◪ ◈ ◬ ◍ ▤) the UI
+       uses as panel marks — without it they render as tofu boxes. */
+    font-family: 'Chivo', 'Noto Sans Symbols 2', sans-serif;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
 }
 
 ::selection { background: var(--cw-red); color: #000; }
 
-.mono { font-family: 'JetBrains Mono', monospace; }
+.mono { font-family: var(--cw-mono); }
 
 /* ---------- panels ---------- */
 .cw-panel {
@@ -41,7 +45,7 @@ body {
     padding: 14px;
 }
 .cw-panel h2 {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--cw-mono);
     font-size: 10px;
     letter-spacing: 0.22em;
     color: var(--cw-muted);
@@ -51,7 +55,7 @@ body {
 
 /* ---------- chips ---------- */
 .cw-chip {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--cw-mono);
     font-size: 10px;
     letter-spacing: 0.1em;
     border: 1px solid var(--cw-border);
@@ -95,7 +99,7 @@ body {
 }
 .cw-slider .lab {
     display: flex; justify-content: space-between;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--cw-mono);
     font-size: 9px; letter-spacing: 0.14em;
     color: var(--cw-text-2); margin-bottom: 5px;
     text-transform: uppercase;
@@ -110,7 +114,7 @@ body {
 
 /* ---------- REC button ---------- */
 .cw-rec {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--cw-mono);
     letter-spacing: 0.2em;
     font-size: 13px;
     background: var(--cw-red);
@@ -185,13 +189,13 @@ body {
     z-index: 6;
 }
 .cw-prompter .beat-now {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: var(--cw-mono);
     font-size: 17px;
     line-height: 1.45;
     color: var(--cw-text);
 }
 .cw-prompter .beat-next { font-size: 12px; color: var(--cw-muted); margin-top: 8px; }
-.cw-prompter .note { color: var(--cw-amber); font-size: 10px; letter-spacing: 0.08em; margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
+.cw-prompter .note { color: var(--cw-amber); font-size: 10px; letter-spacing: 0.08em; margin-top: 6px; font-family: var(--cw-mono); }
 
 /* ---------- boot overlay ---------- */
 .cw-boot {
