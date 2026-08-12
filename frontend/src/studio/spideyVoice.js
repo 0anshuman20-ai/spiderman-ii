@@ -257,7 +257,8 @@ export class SpideyVoice {
     const src = this.ctx.createBufferSource();
     src.buffer = this.lines[i].buffer;
     // prosody (the quick, wired Spidey cadence) is baked into the audio by the
-    // relay (+12% rate, +10Hz) — play at 1.0 so it never stacks into chipmunk
+    // relay (+14% rate, +18Hz on the young Brian voice) — play at 1.0 so it
+    // never stacks into chipmunk
     src.playbackRate.value = 1.0;
     src.connect(this.voiceIn);
     this.playing = true;

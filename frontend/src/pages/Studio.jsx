@@ -257,10 +257,17 @@ export default function Studio() {
     const voice = voiceRef.current;
     const music = musicRef.current;
     if (voice && voice.ready) voice.arm(); // rewind to line 1 — first mouth move fires it
-    // browser-voice fallback plays out of the speakers, not through our graph —
-    // in that case the score's own stream carries the take's audio instead
-    const voiceInGraph = !!(voice && voice.ready && voice.synthState !== 'fallback');
-    const audioStream = voiceInGraph ? voice.stream : (music && music.stream) || null;
+    /* AUDIO INTO THE FILE — always hand the recorder the voice engine's
+       MediaStreamDestination when the engine is up: the music engine mixes its
+       score into that same destination, so this one stream carries BOTH the
+       synthesized voice and the score. (The old logic dropped to music.stream
+       in fallback mode — but music borrows the voice context and owns no
+       stream of its own there, so the take shipped with NO audio track at
+       all: a silent download.) A suspended AudioContext also records pure
+       silence, so both contexts are resumed right before the roll. */
+    if (voice && voice.ready) voice.resume().catch(() => {});
+    if (music && music.resume) music.resume().catch(() => {});
+    const audioStream = (voice && voice.ready && voice.stream) || (music && music.stream) || null;
     const rolled = rec.start(stage, audioStream);
     if (!rolled) {
       // encoder refused at every tier — undo the roll cleanly instead of faking it
