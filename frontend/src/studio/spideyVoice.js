@@ -17,9 +17,18 @@
    ready / ctx / dest / stream / level / outputLevel() / setMonitor() /
    resume() / triggerGlitch() / dispose(). */
 
-const TTS_ENDPOINT = 'https://api.streamelements.com/kappa/v2/speech';
-// ordered by how "Peter Parker" they sound: Justin is a bright young US male
-const TTS_VOICES = ['Justin', 'Matthew', 'Joey'];
+/* THE ONE VOICE — every line is synthesized by our own relay, which locks a
+   single Edge neural voice (Andrew, prosody-tuned to "young hero") on the
+   server. The client cannot pick a voice; consistency IS the identity.
+   Two doors to the same voice, tried in order:
+   1. `/tts` on the dev server — the craco relay, same-origin, zero config
+   2. `${REACT_APP_BACKEND_URL}/api/tts` — the FastAPI relay in production */
+const TTS_ENDPOINTS = [
+  '/tts',
+  ...(process.env.REACT_APP_BACKEND_URL
+    ? [`${process.env.REACT_APP_BACKEND_URL}/api/tts`]
+    : []),
+];
 
 /* split a script into speakable lines: hard breaks first, then sentences */
 export function splitScript(text) {
@@ -109,21 +118,22 @@ export class SpideyVoice {
     }
   }
 
-  /* fetch one line as an AudioBuffer, walking the voice ladder on failure.
-     every request is hard-capped so a dead network can never hang the sheet. */
+  /* fetch one line as an AudioBuffer, walking the relay endpoints on failure.
+     Same locked voice behind every door — only the transport differs. Every
+     request is hard-capped so a dead network can never hang the sheet. */
   async _fetchLine(text) {
-    for (const voice of TTS_VOICES) {
+    for (const endpoint of TTS_ENDPOINTS) {
       const ctrl = new AbortController();
-      const kill = setTimeout(() => ctrl.abort(), 8000);
+      const kill = setTimeout(() => ctrl.abort(), 20000);
       try {
-        const url = `${TTS_ENDPOINT}?voice=${voice}&text=${encodeURIComponent(text)}`;
+        const url = `${endpoint}?text=${encodeURIComponent(text)}`;
         const res = await fetch(url, { signal: ctrl.signal });
         clearTimeout(kill);
         if (!res.ok) continue;
         const arr = await res.arrayBuffer();
         if (!arr || arr.byteLength < 200) continue;
         return await this.ctx.decodeAudioData(arr.slice(0));
-      } catch (_) { clearTimeout(kill); /* next voice */ }
+      } catch (_) { clearTimeout(kill); /* next endpoint */ }
     }
     return null;
   }
@@ -246,8 +256,9 @@ export class SpideyVoice {
     }
     const src = this.ctx.createBufferSource();
     src.buffer = this.lines[i].buffer;
-    // a touch faster + brighter: the quick, wired Spidey cadence
-    src.playbackRate.value = 1.05;
+    // prosody (the quick, wired Spidey cadence) is baked into the audio by the
+    // relay (+12% rate, +10Hz) — play at 1.0 so it never stacks into chipmunk
+    src.playbackRate.value = 1.0;
     src.connect(this.voiceIn);
     this.playing = true;
     this.currentLine = i;

@@ -121,15 +121,6 @@ webpackConfig.devServer = (devServerConfig) => {
       setupHealthEndpoints(devServer, healthPluginInstance);
     }
 
-    // THE ONE VOICE — /tts relay to Edge neural TTS (browser can't send the
-    // handshake headers Microsoft requires; the dev server can)
-    try {
-      const { setupTtsRelay } = require("./plugins/tts-relay");
-      setupTtsRelay(devServer);
-    } catch (err) {
-      console.warn("[tts-relay] disabled:", err.message);
-    }
-
     return middlewares;
   };
 
@@ -153,7 +144,31 @@ if (isDevServer) {
 }
 
 const configureDevServer = webpackConfig.devServer;
-webpackConfig.devServer = (devServerConfig) =>
-  makeDevServerV5Compatible(configureDevServer(devServerConfig));
+webpackConfig.devServer = (devServerConfig) => {
+  const cfg = configureDevServer(devServerConfig);
+
+  // THE ONE VOICE — /tts relay to Edge neural TTS (a browser can't send the
+  // handshake headers Microsoft requires; the dev server can). This MUST be
+  // composed HERE, after every other wrapper has run: visual-edits OVERWRITES
+  // setupMiddlewares wholesale, so registering the relay any earlier means it
+  // silently never mounts and the SPA history fallback answers /tts with
+  // index.html. The relay is also PREPENDED to the middleware stack for the
+  // same reason — anything after the fallback never sees the request.
+  const prevSetupMiddlewares = cfg.setupMiddlewares;
+  cfg.setupMiddlewares = (middlewares, devServer) => {
+    if (prevSetupMiddlewares) {
+      middlewares = prevSetupMiddlewares(middlewares, devServer);
+    }
+    try {
+      const { setupTtsRelay } = require("./plugins/tts-relay");
+      middlewares = setupTtsRelay(middlewares);
+    } catch (err) {
+      console.warn("[tts-relay] disabled:", err.message);
+    }
+    return middlewares;
+  };
+
+  return makeDevServerV5Compatible(cfg);
+};
 
 module.exports = webpackConfig;

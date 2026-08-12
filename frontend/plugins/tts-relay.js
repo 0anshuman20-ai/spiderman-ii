@@ -44,20 +44,26 @@ async function synthesize(text) {
   return buf;
 }
 
-/** Mount GET /tts on the webpack dev server's express app. */
-function setupTtsRelay(devServer) {
-  if (!devServer || !devServer.app) return;
-  devServer.app.get("/tts", async (req, res) => {
-    const text = String(req.query.text || "").slice(0, 600).trim();
-    if (!text) { res.status(400).json({ error: "text required" }); return; }
-    try {
-      const buf = await synthesize(text);
-      res.set({ "Content-Type": "audio/mpeg", "Cache-Control": "no-store" });
-      res.send(buf);
-    } catch (err) {
-      res.status(502).json({ error: `tts relay failed: ${err.message}` });
-    }
-  });
+/* The express handler for GET /tts. Exposed as a middleware entry so it can
+   be UNSHIFTED to the FRONT of the dev server's middleware stack — anything
+   appended via devServer.app runs after the SPA history fallback, which would
+   answer /tts with index.html before this code ever saw the request. */
+async function ttsHandler(req, res) {
+  const text = String(req.query.text || "").slice(0, 600).trim();
+  if (!text) { res.status(400).json({ error: "text required" }); return; }
+  try {
+    const buf = await synthesize(text);
+    res.set({ "Content-Type": "audio/mpeg", "Cache-Control": "no-store" });
+    res.send(buf);
+  } catch (err) {
+    res.status(502).json({ error: `tts relay failed: ${err.message}` });
+  }
+}
+
+/** Prepend the /tts relay to the dev server middleware stack. */
+function setupTtsRelay(middlewares) {
+  middlewares.unshift({ name: "tts-relay", path: "/tts", middleware: ttsHandler });
+  return middlewares;
 }
 
 module.exports = { setupTtsRelay, VOICE };
