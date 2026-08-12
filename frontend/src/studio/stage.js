@@ -10,6 +10,8 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { createSuitLayer } from './suit';
+import { createActor } from './actor';
+import { FACE, FACE_CH } from './perf';
 import { buildWorld } from './worlds';
 
 const W = 1080, H = 1920;
@@ -84,6 +86,15 @@ export function createStage(canvas) {
   const planeH = 2 * Math.tan(THREE.MathUtils.degToRad(34 / 2)) * PLANE_D;
   const planeW = planeH * (W / H);
   let suitLayer = null; // created in start() once the tracker exists
+
+  /* SIM MODE gets a body too: no webcam means no pixels to suit up, so the
+     synthetic actor (the Omega Layer's fully-3D VEYL) takes the stage instead.
+     Same worlds, same grade, same rim — the preview is never an empty void. */
+  let simActor = null;
+  const simRoot = new THREE.Group();
+  simRoot.position.set(0, 0, -1); // a step upstage so the full body frames in
+  scene.add(simRoot);
+  const simFace = new Float32Array(FACE_CH);
 
   /* the composer bypasses the canvas's MSAA entirely — without an explicit
      multisampled HDR target every pass (and therefore the recording) is aliased.
@@ -180,7 +191,19 @@ export function createStage(canvas) {
 
     if (onFrame) onFrame(t, dt, fps);
     const rig = stage.rig;
+    if (rig) rig.tracking.fps = fps; // measured render fps into telemetry
     if (suitLayer && rig) suitLayer.update(t, dt);
+    if (simActor && rig) {
+      // expression → lens language, matching the AR compositor's EXPR table
+      const EXPR_BROW = { calm: 0, fury: -0.9, narrow: -0.55, shock: 0.7, smirk: 0.2 };
+      const blink = Math.pow(Math.max(0, Math.sin(t * 0.9)), 48); // a slow natural blink
+      simFace[FACE.jaw] = rig.jaw;
+      simFace[FACE.blinkL] = Math.max(rig.blinkL, blink);
+      simFace[FACE.blinkR] = Math.max(rig.blinkR, blink);
+      simFace[FACE.brow] = EXPR_BROW[rig.expression] != null ? EXPR_BROW[rig.expression] : (rig.browUp - rig.browDown);
+      simFace[FACE.level] = rig.level;
+      simActor.idle(t, simFace, Math.min(1, rig.level * 1.4));
+    }
     // audio-reactive worlds: the smoothed voice level pulses the scene
     if (world.setEnergy) world.setEnergy(rig ? rig.level : 0);
     world.update(t, dt);
@@ -220,6 +243,12 @@ export function createStage(canvas) {
         suitLayer.setRim(rimFor(worldKey));
         camera.add(suitLayer.group);
       }
+      // sim mode: the synthetic VEYL holds the stage so the frame is never empty
+      if (tracker && tracker.sim && !simActor) {
+        simActor = createActor();
+        simActor.setRim(rimFor(worldKey).getHex());
+        simRoot.add(simActor.group);
+      }
       loop(onFrame);
     },
     setWorld(k, params) {
@@ -227,12 +256,14 @@ export function createStage(canvas) {
       else if (k === worldKey) return; // no params given, same world: nothing to do
       world.dispose(); world = buildWorld(scene, k, worldParams); worldKey = k;
       if (suitLayer) suitLayer.setRim(rimFor(k));
+      if (simActor) simActor.setRim(rimFor(k).getHex());
     },
     /* WORLD EDITOR: rebuild the current world with new params (same dispose path) */
     setWorldParams(params) {
       worldParams = params && Object.keys(params).length ? { ...params } : null;
       world.dispose(); world = buildWorld(scene, worldKey, worldParams);
       if (suitLayer) suitLayer.setRim(rimFor(worldKey));
+      if (simActor) simActor.setRim(rimFor(worldKey).getHex());
     },
     get worldParams() { return worldParams; },
     get worldKey() { return worldKey; },
@@ -244,7 +275,7 @@ export function createStage(canvas) {
     /* measured render fps — the recorder reads this to pick its capture tier */
     get fps() { return fps; },
     captureStream(fpsWanted = 60) { return canvas.captureStream(fpsWanted); },
-    dispose() { running = false; world.dispose(); if (suitLayer) suitLayer.dispose(); renderer.dispose(); },
+    dispose() { running = false; world.dispose(); if (suitLayer) suitLayer.dispose(); if (simActor) simActor.dispose(); renderer.dispose(); },
   };
   return stage;
 }
