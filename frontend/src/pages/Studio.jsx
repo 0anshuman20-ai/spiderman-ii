@@ -5,7 +5,7 @@ import { createStage } from '../studio/stage';
 import { PerfRecorder } from '../studio/perf';
 import { vault, PERFORMANCES } from '../studio/vault';
 import { Tracker, makeRig } from '../studio/tracking';
-import { VoiceEngine } from '../studio/voice';
+import { SpideyVoice } from '../studio/spideyVoice';
 import { Recorder } from '../studio/recorder';
 import { MusicEngine } from '../studio/music';
 import { EMOTE_TO_EXPR } from '../studio/scripts';
@@ -50,11 +50,14 @@ export default function Studio() {
   const [elapsed, setElapsed] = useState(0);
   const [world, setWorldState] = useState('nebula-drift');
   const [expr, setExprState] = useState('calm');
-  const [preset, setPresetState] = useState('earbud-pro');
-  const [voiceParams, setVoiceParams] = useState({ pitch: 0, sub: 0.22, reverb: 0.05, static: 0, drive: 0 });
   const [monitor, setMonitor] = useState(false);
   const [level, setLevel] = useState(0);
-  const [micOk, setMicOk] = useState(false);
+  const [micOk, setMicOk] = useState(false); // = spider-voice engine online (mic is never used)
+  // SPIDER VOICE — script-first: the script is synthesized BEFORE any take
+  const [voiceUi, setVoiceUi] = useState({ synthState: 'empty', lines: [], currentLine: -1, nextLine: 0 });
+  const [scriptOpen, setScriptOpen] = useState(false);
+  const [scriptText, setScriptText] = useState('');
+  const [synthProg, setSynthProg] = useState(null); // null | { done, total }
   const [tracking, setTracking] = useState({ face: false, pose: false, hands: false });
   const [fps, setFps] = useState(0);
   const [takes, setTakes] = useState([]);
@@ -145,13 +148,14 @@ export default function Studio() {
     stageRef.current = stage;
     const tracker = new Tracker(rig);
     trackerRef.current = tracker;
-    const voice = new VoiceEngine({});
+    // SPIDER VOICE — 100% synthesized, getUserMedia(audio) is NEVER called
+    const voice = new SpideyVoice({});
     voiceRef.current = voice;
 
     if (mode === 'live') {
       const [camOk, audioOk] = await Promise.all([tracker.init(), voice.init()]);
       if (!camOk) tracker.startSim();
-      setMicOk(audioOk);
+      setMicOk(!!audioOk);
       if (audioOk) await voice.resume();
       setBooted(camOk ? 'live' : 'sim');
     } else {
@@ -175,6 +179,9 @@ export default function Studio() {
       tracker.tick(t, dt);
         // Inversion 1: the take is a rig timeline — sample it beside the video
       perfRecRef.current.sample(dt, rig, tracker);
+      /* the lip watcher: your jaw is the trigger — the engine already knows the
+         script, so the pre-voiced line fires the instant your mouth opens */
+      voice.update(dt, rig.jaw, recorderRef.current.recording);
       if (voice.ready && rig.tracking.mode !== 'sim') {
         rig.level += (Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel())) - rig.level) * 0.35;
       }
@@ -206,9 +213,19 @@ export default function Studio() {
       setFps(rig.tracking.fps);
       setLevel(rig.level);
       setExprState(rig.expression);
-      // sidechain-lite: the bed ducks ~4 dB whenever the voice gate is open
+      // sidechain-lite: the bed ducks ~4 dB whenever a voiced line is playing
       if (musicRef.current && voiceRef.current) {
         musicRef.current.duck(!!(voiceRef.current.level && voiceRef.current.level.gateOpen));
+      }
+      // mirror the spider-voice line queue into the panel
+      const v = voiceRef.current;
+      if (v) {
+        setVoiceUi((prev) => (
+          prev.synthState === v.synthState && prev.lines === v.lines
+            && prev.currentLine === v.currentLine && prev.nextLine === v.idx
+            ? prev
+            : { synthState: v.synthState, lines: v.lines, currentLine: v.currentLine, nextLine: v.idx }
+        ));
       }
       if (recorderRef.current.recording) {
         const el = recorderRef.current.elapsed;
@@ -235,10 +252,11 @@ export default function Studio() {
     });
     // burn the first beat's caption from frame one
     if (script && captionsRef.current && script.beats.length) stage.setCaption(script.beats[0].text);
-    // audio for the file: processed voice when the mic is up; else the music
-    // engine's own MediaStreamDestination so a video-only session still ships with score
+    // audio for the file: the synthesized spider voice (mic never used); else the
+    // music engine's own MediaStreamDestination so a video-only session still ships with score
     const voice = voiceRef.current;
     const music = musicRef.current;
+    if (voice && voice.ready) voice.arm(); // rewind to line 1 — first mouth move fires it
     const audioStream = voice && voice.ready ? voice.stream : (music && music.stream) || null;
     const rolled = rec.start(stage, audioStream);
     if (!rolled) {
@@ -263,6 +281,13 @@ export default function Studio() {
       return;
     }
     if (!rec.recording) {
+      // SCRIPT-FIRST: no take rolls until the script is voiced. REC opens the
+      // script sheet instead, so the engine always knows the lines in advance.
+      const voice = voiceRef.current;
+      if (voice && voice.ready && voice.synthState !== 'ready') {
+        setScriptOpen(true);
+        return;
+      }
       // 3-2-1 before the roll; ticks are synth blips (silent if audio never came up)
       let n = 3;
       setCountdown(n);
@@ -283,6 +308,7 @@ export default function Studio() {
     } else {
       const take = await rec.stop();
       const perf = perfRecRef.current.stop();
+      if (voiceRef.current) voiceRef.current.stopPlayback(); // cut any mid-line audio with the take
       setRecording(false); setElapsed(0);
       stage.setHud('COSMIC WEAVER ── STANDBY');
       stage.setCaption(null);
@@ -367,9 +393,9 @@ export default function Studio() {
   }, []);
   const onResetWorldParams = useCallback(() => applyWorldParams(null), [applyWorldParams]);
 
-  // hotkeys
+  // hotkeys (suspended while the script sheet is open)
   useEffect(() => {
-    if (!booted) return undefined;
+    if (!booted || scriptOpen) return undefined;
     const worldKeys = { 1: 'nebula-drift', 2: 'red-planet', 3: 'derelict-station', 4: 'asteroid-earth', 5: 'dying-star' };
     const exprKeys = { q: 'calm', w: 'fury', e: 'narrow', r: 'shock', t: 'smirk' };
     const onKey = (ev) => {
@@ -382,19 +408,27 @@ export default function Studio() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [booted, setWorld, setExpr, doGlitch, toggleRec]);
+  }, [booted, scriptOpen, setWorld, setExpr, doGlitch, toggleRec]);
 
-  const onParam = useCallback((k, v) => {
-    setVoiceParams((p) => ({ ...p, [k]: v }));
-    if (voiceRef.current) voiceRef.current.setParam(k, v);
+  /* SCRIPT & VOICE sheet — hand over the script, pre-voice every line */
+  const openScript = useCallback(() => {
+    // prefill from the picked transmission so its beats become the voiced lines
+    setScriptText((prev) => {
+      if (prev.trim()) return prev;
+      const s = scriptRef.current;
+      return s && s.beats ? s.beats.map((b) => b.text).join('\n') : prev;
+    });
+    setScriptOpen(true);
   }, []);
-  const onPreset = useCallback((k) => {
-    setPresetState(k);
-    if (voiceRef.current) {
-      voiceRef.current.setPreset(k);
-      setVoiceParams({ ...voiceRef.current.params });
-    }
-  }, []);
+  const doSynth = useCallback(async () => {
+    const voice = voiceRef.current;
+    if (!voice || !voice.ready || !scriptText.trim()) return;
+    await voice.resume();
+    setSynthProg({ done: 0, total: 0 });
+    const ok = await voice.synthesize(scriptText, (done, total) => setSynthProg({ done, total }));
+    setSynthProg(null);
+    if (ok) setScriptOpen(false);
+  }, [scriptText]);
   const onMonitor = useCallback((on) => {
     setMonitor(on);
     if (voiceRef.current) voiceRef.current.setMonitor(on);
@@ -410,15 +444,15 @@ export default function Studio() {
           <div className="cw-boot-inner">
             <div className="mono text-[10px] mb-3" style={{ color: 'var(--cw-red)', letterSpacing: '0.3em' }}>SIGNAL ORIGIN: UNKNOWN SECTOR</div>
             <h1 className="mono text-4xl sm:text-5xl font-bold mb-2 tracking-tight">COSMIC<br />WEAVER</h1>
-            <p className="text-sm mb-1" style={{ color: 'var(--cw-text-2)' }}>AR suit studio — the suit is painted onto YOUR real video. Your mouth, blinks and every move stay yours. AI matting drops you into deep space.</p>
-            <p className="mono text-[10px] mb-8" style={{ color: 'var(--cw-muted)' }}>REAL VIDEO SUIT · AI BACKGROUND MATTE — 1080×1920 · 60FPS · $0</p>
+            <p className="text-sm mb-1" style={{ color: 'var(--cw-text-2)' }}>Full-suit AR studio — you become COMPLETELY Spider-Man. The mask visibly lip-syncs as you talk, and your script is pre-voiced as Spidey: mouth a line and it plays instantly. Your mic is never used.</p>
+            <p className="mono text-[10px] mb-8" style={{ color: 'var(--cw-muted)' }}>FULL SUIT · SCRIPT-FIRST SPIDER VOICE · NO MIC — 1080×1920 · 60FPS · $0</p>
             <div className="flex flex-col gap-3 items-start">
               <button className="cw-rec" data-testid="boot-live-btn" disabled={booting}
                 onClick={() => boot('live')}>{booting ? 'INITIALIZING…' : '● INITIALIZE FULL RIG'}</button>
               <button className="cw-chip" style={{ padding: '10px 18px' }} data-testid="boot-sim-btn" disabled={booting}
                 onClick={() => boot('sim')}><span>RUN SIM MODE — NO CAMERA</span></button>
             </div>
-            <p className="mono text-[9px] mt-8" style={{ color: 'var(--cw-muted)' }}>ALLOW CAMERA + MIC WHEN ASKED · WEAR HEADPHONES IF MONITORING</p>
+            <p className="mono text-[9px] mt-8" style={{ color: 'var(--cw-muted)' }}>ALLOW CAMERA ONLY — THE MIC IS NEVER REQUESTED · WEAR HEADPHONES IF MONITORING</p>
           </div>
         </div>
       )}
@@ -435,7 +469,7 @@ export default function Studio() {
         </Link>
         {recording && <span className="mono text-sm" style={{ color: 'var(--cw-red)' }} data-testid="rec-timer">● {fmtClock(elapsed)}</span>}
         <button className={`cw-rec ${recording ? 'live' : ''}`} disabled={!booted} data-testid="record-btn" onClick={toggleRec}>
-          {recording ? '■ STOP & SAVE' : '● REC'}
+          {recording ? '■ STOP & SAVE' : micOk && voiceUi.synthState !== 'ready' ? '● SCRIPT → REC' : '● REC'}
         </button>
       </header>
 
@@ -443,8 +477,9 @@ export default function Studio() {
       <main className="grid grid-cols-1 lg:grid-cols-12 gap-3 p-3">
         {/* left rail */}
         <div className="lg:col-span-3 space-y-3 order-2 lg:order-1">
-          <VoicePanel params={voiceParams} preset={preset} onPreset={onPreset} onParam={onParam}
-            monitor={monitor} onMonitor={onMonitor} level={level} micOk={micOk} />
+          <VoicePanel synthState={voiceUi.synthState} lines={voiceUi.lines} currentLine={voiceUi.currentLine}
+            nextLine={voiceUi.nextLine} monitor={monitor} onMonitor={onMonitor} level={level}
+            voiceOk={micOk} onEditScript={openScript} recording={recording} />
           <MusicPanel on={musicOn} onOn={onMusicOn} bedVol={bedVol} onBedVol={onBedVol}
             sfxVol={sfxVol} onSfxVol={onSfxVol} monitor={musicMonitor} onMonitor={onMusicMonitor} ready={musicReady} />
           <ScenePanel world={world} onWorld={setWorld} />
@@ -498,6 +533,52 @@ export default function Studio() {
           }} />
         </div>
       </main>
+
+      {/* SCRIPT & VOICE sheet — the take cannot roll until this is done.
+          Paste the script, synthesize it, THEN record: the engine knows every
+          line in advance, so your lips fire each pre-voiced line perfectly. */}
+      {scriptOpen && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.72)' }} data-testid="script-sheet"
+          role="dialog" aria-modal="true" aria-label="Script and voice">
+          <div className="cw-panel w-full max-w-lg" style={{ background: 'var(--cw-bg, #0a0a0f)' }}>
+            <h2>◪ Script &amp; Spider Voice</h2>
+            <p className="mono text-[9px] mb-2" style={{ color: 'var(--cw-muted)' }}>
+              STEP 1 · HAND OVER THE SCRIPT — EVERY LINE IS PRE-VOICED AS SPIDER-MAN (FREE TTS, NO MIC).<br />
+              STEP 2 · RECORD — MOUTH EACH LINE AND THE VOICE FIRES THE INSTANT YOUR LIPS MOVE.
+            </p>
+            <textarea
+              className="w-full mono text-[11px] p-2 mb-2"
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--cw-border)', color: 'var(--cw-text-2)', minHeight: 160, resize: 'vertical' }}
+              placeholder={'One line per beat, e.g.\nHey, your friendly neighborhood Spider-Man here.\nWith great power comes great responsibility.'}
+              value={scriptText} data-testid="script-textarea"
+              onChange={(e) => setScriptText(e.target.value)} disabled={!!synthProg} />
+            {synthProg && (
+              <div className="mono text-[9px] mb-2" style={{ color: 'var(--cw-amber)' }} data-testid="synth-progress">
+                SYNTHESIZING SPIDER VOICE… {synthProg.total ? `${synthProg.done}/${synthProg.total}` : ''}
+              </div>
+            )}
+            {voiceUi.synthState === 'error' && !synthProg && (
+              <div className="mono text-[9px] mb-2" style={{ color: 'var(--cw-red)' }}>
+                TTS UNREACHABLE — CHECK YOUR CONNECTION AND TRY AGAIN
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button className="cw-rec" data-testid="script-synth-btn"
+                disabled={!scriptText.trim() || !!synthProg || !micOk} onClick={doSynth}>
+                {synthProg ? 'VOICING…' : '◪ VOICE THE SCRIPT'}
+              </button>
+              <button className="cw-chip" style={{ padding: '10px 16px' }} data-testid="script-close-btn"
+                disabled={!!synthProg} onClick={() => setScriptOpen(false)}>
+                <span>CLOSE</span>
+              </button>
+            </div>
+            {!micOk && (
+              <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-red)' }}>AUDIO ENGINE OFFLINE — RELOAD AND REBOOT THE RIG</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
