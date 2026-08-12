@@ -45,7 +45,7 @@ export class SpideyVoice {
     this.idx = 0;             // next line to fire
     this.currentLine = -1;    // line playing right now (-1 idle)
     this.playing = false;
-    this.synthState = 'empty'; // empty | working | ready | error
+    this.synthState = 'empty'; // empty | working | ready | fallback | error
     this._quietT = 1;          // seconds of closed mouth accumulated
     this._cooldown = 0;
     this._src = null;
@@ -152,8 +152,11 @@ export class SpideyVoice {
       return true;
     }
     /* free TTS unreachable — fall back to the browser's own voice so the
-       take is never blocked. lines with no buffer speak via speechSynthesis. */
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
+       take is never blocked. lines with no buffer speak via speechSynthesis.
+       We only claim the fallback once a real installed voice answers: the API
+       exists on browsers that ship zero voices, and trusting it there would
+       unlock REC and hand back a silent take. */
+    if (await this._hasSystemVoice()) {
       this.lines.forEach((l) => { l.ok = true; });
       this.synthState = 'fallback';
       if (this.onStatus) this.onStatus({ level: 'warn', message: 'web TTS offline — using built-in browser voice' });
@@ -171,6 +174,18 @@ export class SpideyVoice {
     this.currentLine = -1;
     this._quietT = 1;      // first mouth movement fires line 1 instantly
     this._cooldown = 0;
+  }
+
+  /* Does this browser actually have an installed voice we can speak with?
+     getVoices() is populated asynchronously, so poll briefly before giving up. */
+  async _hasSystemVoice() {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return false;
+    for (let i = 0; i < 12; i++) {
+      const list = window.speechSynthesis.getVoices() || [];
+      if (list.length) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
   }
 
   /* pick the most "young US male" voice the browser itself offers */
@@ -225,7 +240,7 @@ export class SpideyVoice {
     // a single line the TTS refused still gets spoken — by the browser voice —
     // so the queue never silently swallows one of your beats
     if (!this.lines[i].buffer) {
-      if (typeof window !== 'undefined' && window.speechSynthesis) { this._speakLine(i); return; }
+      if (this._pickSystemVoice()) { this._speakLine(i); return; }
       while (i < this.lines.length && !this.lines[i].buffer) i++;
       if (i >= this.lines.length) { this.idx = this.lines.length; return; }
     }
