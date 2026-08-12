@@ -1,5 +1,7 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from dotenv import load_dotenv
+import edge_tts
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -44,6 +46,32 @@ class ProgressToggle(BaseModel):
 @api_router.get("/")
 async def root():
     return {"message": "COSMIC WEAVER STUDIO ONLINE", "status": "transmitting"}
+
+
+# THE ONE VOICE — locked server-side so every take carries the same narrator.
+# Andrew is the highest-quality keyless neural voice on the internet; prosody
+# is tuned once, here, to read as "young hero" instead of "news anchor".
+TTS_VOICE = "en-US-AndrewMultilingualNeural"
+TTS_RATE = "+12%"
+TTS_PITCH = "+10Hz"
+
+
+@api_router.get("/tts")
+async def tts(text: str = Query(..., min_length=1, max_length=600)):
+    """Synthesize one script line as MP3 with the locked studio voice."""
+    try:
+        communicate = edge_tts.Communicate(text.strip(), TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+        chunks = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                chunks.append(chunk["data"])
+        audio = b"".join(chunks)
+        if len(audio) < 200:
+            raise ValueError("empty audio")
+        return Response(content=audio, media_type="audio/mpeg",
+                        headers={"Cache-Control": "no-store"})
+    except Exception as err:
+        raise HTTPException(status_code=502, detail=f"tts relay failed: {err}")
 
 
 @api_router.post("/takes", response_model=Take)
