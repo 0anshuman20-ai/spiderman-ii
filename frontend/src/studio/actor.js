@@ -16,19 +16,19 @@
 import * as THREE from 'three';
 import { J, JOINT, REST, FACE, fk, restAngles } from './perf';
 
-const RED = '#7d1016';
-const RED_LIT = '#a4151d';
-const BLUE = '#101c47';
-const BLUE_LIT = '#17275e';
+const RED = '#8e0f18';
+const RED_LIT = '#c2181f';
+const BLUE = '#15255e';
+const BLUE_LIT = '#20397f';
 const WEB = 'rgba(6,6,10,0.94)';
 
 /* ------------------------------------------------------------------ */
 /* procedural costume textures — hex-weave red, twill blue, rubber webbing */
 
 function noiseWash(g, size, amount) {
-  for (let i = 0; i < size * size * 0.045; i++) {
+  for (let i = 0; i < size * size * 0.03; i++) {
     const x = Math.random() * size, y = Math.random() * size;
-    const r = 6 + Math.random() * 26;
+    const r = 4 + Math.random() * 14;
     g.globalAlpha = Math.random() * amount;
     g.fillStyle = Math.random() > 0.5 ? '#ffffff' : '#000000';
     g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
@@ -367,16 +367,23 @@ export function createActor() {
       keyTarget.position.copy(chest);
     },
 
-    /** procedural idle — used when a shot has no performance attached yet */
-    idle(t) {
+    /** procedural idle — used when a shot has no performance attached yet.
+        `face` (Float32Array(FACE_CH)) drives the lenses; `energy` 0..1 turns the
+        idle into a performance: talking hands, head emphasis, weight shifts. */
+    idle(t, face = null, energy = 0) {
       const a = restAngles();
-      a.rootY = Math.sin(t * 1.1) * 0.012;
-      a.spineYaw = Math.sin(t * 0.31) * 0.09;
-      a.headYaw = Math.sin(t * 0.53) * 0.12;
-      a.lSwing = 0.06 + Math.sin(t * 0.6) * 0.05;
-      a.rSwing = 0.06 + Math.sin(t * 0.57 + 1) * 0.05;
+      const e = Math.max(0, Math.min(1, energy));
+      a.rootY = Math.sin(t * 1.1) * 0.012 * (1 + e);
+      a.rootYaw = Math.sin(t * 0.19) * 0.06;
+      a.spineYaw = Math.sin(t * 0.31) * 0.09 + Math.sin(t * 2.3) * 0.04 * e;
+      a.headYaw = Math.sin(t * 0.53) * 0.12 + Math.sin(t * 3.1) * 0.06 * e;
+      a.headPitch = Math.sin(t * 2.7 + 1) * 0.05 * e;
+      a.lSwing = 0.06 + Math.sin(t * 0.6) * 0.05 + Math.max(0, Math.sin(t * 2.1)) * 0.3 * e;
+      a.rSwing = 0.06 + Math.sin(t * 0.57 + 1) * 0.05 + Math.max(0, Math.sin(t * 1.9 + 2.2)) * 0.3 * e;
+      a.lElbow = 0.22 + Math.max(0, Math.sin(t * 2.1)) * 0.55 * e;
+      a.rElbow = 0.22 + Math.max(0, Math.sin(t * 1.9 + 2.2)) * 0.55 * e;
       fk(a, raw);
-      actor.applyPose(raw, null, 1, 0.35);
+      actor.applyPose(raw, face, 1, 0.35);
     },
 
     dispose() {
