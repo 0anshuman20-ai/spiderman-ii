@@ -48,6 +48,7 @@ export default function Studio() {
   const [booting, setBooting] = useState(false);
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [cutting, setCutting] = useState(false); // auto jump-cut is holding the file
   const [world, setWorldState] = useState('nebula-drift');
   const [expr, setExprState] = useState('calm');
   const [monitor, setMonitor] = useState(false);
@@ -179,16 +180,35 @@ export default function Studio() {
       tracker.tick(t, dt);
         // Inversion 1: the take is a rig timeline — sample it beside the video
       perfRecRef.current.sample(dt, rig, tracker);
+      const rec = recorderRef.current;
+      /* AUTO JUMP-CUT, resume side — runs BEFORE the lip watcher so the file
+         is already rolling in the very frame the watcher fires the next line.
+         The 0.05 threshold sits just under the watcher's 0.06 fire threshold:
+         the recorder wakes on the first millimeter of lip movement, one beat
+         ahead of the audio, so no syllable is ever clipped. */
+      if (rec.recording && rec.paused && rig.jaw >= 0.05) rec.resume();
       /* the lip watcher: your jaw is the trigger — the engine already knows the
          script, so the pre-voiced line fires the instant your mouth opens */
-      voice.update(dt, rig.jaw, recorderRef.current.recording);
+      voice.update(dt, rig.jaw, rec.recording);
+      /* AUTO JUMP-CUT, pause side — a line has finished, the mask's mouth is
+         fully closed, and dead air has begun: stop feeding the file. The cut
+         keeps a natural ~0.3s breath after each line (0.18s cooldown + 0.12s
+         confirmed silence), then every further second of thinking/breathing
+         between lines simply never exists in the export. Because the pause
+         only ever lands with jaw < 0.05, the mask's lips are closed on BOTH
+         sides of every cut — the seam is invisible. */
+      if (rec.recording && !rec.paused && voice.ready && voice.canRoll()
+          && !voice.playing && rig.jaw < 0.05 && voice.gapSeconds > 0.12) {
+        rec.pause();
+      }
       if (voice.ready && rig.tracking.mode !== 'sim') {
         rig.level += (Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel())) - rig.level) * 0.35;
       }
-      // auto-perform teleprompter cues while recording
+      // auto-perform teleprompter cues while recording — on RECORDED time, so
+      // beat cues stay glued to the exported file even across jump-cuts
       const script = scriptRef.current;
-      if (script && recorderRef.current.recording) {
-        const el = (performance.now() - recStartRef.current) / 1000;
+      if (script && rec.recording) {
+        const el = rec.elapsed;
         let idx = 0;
         for (let i = 0; i < script.beats.length; i++) if (el >= script.beats[i].t) idx = i;
         if (idx !== beatRef.current) {
@@ -230,7 +250,10 @@ export default function Studio() {
       if (recorderRef.current.recording) {
         const el = recorderRef.current.elapsed;
         setElapsed(el);
+        setCutting(recorderRef.current.paused);
         if (scriptRef.current) setBeatIdx(beatRef.current);
+      } else {
+        setCutting(false);
       }
     }, 200);
     return () => clearInterval(id);
@@ -490,7 +513,13 @@ export default function Studio() {
         <Link to="/omega" className="cw-chip mono text-[10px]" style={{ padding: '8px 14px', textDecoration: 'none' }} data-testid="omega-link">
           <span>Ω OMEGA ROOM</span>
         </Link>
-        {recording && <span className="mono text-sm" style={{ color: 'var(--cw-red)' }} data-testid="rec-timer">● {fmtClock(elapsed)}</span>}
+        {recording && cutting && (
+          <span className="mono text-[9px] px-2 py-1" data-testid="autocut-chip"
+            style={{ color: 'var(--cw-amber)', border: '1px solid var(--cw-border)', letterSpacing: '0.2em' }}>
+            ✂ CUT — SPEAK TO ROLL
+          </span>
+        )}
+        {recording && <span className="mono text-sm" style={{ color: cutting ? 'var(--cw-muted)' : 'var(--cw-red)' }} data-testid="rec-timer">● {fmtClock(elapsed)}</span>}
         <button className={`cw-rec ${recording ? 'live' : ''}`} disabled={!booted} data-testid="record-btn" onClick={toggleRec}>
           {recording ? '■ STOP & SAVE' : micOk && !voiceRollable ? '● SCRIPT → REC' : '● REC'}
         </button>

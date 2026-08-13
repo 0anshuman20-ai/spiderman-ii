@@ -321,6 +321,11 @@ export class SpideyVoice {
     this.currentLine = -1;
   }
 
+  /* seconds of closed-mouth silence accumulated since the last line ended
+     (0 while a line plays or during the post-line cooldown). The auto
+     jump-cut reads this to decide when dead air has started. */
+  get gapSeconds() { return this.playing ? 0 : this._quietT; }
+
   outputLevel() {
     return this.ready ? this.level.rms : 0;
   }

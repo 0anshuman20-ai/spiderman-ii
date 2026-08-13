@@ -26,6 +26,7 @@ Build the definitive $0 in-browser recording studio for the COSMIC WEAVER YouTub
 
 ## Implemented (2026-06)
 - Full studio MVP end-to-end, tested by testing agent: 100% backend (6/6), 100% frontend flows including real recording (WebM produced, beats auto-advanced, progress persisted). Zero console errors.
+- **Auto jump-cut (2026-08)**: dead air between lines never reaches the file. When a voiced line ends and the jaw closes, the recorder pauses (~0.3s natural breath retained); the first millimeter of lip movement resumes it one frame before the next line fires. Cuts only ever land with the mask's mouth closed, so every seam is invisible. Recorder clock/beat cues now run on RECORDED time (pauses excluded); HUD shows a "✂ CUT — SPEAK TO ROLL" chip while holding.
 - **Full-mirror upgrade**: articulated legs (thigh/shin/foot from pose landmarks), root motion (avatar follows your left/right position, distance via shoulder-width, crouch via hip height — AR-filter behavior), teardrop spider lenses with rims + studio environment reflections (PMREM RoomEnvironment), heroic V-torso proportions, realism pass on emissives/bloom. Live-tracking sign corrections (head pitch, torso lean). Recording regression re-verified (17s VP9/Opus take persisted).
 
 ## Backlog (prioritized)
