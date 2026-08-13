@@ -101,9 +101,20 @@ export class Recorder {
     this.recording = false;
     this.startTs = 0;
     this.tier = null;       // 'high' | 'medium' | 'low' — set on every start
+    this.pausedMs = 0;      // total wall time spent paused (jump-cuts + breathers)
+    this._pausedAt = 0;     // wall timestamp of the current pause, 0 when rolling
   }
 
-  get elapsed() { return this.recording ? (performance.now() - this.startTs) / 1000 : 0; }
+  get paused() { return this._pausedAt > 0; }
+
+  /* RECORDED time, not wall time: pauses (auto jump-cuts, breathers) are wall
+     time that never reaches the file, so the HUD clock and beat cues subtract
+     them — what the timer says is exactly how long the export will be. */
+  get elapsed() {
+    if (!this.recording) return 0;
+    const pausedNow = this._pausedAt ? performance.now() - this._pausedAt : 0;
+    return (performance.now() - this.startTs - this.pausedMs - pausedNow) / 1000;
+  }
 
   start(stage, voiceStream) {
     if (this.recording) return false;
@@ -138,6 +149,8 @@ export class Recorder {
     }
     this.recording = true;
     this.startTs = performance.now();
+    this.pausedMs = 0;
+    this._pausedAt = 0;
     this.mime = built.codec.mime;
     this.ext = built.codec.ext;
     this.tier = tierName;
@@ -148,12 +161,16 @@ export class Recorder {
      export has no dead air. Both are no-ops if the recorder isn't rolling. */
   pause() {
     if (!this.recording || !this.rec || this.rec.state !== 'recording') return false;
-    try { this.rec.pause(); return true; } catch (_) { return false; }
+    try { this.rec.pause(); this._pausedAt = performance.now(); return true; } catch (_) { return false; }
   }
 
   resume() {
     if (!this.recording || !this.rec || this.rec.state !== 'paused') return false;
-    try { this.rec.resume(); return true; } catch (_) { return false; }
+    try {
+      this.rec.resume();
+      if (this._pausedAt) { this.pausedMs += performance.now() - this._pausedAt; this._pausedAt = 0; }
+      return true;
+    } catch (_) { return false; }
   }
 
   stop() {
