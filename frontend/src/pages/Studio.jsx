@@ -353,11 +353,13 @@ export default function Studio() {
     setBeatIdx(0); beatRef.current = 0;
     setWorld(s.world);
     // the picked script IS the spoken script: its beats (and loop line) become
-    // the voiced lines, and its mood re-tunes the locked voice's delivery
+    // the voiced lines. THE VOICE IS ALWAYS THE YOUNG HERO — preset moods used
+    // to drag the delivery down into a slow, low "mystery" read, which is why
+    // the voice stopped sounding like Spidey after picking a transmission.
     const lines = (s.beats || []).map((b) => b.text);
     if (s.loopLine) lines.push(s.loopLine);
     setScriptText(lines.join('\n'));
-    if (voiceRef.current) voiceRef.current.setMood(s.mood || 'mystery');
+    if (voiceRef.current) voiceRef.current.setMood('hero');
     if (stageRef.current) stageRef.current.setHud(`COSMIC WEAVER ── TRANSMISSION #${String(s.number).padStart(2, '0')}`);
   }, [setWorld]);
 

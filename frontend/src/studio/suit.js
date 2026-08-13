@@ -57,8 +57,10 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uRim;        // world rim-light color
   uniform float uSuitMix;   // 0 raw video -> 1 full suit
 
-  const vec3 RED  = vec3(0.62, 0.052, 0.075);
-  const vec3 BLUE = vec3(0.055, 0.105, 0.36);
+  // classic screen-suit dye: a brighter true Spider-Man red (the old value
+  // leaned maroon) and a royal blue with more light in it
+  const vec3 RED  = vec3(0.72, 0.065, 0.085);
+  const vec3 BLUE = vec3(0.075, 0.145, 0.46);
   const vec2 KEY_DIR = vec2(-0.42, -0.82);   // key light falls from upper-left
 
   float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -542,12 +544,18 @@ function drawSpider(g, x, y, s, ang) {
   g.restore();
 }
 
+/* EXPRESSION → LENS: kept deliberately SUBTLE. The old table squashed the
+   lenses to 0.42 on "fury" and skewed them asymmetric on "smirk" — script
+   beats auto-switch expressions mid-take, so a few seconds in the eyes would
+   visibly change shape and lose their mirror. That read as a bug, not acting.
+   Now every expression keeps both lenses identical and near their true shape;
+   emotion lives in the GLOW, which can swing freely without deforming. */
 const EXPR = {
   calm: { lens: 1, asym: 0, glow: 1 },
-  fury: { lens: 0.42, asym: 0, glow: 1.6 },
-  narrow: { lens: 0.6, asym: 0, glow: 1.2 },
-  shock: { lens: 1.18, asym: 0, glow: 1.4 },
-  smirk: { lens: 0.85, asym: 0.4, glow: 1.1 },
+  fury: { lens: 0.88, asym: 0, glow: 1.6 },
+  narrow: { lens: 0.92, asym: 0, glow: 1.2 },
+  shock: { lens: 1.06, asym: 0, glow: 1.4 },
+  smirk: { lens: 0.96, asym: 0, glow: 1.1 },
 };
 
 export function createSuitLayer(tracker, rig, planeW, planeH) {
@@ -608,10 +616,10 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
 
   const exprState = { lens: 1, asym: 0, glow: 1 };
   const lensState = { init: false, lx: 0, ly: 0, rx: 0, ry: 0, size: 0, angle: 0 };
-  /* blink hysteresis state: a lens only squashes for REAL blinks. closed flips
-     on above 0.52 and releases below 0.30, so blendshape noise in the 0.3-0.5
-     band can never touch the lens shape. winkT gates deliberate winks. */
-  const blinkState = { closedL: false, closedR: false, winkT: 0, vL: 0, vR: 0 };
+  /* blink hysteresis state: ONE shared gate for BOTH lenses. closed flips on
+     above 0.55 and releases below 0.30, so blendshape noise in between can
+     never touch the lens shape — and both eyes always squash identically. */
+  const blinkState = { closedL: false, vL: 0 };
   let suitOn = 0;
   let graceT = 0;          // hold timer that survives tracking dropouts
   let everLocked = false;  // once true, the suit never reveals raw video again
@@ -636,10 +644,15 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     };
     set(0, chin, shoulderMid, 0, sw * 0.22);              // neck
     set(1, shoulderMid, ext(shoulderMid, hipMid, 1.12), 4, sw * 0.64); // torso, blue flanks
-    set(2, sL, P(13), 0, sw * 0.20);                      // upper arms
-    set(3, P(13), ext(P(13), P(15), 1.38), 0, sw * 0.17); // forearms + gloves
-    set(4, sR, P(14), 0, sw * 0.20);
-    set(5, P(14), ext(P(14), P(16), 1.38), 0, sw * 0.17);
+    /* EXACT classic suit arms: RED shoulder -> BLUE mid-arm -> RED glove.
+       The old all-red arms read as the wrong costume. Col 2 is a blue->red
+       gradient along the capsule, so the upper arm is stored elbow->shoulder
+       (red lands on the shoulder, with its webbing) and the forearm is stored
+       elbow->wrist (red melts into the glove, webbing included). */
+    set(2, P(13), sL, 2, sw * 0.20);                      // elbow -> shoulder: blue -> red
+    set(3, P(13), ext(P(13), P(15), 1.38), 2, sw * 0.17); // elbow -> glove: blue -> red
+    set(4, P(14), sR, 2, sw * 0.20);
+    set(5, P(14), ext(P(14), P(16), 1.38), 2, sw * 0.17);
     set(6, hL, P(25), 1, sw * 0.26);                      // thighs
     set(7, P(25), ext(P(25), P(27), 1.30), 2, sw * 0.21); // shins -> boots
     set(8, hR, P(26), 1, sw * 0.26);
@@ -700,7 +713,9 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       // head is no further from the camera — divide out cos(yaw) so the lenses
       // hold their true size through every head turn.
       const yawC = Math.max(0.55, Math.abs(Math.cos(rig.headYaw)));
-      const size = (eyeDistPx / yawC) * 0.58;
+      // 0.52: the screen-suit proportion without swallowing the temples — the
+      // old 0.58 read slightly bug-eyed at close camera distance
+      const size = (eyeDistPx / yawC) * 0.52;
       const angle = f.angle;
       const ca = Math.cos(angle), sa = Math.sin(angle);
       /* ---- mask center seam: forehead over the nose bridge to the chin ---- */
@@ -761,31 +776,26 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
         if (dA > Math.PI) dA -= Math.PI * 2; else if (dA < -Math.PI) dA += Math.PI * 2;
         ls.angle += dA * sk;
       }
-      /* ---- ROCK-STEADY EYES: deadband + hysteresis + forced symmetry ---- */
+      /* ---- ROCK-STEADY EYES: ONE gate, ONE shape, ALWAYS mirrored ----
+         The old per-eye hysteresis could latch one eye "closed" while the
+         other stayed open (blendshape noise sits in the hysteresis band on
+         one side only), so seconds into a take the two lenses drifted into
+         different shapes and never recovered. Now a SINGLE blink signal —
+         the minimum of both eyes, so it only fires when both really close —
+         drives one shared squash. The two lenses are mathematically
+         incapable of differing. */
       const bst = blinkState;
-      const gate = (raw, key) => {
-        if (bst[key]) { if (raw < 0.30) bst[key] = false; }
-        else if (raw > 0.52) bst[key] = true;
-        // shaped output: zero unless a real blink is in progress
-        return bst[key] ? Math.min(1, Math.max(0, (raw - 0.18) / 0.62)) : 0;
-      };
-      let bL = gate(rig.blinkL, 'closedL');
-      let bR = gate(rig.blinkR, 'closedR');
-      // smooth the shaped values a touch so the squash never steps
-      bst.vL += (bL - bst.vL) * 0.55; bst.vR += (bR - bst.vR) * 0.55;
-      bL = bst.vL; bR = bst.vR;
-      /* BILATERAL SYMMETRY: humans blink both eyes together. Only a hard,
-         deliberate wink (one eye decisively shut, the other decisively open)
-         is allowed to break the mirror — everything else blinks in lockstep. */
-      const winkNow = bst.closedL !== bst.closedR && Math.abs(rig.blinkL - rig.blinkR) > 0.45;
-      bst.winkT = winkNow ? Math.min(1, bst.winkT + 0.12) : Math.max(0, bst.winkT - 0.25);
-      if (bst.winkT < 0.5) { const b = Math.max(bL, bR); bL = b; bR = b; }
+      const rawBlink = Math.min(rig.blinkL || 0, rig.blinkR || 0);
+      if (bst.closedL) { if (rawBlink < 0.30) bst.closedL = false; }
+      else if (rawBlink > 0.55) bst.closedL = true;
+      const shaped = bst.closedL ? Math.min(1, Math.max(0, (rawBlink - 0.18) / 0.62)) : 0;
+      bst.vL += (shaped - bst.vL) * 0.55;
+      const blink = bst.vL;
       // brow deadband: resting brow chatter never wobbles the lens shape
       const brow = rig.browUp > 0.14 ? (rig.browUp - 0.14) / 0.86 : 0;
-      const sqL = exprState.lens * (1 + exprState.asym * 0.4) * (1 - bL * 0.62) * (1 + brow * 0.18);
-      const sqR = exprState.lens * (1 - exprState.asym * 0.4) * (1 - bR * 0.62) * (1 + brow * 0.18);
-      drawLens(og, ls.lx, ls.ly, ls.size, ls.angle, -1, sqL, exprState.glow);
-      drawLens(og, ls.rx, ls.ry, ls.size, ls.angle, 1, sqR, exprState.glow);
+      const sq = exprState.lens * (1 - blink * 0.62) * (1 + brow * 0.12);
+      drawLens(og, ls.lx, ls.ly, ls.size, ls.angle, -1, sq, exprState.glow);
+      drawLens(og, ls.rx, ls.ry, ls.size, ls.angle, 1, sq, exprState.glow);
       og.restore();
     }
     const p = tracker.points.pose;
@@ -844,7 +854,13 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       uniforms.uMouthC.value.set(f.mouth.x, f.mouth.y * ASPECT);
       uniforms.uMouthW.value = Math.max(0.02, f.mouthW * 0.85);
       uniforms.uMouthOpen.value = f.mouthOpen;
-      uniforms.uJaw.value = rig.jaw;
+      /* TRUE LIP SYNC: the mask's mouth is driven by BOTH your real jaw AND
+         the live loudness of the synthesized voice (rig.level tracks the TTS
+         output). When a line plays, the fabric mouth articulates with the
+         AUDIO's actual syllables — so the mask never sits still mid-word and
+         never flaps after the line ends. */
+      const audioJaw = Math.min(1, (rig.level || 0) * 1.1);
+      uniforms.uJaw.value = Math.max(rig.jaw, audioJaw * 0.8);
       uniforms.uPucker.value = rig.pucker;
       uniforms.uSmile.value = rig.smile;
     } else if (graceT > 0 && everLocked) {
