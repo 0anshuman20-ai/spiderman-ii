@@ -45,7 +45,9 @@ const fragmentShader = /* glsl */ `
   uniform vec2 uMouthC;     // mouth center (aspect-corrected)
   uniform float uMouthW;    // mouth width (aspect-corrected)
   uniform float uMouthOpen; // lip separation (aspect-corrected)
-  uniform float uJaw;       // jawOpen blendshape 0..1
+  uniform float uJaw;       // fused jaw (blendshape + lip-gap geometry) 0..1
+  uniform float uPucker;    // viseme: mouth rounds ("O"/"OO") 0..1
+  uniform float uSmile;     // viseme: mouth widens ("E") 0..1
   uniform vec2 uChest;      // chest web origin
   uniform float uChestS;    // body web spacing
   uniform float uPoseOk;
@@ -144,6 +146,9 @@ const fragmentShader = /* glsl */ `
     // asymmetric growth: extend well above the brow line so the hairline, fringe
     // and crown are all inside the mask region
     if (hd2.y < 0.0) hd2.y *= 0.74;                 // upper half reaches further for hair
+    // jaw-driven chin extension: when the mouth opens the real chin drops, so the
+    // mask capsule reaches further down — the fabric visibly follows the jaw
+    if (hd2.y > 0.0) hd2.y /= (1.0 + uJaw * 0.16);
     hd2.x /= 1.03;                                  // slight width for ears/sideburns
     float dHead = length(hd2);
     bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 1.86;
@@ -166,11 +171,15 @@ const fragmentShader = /* glsl */ `
       vec2 qm = q;
       if (uFaceOk > 0.3) {
         vec2 mv = q - uMouthC;
-        float mrad = max(uMouthW, 0.02) * 2.1;
+        float mrad = max(uMouthW, 0.02) * 2.3;
         float mfall = exp(-dot(mv, mv) / max(mrad * mrad * 0.5, 1e-6));
-        // whisper of stretch only: enough to read as fabric, never as a mouth
-        float stretch = clamp(uJaw * 0.55 + uMouthOpen * 2.0, 0.0, 0.4);
-        qm -= normalize(mv + vec2(1e-5)) * mfall * stretch * max(uMouthW, 0.02) * 0.55;
+        // web lines VISIBLY spread apart over the talking mouth — pucker rounds
+        // the spread field, smile widens it; hard-zero at rest via the jaw gate
+        float gate = smoothstep(0.03, 0.12, uJaw);
+        float stretch = clamp(uJaw * 0.85 + uMouthOpen * 2.6 + uPucker * 0.30, 0.0, 0.72) * gate;
+        vec2 dir = normalize(mv + vec2(1e-5));
+        dir.x *= 1.0 + uSmile * 0.5 - uPucker * 0.35; // viseme-shaped spread
+        qm -= dir * mfall * stretch * max(uMouthW, 0.02) * 0.62;
       }
       wd = webDist(qm, uFaceC, uFaceRoll, sp, 24.0);
       webSpacing = sp;
@@ -340,22 +349,49 @@ const fragmentShader = /* glsl */ `
       sLuma = clamp(0.24 + lam * 0.34 + wrap * 0.12 + amb, 0.0, 1.0);
       form = clamp(lam * 0.45 - 0.10, -0.35, 0.5);                 // specular from geometry
 
-      /* NATURAL LIPS ONLY: no drawn mouth, no ridge, no chin crease, no corner
-         tension — all of that read as painted-on speaking lips. What remains is
-         a single barely-there fabric dent driven by your real jaw, invisible at
-         rest and only just perceptible while you talk: enough to know the mask
-         is speaking, nothing more. */
+      /* ============ SYNTHETIC FABRIC MOUTH (viseme-aware) ============
+         A real spandex mask over a talking mouth is pure geometry: the jaw
+         drops the fabric into a shadowed cavity, the stretched upper lip
+         catches the key light as a ridge, the chin pushes a lit bulge below,
+         and tension creases dimple the corners. Every term below is gated by
+         live articulation, so the mask is perfectly clean at rest — no
+         painted-on lips, ever — and fully alive the instant you speak. */
       if (uFaceOk > 0.3) {
         vec2 md = q - uMouthC;
-        // rotate into head space so the dent stays glued during head tilt
+        // rotate into head space so the mouth stays glued during head tilt
         md = vec2(md.x * hcs - md.y * hsn, md.x * hsn + md.y * hcs);
         float mw = max(uMouthW, 0.015);
-        float openA = clamp(uJaw * 1.5 + uMouthOpen * 5.0, 0.0, 1.0);
-        vec2 mc = vec2(md.x / (mw * 1.30), (md.y - mw * 0.18 * openA) / (mw * (0.50 + openA * 1.15)));
-        float cav = exp(-dot(mc, mc) * 2.1);
-        sLuma -= cav * openA * 0.07;                 // zero at rest, whisper while talking
-        sLuma = clamp(sLuma, 0.0, 1.0);
-        form -= cav * openA * 0.06;                  // the faintest matte spot in the light
+        // activity gates — smoothstep deadbands mean HARD ZERO at rest
+        float openA = smoothstep(0.035, 0.12, uJaw) * clamp(uJaw * 1.35 + uMouthOpen * 4.5, 0.0, 1.0);
+        float puck  = smoothstep(0.12, 0.40, uPucker);
+        float sml   = smoothstep(0.14, 0.48, uSmile);
+        float act   = max(openA, max(puck * 0.55, sml * 0.45));
+        if (act > 0.004) {
+          /* viseme-shaped cavity: rounds when you say "O" (pucker narrows width,
+             adds height), widens on "E" (smile), opens tall on "A" (jaw) */
+          float wS = 1.30 * (1.0 - puck * 0.42) * (1.0 + sml * 0.50);
+          float hS = (0.48 + openA * 1.20) * (1.0 + puck * 0.38);
+          vec2 mc = vec2(md.x / (mw * wS), (md.y - mw * 0.20 * openA) / (mw * hS));
+          float cav = exp(-dot(mc, mc) * 2.0) * openA;
+          sLuma -= cav * 0.15;                        // shadowed fabric cavity
+          form  -= cav * 0.10;                        // cavity goes matte in the light
+          // stretched-fabric upper-lip highlight: a ridge just above the cavity
+          vec2 ul = vec2(md.x / (mw * (1.10 + sml * 0.40)), (md.y + mw * (0.26 + openA * 0.20)) / (mw * 0.17));
+          float ridge = exp(-dot(ul, ul) * 2.3) * act;
+          sLuma += ridge * 0.09;
+          form  += ridge * 0.07;
+          // chin bulge: the jaw pushes fabric outward below the cavity
+          vec2 cb = vec2(md.x / (mw * 1.05), (md.y - mw * (0.85 + openA * 0.55)) / (mw * 0.55));
+          float bulge = exp(-dot(cb, cb) * 1.8) * openA;
+          sLuma += bulge * 0.06;
+          form  += bulge * 0.04;
+          // tension creases: soft dimples at both mouth corners
+          vec2 coL = vec2((md.x + mw * (0.60 + sml * 0.32)) / (mw * 0.22), md.y / (mw * 0.34));
+          vec2 coR = vec2((md.x - mw * (0.60 + sml * 0.32)) / (mw * 0.22), md.y / (mw * 0.34));
+          float dimp = (exp(-dot(coL, coL) * 1.6) + exp(-dot(coR, coR) * 1.6)) * max(act, sml);
+          sLuma -= dimp * 0.05;
+          sLuma = clamp(sLuma, 0.0, 1.0);
+        }
       }
     }
 
@@ -537,6 +573,8 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     uMouthW: { value: 0.05 },
     uMouthOpen: { value: 0 },
     uJaw: { value: 0 },
+    uPucker: { value: 0 },
+    uSmile: { value: 0 },
     uChest: { value: new THREE.Vector2(0.5, 0.75) },
     uChestS: { value: 0.11 },
     uPoseOk: { value: 0 },
@@ -570,6 +608,10 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
 
   const exprState = { lens: 1, asym: 0, glow: 1 };
   const lensState = { init: false, lx: 0, ly: 0, rx: 0, ry: 0, size: 0, angle: 0 };
+  /* blink hysteresis state: a lens only squashes for REAL blinks. closed flips
+     on above 0.52 and releases below 0.30, so blendshape noise in the 0.3-0.5
+     band can never touch the lens shape. winkT gates deliberate winks. */
+  const blinkState = { closedL: false, closedR: false, winkT: 0, vL: 0, vR: 0 };
   let suitOn = 0;
   let graceT = 0;          // hold timer that survives tracking dropouts
   let everLocked = false;  // once true, the suit never reveals raw video again
@@ -653,8 +695,12 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       const eyeDistPx = f.eyeDist * CROP_W;
       // film-suit lens proportion: the big expressive teardrop is what makes the
       // mask instantly read as Spider-Man — slightly larger than half the
-      // interpupillary distance, like the screen-used suits
-      const size = eyeDistPx * 0.58;
+      // interpupillary distance, like the screen-used suits.
+      // YAW COMPENSATION: a head turn foreshortens the eye distance but your
+      // head is no further from the camera — divide out cos(yaw) so the lenses
+      // hold their true size through every head turn.
+      const yawC = Math.max(0.55, Math.abs(Math.cos(rig.headYaw)));
+      const size = (eyeDistPx / yawC) * 0.58;
       const angle = f.angle;
       const ca = Math.cos(angle), sa = Math.sin(angle);
       /* ---- mask center seam: forehead over the nose bridge to the chin ---- */
@@ -678,25 +724,10 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       og.stroke();
       og.restore();
 
-      /* ---- mouth: NOTHING is drawn at rest. Your natural lips drive a single
-         whisper-faint shadow that only exists while the jaw is actually open —
-         just enough to tell the mask is speaking, never a painted-on mouth. */
-      const jaw = rig.jaw;
-      if (jaw > 0.06) {
-        const mx = f.mouth.x * CROP_W, my = f.mouth.y * CROP_H;
-        const mw = Math.max(f.mouthW * CROP_W * 0.7, eyeDistPx * 0.32);
-        const mh = f.mouthOpen * CROP_W * 1.1 + eyeDistPx * 0.06;
-        const mAlpha = Math.min(0.12, (jaw - 0.06) * 0.14);  // hard-capped: barely visible
-        const mg = og.createRadialGradient(mx, my + mh * 0.25, 0, mx, my + mh * 0.25, mw);
-        mg.addColorStop(0, `rgba(16,0,3,${mAlpha})`);
-        mg.addColorStop(0.55, `rgba(16,0,3,${mAlpha * 0.35})`);
-        mg.addColorStop(1, 'rgba(16,0,3,0)');
-        og.fillStyle = mg;
-        og.save();
-        og.translate(mx, my + mh * 0.25); og.rotate(angle); og.scale(1, Math.max(0.35, (mh / mw) * 1.3));
-        og.beginPath(); og.arc(0, 0, mw, 0, Math.PI * 2); og.fill();
-        og.restore();
-      }
+      /* ---- mouth: the SHADER owns the mouth now. The synthetic fabric-mouth
+         model (cavity, upper-lip ridge, chin bulge, corner dimples) is painted
+         in the recolor pass itself — a second canvas shadow here would double
+         up and read as a smudge, so the overlay draws nothing over the mouth. */
 
       /* NO brow strokes: a real Spider-Man mask has no eyebrows. Expression
          lives entirely in the lens squash below — exactly like the films. */
@@ -722,13 +753,37 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
         const sk = 0.4;                       // steady but never laggy
         ls.lx += (rawL.x - ls.lx) * sk; ls.ly += (rawL.y - ls.ly) * sk;
         ls.rx += (rawR.x - ls.rx) * sk; ls.ry += (rawR.y - ls.ry) * sk;
-        ls.size += (size - ls.size) * 0.25;   // scale changes even slower
+        /* SIZE STABILITY DEADBAND: sub-3.5% size noise (landmark shimmer,
+           micro head bobs) is ignored entirely — the lenses only resize when
+           you genuinely move toward or away from the camera. */
+        if (Math.abs(size - ls.size) > ls.size * 0.035) ls.size += (size - ls.size) * 0.18;
         let dA = angle - ls.angle;
         if (dA > Math.PI) dA -= Math.PI * 2; else if (dA < -Math.PI) dA += Math.PI * 2;
         ls.angle += dA * sk;
       }
-      const sqL = exprState.lens * (1 + exprState.asym * 0.4) * (1 - rig.blinkL * 0.62) * (1 + rig.browUp * 0.18);
-      const sqR = exprState.lens * (1 - exprState.asym * 0.4) * (1 - rig.blinkR * 0.62) * (1 + rig.browUp * 0.18);
+      /* ---- ROCK-STEADY EYES: deadband + hysteresis + forced symmetry ---- */
+      const bst = blinkState;
+      const gate = (raw, key) => {
+        if (bst[key]) { if (raw < 0.30) bst[key] = false; }
+        else if (raw > 0.52) bst[key] = true;
+        // shaped output: zero unless a real blink is in progress
+        return bst[key] ? Math.min(1, Math.max(0, (raw - 0.18) / 0.62)) : 0;
+      };
+      let bL = gate(rig.blinkL, 'closedL');
+      let bR = gate(rig.blinkR, 'closedR');
+      // smooth the shaped values a touch so the squash never steps
+      bst.vL += (bL - bst.vL) * 0.55; bst.vR += (bR - bst.vR) * 0.55;
+      bL = bst.vL; bR = bst.vR;
+      /* BILATERAL SYMMETRY: humans blink both eyes together. Only a hard,
+         deliberate wink (one eye decisively shut, the other decisively open)
+         is allowed to break the mirror — everything else blinks in lockstep. */
+      const winkNow = bst.closedL !== bst.closedR && Math.abs(rig.blinkL - rig.blinkR) > 0.45;
+      bst.winkT = winkNow ? Math.min(1, bst.winkT + 0.12) : Math.max(0, bst.winkT - 0.25);
+      if (bst.winkT < 0.5) { const b = Math.max(bL, bR); bL = b; bR = b; }
+      // brow deadband: resting brow chatter never wobbles the lens shape
+      const brow = rig.browUp > 0.14 ? (rig.browUp - 0.14) / 0.86 : 0;
+      const sqL = exprState.lens * (1 + exprState.asym * 0.4) * (1 - bL * 0.62) * (1 + brow * 0.18);
+      const sqR = exprState.lens * (1 - exprState.asym * 0.4) * (1 - bR * 0.62) * (1 + brow * 0.18);
       drawLens(og, ls.lx, ls.ly, ls.size, ls.angle, -1, sqL, exprState.glow);
       drawLens(og, ls.rx, ls.ry, ls.size, ls.angle, 1, sqR, exprState.glow);
       og.restore();
@@ -790,6 +845,8 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       uniforms.uMouthW.value = Math.max(0.02, f.mouthW * 0.85);
       uniforms.uMouthOpen.value = f.mouthOpen;
       uniforms.uJaw.value = rig.jaw;
+      uniforms.uPucker.value = rig.pucker;
+      uniforms.uSmile.value = rig.smile;
     } else if (graceT > 0 && everLocked) {
       uniforms.uFaceOk.value = 1;                   // hold the mask in its last pose
     } else {

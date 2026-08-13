@@ -125,6 +125,7 @@ export class Tracker {
     const kFace = 1 - Math.exp(-dt * 20); // fast — the mask must feel glued to you
     const kPos = 1 - Math.exp(-dt * 26);  // near-instant landmark follow, tiny denoise
     const kBody = 1 - Math.exp(-dt * 10);
+    const kMouth = 1 - Math.exp(-dt * 34); // dedicated near-raw mouth clock: zero perceptible lag
 
     /* ---- FACE (every frame — this drives the mask + lenses) ---- */
     try {
@@ -142,12 +143,19 @@ export class Tracker {
         f.eyeR.x = lerp(f.eyeR.x, eRx, kPos); f.eyeR.y = lerp(f.eyeR.y, eRy, kPos);
         sm(f.center, 168);   // nose bridge between the eyes
         sm(f.chin, 152); sm(f.forehead, 10);
-        sm(f.mouth, 13);     // upper inner lip center
         const aspect = CROP_H / CROP_W;
         f.eyeDist = lerp(f.eyeDist, Math.hypot(eRx - eLx, (eRy - eLy) * aspect), kPos);
         f.angle = lerp(f.angle, Math.atan2((eRy - eLy) * aspect, eRx - eLx), kPos);
-        f.mouthW = lerp(f.mouthW, Math.hypot(lm[308].x - lm[78].x, (lm[308].y - lm[78].y) * aspect), kPos);
-        f.mouthOpen = lerp(f.mouthOpen, Math.hypot(lm[14].x - lm[13].x, (lm[14].y - lm[13].y) * aspect), kPos);
+        /* MOUTH CHANNELS ride the dedicated fast clock: the fabric-mouth model in
+           the shader must articulate the instant your lips do, or the illusion of
+           the mask "speaking" collapses into rubbery lag. */
+        // true mouth anchor: midpoint BETWEEN the inner lips (13 upper / 14 lower),
+        // so the cavity stays centered whether the mouth is shut or wide open
+        const mAx = (lm[13].x + lm[14].x) / 2, mAy = (lm[13].y + lm[14].y) / 2;
+        f.mouth.x = lerp(f.mouth.x, mAx, kMouth);
+        f.mouth.y = lerp(f.mouth.y, mAy, kMouth);
+        f.mouthW = lerp(f.mouthW, Math.hypot(lm[308].x - lm[78].x, (lm[308].y - lm[78].y) * aspect), kMouth);
+        f.mouthOpen = lerp(f.mouthOpen, Math.hypot(lm[14].x - lm[13].x, (lm[14].y - lm[13].y) * aspect), kMouth);
       } else {
         rig.tracking.face = false;
         pts.face.ok = lerp(pts.face.ok, 0, kFace * 0.5);
@@ -158,11 +166,20 @@ export class Tracker {
         // input is pre-mirrored, so reported Left/Right already match the viewer
         rig.blinkL = lerp(rig.blinkL, bs.eyeBlinkLeft || 0, kFace);
         rig.blinkR = lerp(rig.blinkR, bs.eyeBlinkRight || 0, kFace);
-        rig.jaw = lerp(rig.jaw, Math.min(1, (bs.jawOpen || 0) * 1.5), kFace);
+        /* JAW FUSION: the jawOpen blendshape alone under-reports wide vowels and
+           lags fast speech. Fuse it with real lip-gap GEOMETRY, normalized by
+           eye distance so it is scale-invariant (same value at any distance from
+           the camera). max() means the jaw can never under-report an open mouth. */
+        const lipGapN = pts.face.mouthOpen / Math.max(pts.face.eyeDist, 1e-4);
+        const jawGeo = Math.min(1, Math.max(0, (lipGapN - 0.03) * 3.6));
+        const jawBS = Math.min(1, (bs.jawOpen || 0) * 1.5);
+        rig.jaw = lerp(rig.jaw, Math.max(jawBS, jawGeo), kMouth);
         rig.browUp = lerp(rig.browUp, bs.browInnerUp || 0, kFace);
         rig.browDown = lerp(rig.browDown, Math.max(bs.browDownLeft || 0, bs.browDownRight || 0), kFace);
-        rig.smile = lerp(rig.smile, Math.max(bs.mouthSmileLeft || 0, bs.mouthSmileRight || 0), kFace);
-        rig.pucker = lerp(rig.pucker, bs.mouthPucker || 0, kFace);
+        // viseme drivers on the fast clock: pucker fuses funnel ("O"/"OO" shapes),
+        // smile widens ("E") — these sculpt the fabric mouth in the shader
+        rig.smile = lerp(rig.smile, Math.max(bs.mouthSmileLeft || 0, bs.mouthSmileRight || 0), kMouth);
+        rig.pucker = lerp(rig.pucker, Math.max(bs.mouthPucker || 0, bs.mouthFunnel || 0), kMouth);
       }
       if (fr.facialTransformationMatrixes && fr.facialTransformationMatrixes.length) {
         const m = fr.facialTransformationMatrixes[0].data;
