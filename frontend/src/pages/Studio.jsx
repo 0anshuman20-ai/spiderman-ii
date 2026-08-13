@@ -12,7 +12,7 @@ import { EMOTE_TO_EXPR } from '../studio/scripts';
 import { DEFAULT_WORLD_PARAMS } from '../studio/worlds';
 import { readActiveParams, writeActiveParams, readPresets, savePreset, deletePreset, isDefaultParams } from '../studio/worldPresets';
 import { ScenePanel, ExpressionPanel, VoicePanel, StatusPanel, MusicPanel, WorldEditorPanel } from '../components/studio/Panels';
-import { ScriptLog, Prompter } from '../components/studio/Teleprompter';
+import { ScriptLog, Prompter, UploadKit } from '../components/studio/Teleprompter';
 import { TakesPanel } from '../components/studio/TakesPanel';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -352,6 +352,12 @@ export default function Studio() {
     setActiveScript(s);
     setBeatIdx(0); beatRef.current = 0;
     setWorld(s.world);
+    // the picked script IS the spoken script: its beats (and loop line) become
+    // the voiced lines, and its mood re-tunes the locked voice's delivery
+    const lines = (s.beats || []).map((b) => b.text);
+    if (s.loopLine) lines.push(s.loopLine);
+    setScriptText(lines.join('\n'));
+    if (voiceRef.current) voiceRef.current.setMood(s.mood || 'mystery');
     if (stageRef.current) stageRef.current.setHud(`COSMIC WEAVER ── TRANSMISSION #${String(s.number).padStart(2, '0')}`);
   }, [setWorld]);
 
@@ -426,7 +432,10 @@ export default function Studio() {
     setScriptText((prev) => {
       if (prev.trim()) return prev;
       const s = scriptRef.current;
-      return s && s.beats ? s.beats.map((b) => b.text).join('\n') : prev;
+      if (!s || !s.beats) return prev;
+      const lines = s.beats.map((b) => b.text);
+      if (s.loopLine) lines.push(s.loopLine);
+      return lines.join('\n');
     });
     setScriptOpen(true);
   }, []);
@@ -539,6 +548,7 @@ export default function Studio() {
         <div className="lg:col-span-4 space-y-3 order-3 flex flex-col">
           <StatusPanel tracking={tracking} micOk={micOk} fps={fps} mode={booted === 'sim' ? 'sim' : rigRef.current.tracking.mode} />
           <ScriptLog active={activeScript} onPick={pickScript} progress={progress} recording={recording} beatIdx={beatIdx} />
+          <UploadKit script={activeScript} />
           <TakesPanel takes={takes} onDelete={(id) => {
             setTakes((p) => p.filter((t) => t.id !== id));
             axios.delete(`${API}/takes/${id}`).catch(() => {});

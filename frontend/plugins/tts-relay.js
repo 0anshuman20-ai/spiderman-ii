@@ -20,18 +20,31 @@ const { MsEdgeTTS, OUTPUT_FORMAT } = require("msedge-tts");
 // ships. Pushed a touch faster and noticeably brighter, he lands squarely on
 // "wired teenage hero mid-swing" instead of Andrew's "warm adult narrator".
 const VOICE = "en-US-BrianMultilingualNeural";
-const PROSODY = { rate: "+14%", pitch: "+18Hz", volume: "+0%" };
+
+/* MOODS — same locked voice, four locked deliveries. The client may only name
+   a mood; the prosody numbers live here and nowhere else. `mystery` is the
+   channel default: slower and lower than the hero read, so every fact lands
+   like a secret instead of a headline. */
+const MOODS = {
+  mystery: { rate: "-2%", pitch: "-6Hz", volume: "+0%" },   // low, deliberate, leaning-in
+  hero:    { rate: "+14%", pitch: "+18Hz", volume: "+0%" }, // the original wired young hero
+  urgent:  { rate: "+18%", pitch: "+8Hz", volume: "+0%" },  // escalating, breathless
+  somber:  { rate: "-8%", pitch: "-12Hz", volume: "+0%" },  // heavy, funereal, awed
+};
+const DEFAULT_MOOD = "mystery";
 
 // tiny in-memory cache: re-synthesizing an unchanged line is pure waste
-const cache = new Map(); // text -> Buffer
+const cache = new Map(); // `${mood}\u0000${text}` -> Buffer
 const CACHE_MAX = 200;
 
-async function synthesize(text) {
-  const hit = cache.get(text);
+async function synthesize(text, mood) {
+  const prosody = MOODS[mood] || MOODS[DEFAULT_MOOD];
+  const key = `${mood}\u0000${text}`;
+  const hit = cache.get(key);
   if (hit) return hit;
   const tts = new MsEdgeTTS();
   await tts.setMetadata(VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
-  const { audioStream } = await tts.toStream(text, PROSODY);
+  const { audioStream } = await tts.toStream(text, prosody);
   const buf = await new Promise((resolve, reject) => {
     const chunks = [];
     const kill = setTimeout(() => reject(new Error("tts timeout")), 15000);
@@ -42,7 +55,7 @@ async function synthesize(text) {
   try { tts.close(); } catch (_) {}
   if (!buf || buf.length < 200) throw new Error("empty audio");
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
-  cache.set(text, buf);
+  cache.set(key, buf);
   return buf;
 }
 
@@ -52,9 +65,10 @@ async function synthesize(text) {
    answer /tts with index.html before this code ever saw the request. */
 async function ttsHandler(req, res) {
   const text = String(req.query.text || "").slice(0, 600).trim();
+  const mood = MOODS[String(req.query.mood || "")] ? String(req.query.mood) : DEFAULT_MOOD;
   if (!text) { res.status(400).json({ error: "text required" }); return; }
   try {
-    const buf = await synthesize(text);
+    const buf = await synthesize(text, mood);
     res.set({ "Content-Type": "audio/mpeg", "Cache-Control": "no-store" });
     res.send(buf);
   } catch (err) {

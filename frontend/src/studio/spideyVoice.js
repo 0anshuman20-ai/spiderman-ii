@@ -59,6 +59,13 @@ export class SpideyVoice {
     this._cooldown = 0;
     this._src = null;
     this._utter = null;        // live speechSynthesis utterance (fallback mode)
+    this.mood = 'mystery';     // named delivery; prosody numbers live server-side only
+  }
+
+  /* pick the locked delivery for the NEXT synthesis — 'mystery' | 'hero' |
+     'urgent' | 'somber'. The server ignores unknown names. */
+  setMood(mood) {
+    this.mood = String(mood || 'mystery');
   }
 
   /* the take may roll once every line is voiced — either as decoded buffers or
@@ -126,7 +133,7 @@ export class SpideyVoice {
       const ctrl = new AbortController();
       const kill = setTimeout(() => ctrl.abort(), 20000);
       try {
-        const url = `${endpoint}?text=${encodeURIComponent(text)}`;
+        const url = `${endpoint}?text=${encodeURIComponent(text)}&mood=${encodeURIComponent(this.mood)}`;
         const res = await fetch(url, { signal: ctrl.signal });
         clearTimeout(kill);
         if (!res.ok) continue;
