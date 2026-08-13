@@ -60,6 +60,58 @@ export const ScriptLog = ({ active, onPick, progress, recording = false, beatIdx
   );
 };
 
+/* UPLOAD KIT — everything YouTube asks for at publish time, one copy button
+   per field, straight from the picked script. Only renders for scripts that
+   carry publish metadata (the launch sequence). */
+export const UploadKit = ({ script }) => {
+  const [copied, setCopied] = useState(null);
+  if (!script || !script.videoTitle) return null;
+  const copy = async (field, value) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(field);
+      setTimeout(() => setCopied(null), 1400);
+    } catch (_) { /* clipboard unavailable */ }
+  };
+  const rows = [
+    ['TITLE', script.videoTitle],
+    ['DESCRIPTION', script.description],
+    ['TAGS', (script.tags || []).join(', ')],
+    ['PINNED COMMENT', script.pinnedComment],
+  ];
+  return (
+    <div className="cw-panel" data-testid="upload-kit">
+      <h2>
+        ⬆ Upload Kit — #{String(script.number).padStart(2, '0')}
+        {script.best && <span className="mono text-[9px] ml-2" style={{ color: 'var(--cw-green)' }}>★ POST THIS FIRST</span>}
+        {script.publishOrder && !script.best && <span className="mono text-[9px] ml-2" style={{ color: 'var(--cw-muted)' }}>UPLOAD #{script.publishOrder}</span>}
+      </h2>
+      <div className="space-y-2">
+        {rows.map(([label, value]) => value ? (
+          <div key={label}>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="mono text-[9px]" style={{ color: 'var(--cw-muted)', letterSpacing: '0.15em' }}>{label}</span>
+              <button className="mono text-[9px] cursor-pointer bg-transparent border-0"
+                style={{ color: copied === label ? 'var(--cw-green)' : 'var(--cw-amber)' }}
+                data-testid={`upload-kit-copy-${label.toLowerCase().replace(/\s+/g, '-')}`}
+                onClick={() => copy(label, value)}>
+                {copied === label ? '✓ COPIED' : 'COPY'}
+              </button>
+            </div>
+            <p className="mono text-[10px] whitespace-pre-wrap" style={{ color: 'var(--cw-text-2)', maxHeight: 72, overflowY: 'auto' }}>{value}</p>
+          </div>
+        ) : null)}
+        {script.whyItWorks && (
+          <div>
+            <span className="mono text-[9px]" style={{ color: 'var(--cw-muted)', letterSpacing: '0.15em' }}>WHY THIS WORKS</span>
+            <p className="mono text-[9px] mt-0.5" style={{ color: 'var(--cw-muted)' }}>{script.whyItWorks}</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const Prompter = ({ script, beatIdx, recording, elapsed, onClose }) => {
   if (!script) return null;
   const beats = script.beats;

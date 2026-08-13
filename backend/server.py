@@ -49,18 +49,28 @@ async def root():
 
 
 # THE ONE VOICE — locked server-side so every take carries the same narrator.
-# Brian is the youngest-reading keyless neural US male; pushed faster and
-# brighter he reads as "wired teenage hero", never "news anchor".
+# Brian is the youngest-reading keyless neural US male. Four locked MOODS
+# re-tune his delivery per script; the client may only name a mood, never a
+# voice or a number. `mystery` is the channel default — slower and lower, so
+# every fact lands like a secret instead of a headline.
 TTS_VOICE = "en-US-BrianMultilingualNeural"
-TTS_RATE = "+14%"
-TTS_PITCH = "+18Hz"
+TTS_MOODS = {
+    "mystery": {"rate": "-2%", "pitch": "-6Hz"},    # low, deliberate, leaning-in
+    "hero":    {"rate": "+14%", "pitch": "+18Hz"},  # the original wired young hero
+    "urgent":  {"rate": "+18%", "pitch": "+8Hz"},   # escalating, breathless
+    "somber":  {"rate": "-8%", "pitch": "-12Hz"},   # heavy, funereal, awed
+}
+TTS_DEFAULT_MOOD = "mystery"
 
 
 @api_router.get("/tts")
-async def tts(text: str = Query(..., min_length=1, max_length=600)):
+async def tts(text: str = Query(..., min_length=1, max_length=600),
+              mood: str = Query(TTS_DEFAULT_MOOD)):
     """Synthesize one script line as MP3 with the locked studio voice."""
+    prosody = TTS_MOODS.get(mood, TTS_MOODS[TTS_DEFAULT_MOOD])
     try:
-        communicate = edge_tts.Communicate(text.strip(), TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
+        communicate = edge_tts.Communicate(text.strip(), TTS_VOICE,
+                                           rate=prosody["rate"], pitch=prosody["pitch"])
         chunks = []
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
