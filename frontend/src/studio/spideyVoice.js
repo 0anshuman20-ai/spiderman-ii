@@ -59,13 +59,13 @@ export class SpideyVoice {
     this._cooldown = 0;
     this._src = null;
     this._utter = null;        // live speechSynthesis utterance (fallback mode)
-    this.mood = 'mystery';     // named delivery; prosody numbers live server-side only
+    this.mood = 'hero';        // named delivery; prosody numbers live server-side only
   }
 
   /* pick the locked delivery for the NEXT synthesis — 'mystery' | 'hero' |
      'urgent' | 'somber'. The server ignores unknown names. */
   setMood(mood) {
-    this.mood = String(mood || 'mystery');
+    this.mood = String(mood || 'hero');
   }
 
   /* the take may roll once every line is voiced — either as decoded buffers or
@@ -298,9 +298,11 @@ export class SpideyVoice {
     if (this.playing) return;
     if (this._cooldown > 0) { this._cooldown = Math.max(0, this._cooldown - dt); return; }
     if (this.idx >= this.lines.length) return;
-    if (jaw < 0.09) { this._quietT += dt; return; }
+    // 0.06: catch the very FIRST millimeter of lip movement — the old 0.09
+    // threshold let the mouth visibly open a beat before the audio landed
+    if (jaw < 0.06) { this._quietT += dt; return; }
     // lips just started moving after a quiet gap — fire NOW, zero added latency
-    if (this._quietT > 0.10) {
+    if (this._quietT > 0.07) {
       this._quietT = 0;
       this._playLine(this.idx);
     }

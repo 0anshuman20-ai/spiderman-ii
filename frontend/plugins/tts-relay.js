@@ -31,7 +31,7 @@ const MOODS = {
   urgent:  { rate: "+18%", pitch: "+8Hz", volume: "+0%" },  // escalating, breathless
   somber:  { rate: "-8%", pitch: "-12Hz", volume: "+0%" },  // heavy, funereal, awed
 };
-const DEFAULT_MOOD = "mystery";
+const DEFAULT_MOOD = "hero";
 
 // tiny in-memory cache: re-synthesizing an unchanged line is pure waste
 const cache = new Map(); // `${mood}\u0000${text}` -> Buffer
