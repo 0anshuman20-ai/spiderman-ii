@@ -193,6 +193,13 @@ export default function Studio() {
       /* the lip watcher: your jaw is the trigger — the engine already knows the
          script, so the pre-voiced line fires the instant your mouth opens */
       voice.update(dt, rig.jaw, rec.recording);
+      /* mirror the voice state onto the rig so the mask compositor can make
+         the AUDIO authoritative over the mouth: during a script take the
+         mask's lips follow the played line and shut when it ends — your real
+         lips only trigger lines, they never flap the mask after the audio. */
+      rig.voiceActive = rec.recording && voice.ready && voice.canRoll() && voice.lines.length > 0;
+      rig.voicePlaying = voice.playing;
+      rig.voiceBuffered = !!voice._src; // false in browser-speech fallback
       /* AUTO JUMP-CUT, pause side — a line has finished, the mask's mouth is
          fully closed, and dead air has begun: stop feeding the file. The cut
          keeps a natural ~0.3s breath after each line (0.18s cooldown + 0.12s
