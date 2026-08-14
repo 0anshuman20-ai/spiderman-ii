@@ -41,7 +41,8 @@ export default function Studio() {
   const beatRef = useRef(0);
   const recStartRef = useRef(0);
   const countdownRef = useRef(null);   // interval id while the 3-2-1 runs
-  const captionsRef = useRef(false);   // mirrored into the frame callback — OFF: clean uploads
+  const captionsRef = useRef(true);    // mirrored into the frame callback — ON: captions carry retention
+  const capLineRef = useRef(-1);       // last line the karaoke caption was fired for
   const paramsTimerRef = useRef(null); // debounce for world-editor rebuilds
 
   const [booted, setBooted] = useState(null); // null | 'live' | 'sim'
@@ -59,6 +60,8 @@ export default function Studio() {
   const [scriptOpen, setScriptOpen] = useState(false);
   const [scriptText, setScriptText] = useState('');
   const [synthProg, setSynthProg] = useState(null); // null | { done, total }
+  const [uploadMsg, setUploadMsg] = useState(null); // null | { ok, message } — real-voice upload status
+  const uploadInputRef = useRef(null);
   const [tracking, setTracking] = useState({ face: false, pose: false, hands: false });
   const [fps, setFps] = useState(0);
   const [takes, setTakes] = useState([]);
@@ -68,7 +71,7 @@ export default function Studio() {
   const [pipOn, setPipOn] = useState(true);
   const [glitchUi, setGlitchUi] = useState(false);
   const [countdown, setCountdown] = useState(null); // null | 3 | 2 | 1
-  const [captionsOn, setCaptionsOn] = useState(false); // default OFF: nothing written into the video
+  const [captionsOn, setCaptionsOn] = useState(true); // default ON: word-by-word captions are the retention layer
   // sound layer UI
   const [musicOn, setMusicOn] = useState(true);
   const [musicReady, setMusicReady] = useState(false);
@@ -216,9 +219,16 @@ export default function Studio() {
           const b = script.beats[idx];
           rig.expression = EMOTE_TO_EXPR[b.emote] || 'calm';
           (FX_MAP[b.fx] || FX_MAP.none)(stage, voice, musicRef.current);
-          // caption burn-in: the beat line lands in the composited frame itself
-          if (captionsRef.current) stage.setCaption(b.text);
         }
+      }
+      /* WORD-BY-WORD CAPTIONS — driven by the line actually PLAYING, so the
+         karaoke pacing rides the real audio (TTS or uploaded voice), not the
+         planned beat sheet. Fires once per line, animates in the stage loop. */
+      if (rec.recording && captionsRef.current && voice.ready
+          && voice.currentLine >= 0 && voice.currentLine !== capLineRef.current) {
+        capLineRef.current = voice.currentLine;
+        const line = voice.lines[voice.currentLine];
+        if (line) stage.playCaption(line.text, voice.lineDuration(voice.currentLine));
       }
     });
     setBooting(false);
@@ -273,8 +283,14 @@ export default function Studio() {
       name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'veyl-freestyle',
       world: stage.worldKey,
     });
-    // burn the first beat's caption from frame one
-    if (script && captionsRef.current && script.beats.length) stage.setCaption(script.beats[0].text);
+    /* FIRST-FRAME HOOK — the opening frame IS the thumbnail. Never a fade-in:
+       hit frame one with a glitch burst + punch-in and the hook text already
+       burned on screen, so the 0.5s a swiper gives you is spent mid-action. */
+    capLineRef.current = -1;
+    stage.glitch(0.5);
+    stage.punch();
+    const hookText = script ? (script.hook || (script.beats[0] && script.beats[0].text)) : null;
+    if (hookText && captionsRef.current) stage.playCaption(hookText, 2.2);
     // audio for the file: the synthesized spider voice (mic never used); else the
     // music engine's own MediaStreamDestination so a video-only session still ships with score
     const voice = voiceRef.current;
@@ -464,6 +480,25 @@ export default function Studio() {
     });
     setScriptOpen(true);
   }, []);
+  /* UPLOADED REAL VOICE — the highest-ROI fix: record the whole script in one
+     take (ElevenLabs export or your own read) with a clear pause between
+     lines; the engine slices it on silence and maps each slice to its line. */
+  const onUploadVoice = useCallback(async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    const voice = voiceRef.current;
+    if (!f || !voice || !voice.ready) return;
+    setUploadMsg({ ok: true, message: 'decoding & slicing the performance…' });
+    try {
+      await voice.resume();
+      const res = await voice.loadUpload(await f.arrayBuffer(), scriptText);
+      setUploadMsg(res);
+      if (res.ok) setTimeout(() => { setUploadMsg(null); setScriptOpen(false); }, 1200);
+    } catch (err) {
+      setUploadMsg({ ok: false, message: `upload failed: ${err.message}` });
+    }
+  }, [scriptText]);
+
   const doSynth = useCallback(async () => {
     const voice = voiceRef.current;
     if (!voice || !voice.ready || !scriptText.trim()) return;
@@ -616,16 +651,34 @@ export default function Studio() {
                 TTS UNREACHABLE — CHECK YOUR CONNECTION AND TRY AGAIN
               </div>
             )}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button className="cw-rec" data-testid="script-synth-btn"
                 disabled={!scriptText.trim() || !!synthProg || !micOk} onClick={doSynth}>
                 {synthProg ? 'VOICING…' : '◪ VOICE THE SCRIPT'}
               </button>
+              <button className="cw-chip" style={{ padding: '10px 16px' }} data-testid="voice-upload-btn"
+                disabled={!scriptText.trim() || !!synthProg || !micOk}
+                onClick={() => uploadInputRef.current && uploadInputRef.current.click()}>
+                <span>▲ UPLOAD REAL VOICE</span>
+              </button>
+              <input ref={uploadInputRef} type="file" accept="audio/*" className="hidden"
+                data-testid="voice-upload-input" onChange={onUploadVoice} />
               <button className="cw-chip" style={{ padding: '10px 16px' }} data-testid="script-close-btn"
                 disabled={!!synthProg} onClick={() => setScriptOpen(false)}>
                 <span>CLOSE</span>
               </button>
             </div>
+            <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-muted)' }}>
+              REAL VOICE = THE #1 RETENTION FIX. RECORD THE WHOLE SCRIPT AS ONE MP3/WAV
+              (ELEVENLABS OR YOUR OWN READ) WITH A CLEAR PAUSE BETWEEN LINES — THE ENGINE
+              SLICES IT AND MAPS EACH SLICE TO ITS LINE AUTOMATICALLY.
+            </p>
+            {uploadMsg && (
+              <div className="mono text-[9px] mt-2" data-testid="upload-status"
+                style={{ color: uploadMsg.ok ? 'var(--cw-amber)' : 'var(--cw-red)' }}>
+                {String(uploadMsg.message).toUpperCase()}
+              </div>
+            )}
             {!micOk && (
               <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-red)' }}>AUDIO ENGINE OFFLINE — RELOAD AND REBOOT THE RIG</p>
             )}
