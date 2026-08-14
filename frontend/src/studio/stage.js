@@ -143,14 +143,15 @@ export function createStage(canvas) {
   const capTex = new THREE.CanvasTexture(capCanvas);
   capTex.colorSpace = THREE.SRGBColorSpace;
   const cap = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.30, 0.064),
+    new THREE.PlaneGeometry(0.34, 0.073),
     new THREE.MeshBasicMaterial({ map: capTex, transparent: true, depthTest: false, depthWrite: false }),
   );
-  cap.position.set(0, -0.20, -1);
+  cap.position.set(0, -0.19, -1);
   cap.renderOrder = 1000; // above the suit layer
   camera.add(cap);
 
   function setCaption(text) {
+    capAnim = null; // static captions and karaoke captions share the canvas
     capCtx.clearRect(0, 0, 1024, 220);
     if (text) {
       capCtx.font = '500 42px "JetBrains Mono", monospace';
@@ -178,6 +179,67 @@ export function createStage(canvas) {
       });
     }
     capTex.needsUpdate = true;
+  }
+
+  /* WORD-BY-WORD KARAOKE CAPTIONS — the retention layer. The line's words are
+     paced across the spoken audio's real duration and drawn in chunks of up to
+     three big bold words, with the active word hot. ~70% of Shorts play in
+     sound-compromised situations; these captions carry the video there. */
+  let capAnim = null; // { words, start, dur, drawn }
+  const CAP_CHUNK = 3;
+
+  function drawCaptionChunk(words, activeIdx) {
+    capCtx.clearRect(0, 0, 1024, 220);
+    const text = words.join(' ');
+    let size = 100;
+    do {
+      capCtx.font = `800 ${size}px Arial, Helvetica, sans-serif`;
+      if (capCtx.measureText(text).width <= 930) break;
+      size -= 6;
+    } while (size > 48);
+    capCtx.textAlign = 'left';
+    capCtx.textBaseline = 'middle';
+    capCtx.lineJoin = 'round';
+    const widths = words.map((w) => capCtx.measureText(`${w} `).width);
+    const total = capCtx.measureText(text).width;
+    let x = 512 - total / 2;
+    const y = 116;
+    words.forEach((w, i) => {
+      capCtx.strokeStyle = 'rgba(0,0,0,0.92)';
+      capCtx.lineWidth = Math.max(10, size * 0.16);
+      capCtx.strokeText(w, x, y);
+      capCtx.fillStyle = i === activeIdx ? '#FF2E63' : 'rgba(255,255,255,0.98)';
+      capCtx.fillText(w, x, y);
+      x += widths[i];
+    });
+    capCtx.textBaseline = 'alphabetic';
+    capTex.needsUpdate = true;
+  }
+
+  /** animate a spoken line word-by-word across durationSec */
+  function playCaption(text, durationSec = 2.4) {
+    const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) { setCaption(null); return; }
+    capAnim = { words, start: performance.now() / 1000, dur: Math.max(0.8, durationSec), drawn: -1 };
+  }
+
+  function updateCaptionAnim() {
+    if (!capAnim) return;
+    const now = performance.now() / 1000;
+    const p = (now - capAnim.start) / capAnim.dur;
+    if (p >= 1.18) { // hold the last chunk a breath past the audio, then clear
+      capAnim = null;
+      capCtx.clearRect(0, 0, 1024, 220);
+      capTex.needsUpdate = true;
+      return;
+    }
+    const n = capAnim.words.length;
+    const wIdx = Math.min(n - 1, Math.floor(Math.min(0.999, p) * n));
+    const chunk = Math.floor(wIdx / CAP_CHUNK);
+    const key = chunk * 100 + (wIdx % CAP_CHUNK);
+    if (key === capAnim.drawn) return;
+    capAnim.drawn = key;
+    drawCaptionChunk(capAnim.words.slice(chunk * CAP_CHUNK, chunk * CAP_CHUNK + CAP_CHUNK), wIdx % CAP_CHUNK);
   }
 
   let punchT = -10, glitchT = 0, running = true, lastT = performance.now() / 1000;
@@ -224,6 +286,7 @@ export function createStage(canvas) {
     camera.lookAt(0, 1.34, 0);
 
     if (glitchT > 0) glitchT -= dt;
+    updateCaptionAnim();
     grade.uniforms.uTime.value = t;
     grade.uniforms.uGlitch.value = Math.max(0, Math.min(1, glitchT * 3));
 
@@ -272,6 +335,7 @@ export function createStage(canvas) {
     setHud,
     setHudOn(on) { hudOn = on; },
     setCaption,
+    playCaption,
     /* measured render fps — the recorder reads this to pick its capture tier */
     get fps() { return fps; },
     captureStream(fpsWanted = 60) { return canvas.captureStream(fpsWanted); },

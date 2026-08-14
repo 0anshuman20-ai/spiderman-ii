@@ -45,6 +45,61 @@ export function splitScript(text) {
   return out;
 }
 
+/* ---- UPLOADED VOICE helpers: slice one performance file into per-line takes ---- */
+
+function sliceBuffer(buf, ctx, s0, s1) {
+  const len = s1 - s0;
+  const out = ctx.createBuffer(buf.numberOfChannels, len, buf.sampleRate);
+  for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+    out.copyToChannel(buf.getChannelData(ch).subarray(s0, s1), ch);
+  }
+  return out;
+}
+
+function mergeBuffers(bufs, ctx) {
+  if (bufs.length === 1) return bufs[0];
+  const sr = bufs[0].sampleRate;
+  const gap = Math.floor(sr * 0.12);
+  const len = bufs.reduce((s, b) => s + b.length, 0) + gap * (bufs.length - 1);
+  const out = ctx.createBuffer(1, len, sr);
+  const d = out.getChannelData(0);
+  let at = 0;
+  for (const b of bufs) { d.set(b.getChannelData(0), at); at += b.length + gap; }
+  return out;
+}
+
+/** split a decoded performance on silence gaps (>= minGap s) into line takes */
+function splitOnSilence(buf, ctx, { minGap = 0.35, minSeg = 0.25 } = {}) {
+  const data = buf.getChannelData(0);
+  const sr = buf.sampleRate;
+  const win = Math.floor(sr * 0.02); // 20 ms RMS windows
+  const env = [];
+  for (let i = 0; i < data.length; i += win) {
+    let s = 0;
+    const end = Math.min(data.length, i + win);
+    for (let j = i; j < end; j++) s += data[j] * data[j];
+    env.push(Math.sqrt(s / Math.max(1, end - i)));
+  }
+  const peak = env.reduce((m, v) => Math.max(m, v), 0);
+  const thr = Math.max(0.006, peak * 0.06); // adaptive floor: survives quiet exports
+  const gapWins = Math.ceil(minGap / 0.02);
+  const spans = [];
+  let start = -1, quiet = 0;
+  for (let i = 0; i <= env.length; i++) {
+    const loud = i < env.length && env[i] > thr;
+    if (loud) { if (start < 0) start = i; quiet = 0; continue; }
+    if (start < 0) continue;
+    quiet += 1;
+    if (quiet >= gapWins || i >= env.length) {
+      const s0 = Math.max(0, (start - 2) * win);                       // keep the attack
+      const s1 = Math.min(data.length, (i - quiet + 1 + 4) * win);     // keep the tail
+      if ((s1 - s0) / sr >= minSeg) spans.push([s0, s1]);
+      start = -1; quiet = 0;
+    }
+  }
+  return spans.map(([s0, s1]) => sliceBuffer(buf, ctx, s0, s1));
+}
+
 export class SpideyVoice {
   constructor({ onStatus } = {}) {
     this.onStatus = onStatus;
@@ -182,6 +237,54 @@ export class SpideyVoice {
     this.synthState = 'error';
     if (this.onStatus) this.onStatus({ level: 'error', message: 'TTS unreachable — check your connection' });
     return false;
+  }
+
+  /* UPLOADED VOICE — Tier 1 of the engagement plan: swap system TTS for a REAL
+     performance (ElevenLabs export or your own recorded read). One audio file
+     for the whole script, a clear pause (>= ~0.4s) between lines; the engine
+     slices it on silence and maps slice -> line in order. Everything
+     downstream — lip watcher, auto jump-cuts, karaoke captions — is unchanged,
+     because each line simply gets a better buffer. */
+  async loadUpload(arrayBuffer, scriptText) {
+    if (!this.ready) return { ok: false, message: 'audio engine offline' };
+    if (scriptText != null && String(scriptText).trim()) {
+      const parts = splitScript(scriptText);
+      if (parts.length) {
+        this.lines = parts.map((t) => ({ text: t, buffer: null, ok: false }));
+        this.idx = 0; this.currentLine = -1;
+      }
+    }
+    if (!this.lines.length) return { ok: false, message: 'paste or pick a script first' };
+    let buf;
+    try { buf = await this.ctx.decodeAudioData(arrayBuffer.slice(0)); }
+    catch (_) { return { ok: false, message: 'could not decode that file — use mp3 / wav / m4a' }; }
+    const segs = splitOnSilence(buf, this.ctx);
+    if (!segs.length) return { ok: false, message: 'no speech found in that file' };
+    const n = this.lines.length;
+    // extra slices fold into the final line; fewer slices leave the rest on TTS
+    const mapped = segs.length > n
+      ? [...segs.slice(0, n - 1), mergeBuffers(segs.slice(n - 1), this.ctx)]
+      : segs;
+    this.stopPlayback();
+    this.idx = 0; this.currentLine = -1;
+    mapped.forEach((s, i) => { if (i < n) { this.lines[i].buffer = s; this.lines[i].ok = true; } });
+    // lines the upload didn't cover stay speakable via TTS/fallback if they were
+    this.synthState = 'ready';
+    this.uploaded = true;
+    const covered = Math.min(mapped.length, n);
+    const message = covered === n
+      ? `real voice loaded: ${n}/${n} lines`
+      : `real voice on ${covered}/${n} lines — the rest keep synthesized audio`;
+    if (this.onStatus) this.onStatus({ level: covered === n ? 'ok' : 'warn', message });
+    return { ok: true, message, covered, total: n };
+  }
+
+  /** seconds the given line will speak for — drives the karaoke caption pacing */
+  lineDuration(i) {
+    const l = this.lines[i];
+    if (l && l.buffer) return l.buffer.duration;
+    const words = l ? l.text.split(/\s+/).filter(Boolean).length : 6;
+    return Math.max(1, words * 0.36); // fallback estimate for browser-voice lines
   }
 
   /* rewind for a fresh take */
