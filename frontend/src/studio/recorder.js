@@ -37,10 +37,15 @@ const WEBM_FIRST = [
   { mime: 'video/mp4', ext: 'mp4' },
 ];
 
+/* Bitrates/fps are deliberately conservative: a realtime encoder that falls
+   behind at 1080x1920 does not degrade gracefully — it silently stalls the
+   video track mid-take (frozen picture, audio keeps going). 30fps at 12 Mbps
+   is visually indistinguishable for vertical social video and keeps the
+   encoder comfortably inside realtime on hardware AND software paths. */
 const TIERS = {
-  high: { captureFps: 60, videoBps: 20_000_000, audioBps: 256_000, ladder: MP4_FIRST },
-  medium: { captureFps: 30, videoBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
-  low: { captureFps: 24, videoBps: 6_000_000, audioBps: 128_000, ladder: WEBM_FIRST },
+  high: { captureFps: 30, videoBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
+  medium: { captureFps: 30, videoBps: 8_000_000, audioBps: 160_000, ladder: MP4_FIRST },
+  low: { captureFps: 24, videoBps: 4_000_000, audioBps: 128_000, ladder: WEBM_FIRST },
 };
 
 /** true when WebGL is running on a CPU rasterizer (SwiftShader / llvmpipe / ANGLE
@@ -100,20 +105,22 @@ export class Recorder {
   constructor() {
     this.recording = false;
     this.startTs = 0;
-    this.tier = null;       // 'high' | 'medium' | 'low' — set on every start
-    this.pausedMs = 0;      // total wall time spent paused (jump-cuts + breathers)
-    this._pausedAt = 0;     // wall timestamp of the current pause, 0 when rolling
+    this.tier = null;        // 'high' | 'medium' | 'low' — set on every start
+    this._canvasTracks = []; // canvas video tracks we own — stopped on stop()
   }
 
-  get paused() { return this._pausedAt > 0; }
+  /* pause/resume were removed on purpose: MediaRecorder.pause()/resume() on a
+     canvas-capture video track muxed with a WebAudio track is unreliable in
+     Chromium — after a resume the video track frequently never gets a fresh
+     keyframe / correct timestamps, which ships a file whose picture FREEZES at
+     the first cut while the audio keeps playing, offset by the accumulated
+     pause time. Recording continuously keeps A/V perfectly in sync. */
+  get paused() { return false; }
 
-  /* RECORDED time, not wall time: pauses (auto jump-cuts, breathers) are wall
-     time that never reaches the file, so the HUD clock and beat cues subtract
-     them — what the timer says is exactly how long the export will be. */
+  /** wall time since the roll started — exactly how long the export will be */
   get elapsed() {
     if (!this.recording) return 0;
-    const pausedNow = this._pausedAt ? performance.now() - this._pausedAt : 0;
-    return (performance.now() - this.startTs - this.pausedMs - pausedNow) / 1000;
+    return (performance.now() - this.startTs) / 1000;
   }
 
   start(stage, voiceStream) {
@@ -149,37 +156,33 @@ export class Recorder {
     }
     this.recording = true;
     this.startTs = performance.now();
-    this.pausedMs = 0;
-    this._pausedAt = 0;
     this.mime = built.codec.mime;
     this.ext = built.codec.ext;
     this.tier = tierName;
+    this._canvasTracks = canvasStream.getVideoTracks();
     return true;
   }
 
-  /* breathers (Ω.0): the conductor pauses the file through the cool-down so the
-     export has no dead air. Both are no-ops if the recorder isn't rolling. */
-  pause() {
-    if (!this.recording || !this.rec || this.rec.state !== 'recording') return false;
-    try { this.rec.pause(); this._pausedAt = performance.now(); return true; } catch (_) { return false; }
-  }
-
-  resume() {
-    if (!this.recording || !this.rec || this.rec.state !== 'paused') return false;
-    try {
-      this.rec.resume();
-      if (this._pausedAt) { this.pausedMs += performance.now() - this._pausedAt; this._pausedAt = 0; }
-      return true;
-    } catch (_) { return false; }
-  }
+  /* kept for API compatibility (auto jump-cuts / breathers used to call these).
+     They deliberately DO NOT touch the MediaRecorder — see the note on `paused`.
+     Returning false tells callers the cut/breather did not happen. */
+  pause() { return false; }
+  resume() { return false; }
 
   stop() {
     return new Promise((resolve) => {
       if (!this.recording) { resolve(null); return; }
       const dur = this.elapsed;
+      const cleanup = () => {
+        // release the canvas capture; NEVER stop the audio tracks — they belong
+        // to the voice engine's MediaStreamDestination and must survive the take
+        this._canvasTracks.forEach((t) => { try { t.stop(); } catch (_) {} });
+        this._canvasTracks = [];
+      };
       this.rec.onstop = () => {
         const blob = new Blob(this.chunks, { type: this.mime.split(';')[0] });
         this.recording = false;
+        cleanup();
         resolve({
           blob,
           url: URL.createObjectURL(blob),
@@ -191,7 +194,7 @@ export class Recorder {
           createdAt: new Date().toISOString(),
         });
       };
-      try { this.rec.stop(); } catch (_) { this.recording = false; resolve(null); }
+      try { this.rec.stop(); } catch (_) { this.recording = false; cleanup(); resolve(null); }
     });
   }
 }

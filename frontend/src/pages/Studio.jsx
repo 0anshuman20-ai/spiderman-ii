@@ -184,14 +184,12 @@ export default function Studio() {
         // Inversion 1: the take is a rig timeline — sample it beside the video
       perfRecRef.current.sample(dt, rig, tracker);
       const rec = recorderRef.current;
-      /* AUTO JUMP-CUT, resume side — runs BEFORE the lip watcher so the file
-         is already rolling in the very frame the watcher fires the next line.
-         The 0.05 threshold sits just under the watcher's 0.06 fire threshold:
-         the recorder wakes on the first millimeter of lip movement, one beat
-         ahead of the audio, so no syllable is ever clipped. */
-      if (rec.recording && rec.paused && rig.jaw >= 0.05) rec.resume();
       /* the lip watcher: your jaw is the trigger — the engine already knows the
-         script, so the pre-voiced line fires the instant your mouth opens */
+         script, so the pre-voiced line fires the instant your mouth opens.
+         (Auto jump-cut pause/resume was removed: MediaRecorder.pause()/resume()
+         on a canvas+WebAudio stream corrupts video timestamps in Chromium —
+         the exported file froze mid-take with drifting audio. The recorder now
+         rolls continuously, so the file stays perfectly in sync end to end.) */
       voice.update(dt, rig.jaw, rec.recording);
       /* mirror the voice state onto the rig so the mask compositor can make
          the AUDIO authoritative over the mouth: during a script take the
@@ -200,17 +198,6 @@ export default function Studio() {
       rig.voiceActive = rec.recording && voice.ready && voice.canRoll() && voice.lines.length > 0;
       rig.voicePlaying = voice.playing;
       rig.voiceBuffered = !!voice._src; // false in browser-speech fallback
-      /* AUTO JUMP-CUT, pause side — a line has finished, the mask's mouth is
-         fully closed, and dead air has begun: stop feeding the file. The cut
-         keeps a natural ~0.3s breath after each line (0.18s cooldown + 0.12s
-         confirmed silence), then every further second of thinking/breathing
-         between lines simply never exists in the export. Because the pause
-         only ever lands with jaw < 0.05, the mask's lips are closed on BOTH
-         sides of every cut — the seam is invisible. */
-      if (rec.recording && !rec.paused && voice.ready && voice.canRoll()
-          && !voice.playing && rig.jaw < 0.05 && voice.gapSeconds > 0.12) {
-        rec.pause();
-      }
       if (voice.ready && rig.tracking.mode !== 'sim') {
         rig.level += (Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel())) - rig.level) * 0.35;
       }
@@ -278,7 +265,7 @@ export default function Studio() {
 
   /* the actual roll — everything timing-sensitive lives HERE, after the countdown,
      so recStartRef / perfRec.start keep beat timing exactly as before */
-  const startRecording = useCallback(() => {
+  const startRecording = useCallback(async () => {
     const rec = recorderRef.current;
     const stage = stageRef.current;
     if (!stage || rec.recording) return;
@@ -310,9 +297,14 @@ export default function Studio() {
        in fallback mode — but music borrows the voice context and owns no
        stream of its own there, so the take shipped with NO audio track at
        all: a silent download.) A suspended AudioContext also records pure
-       silence, so both contexts are resumed right before the roll. */
-    if (voice && voice.ready) voice.resume().catch(() => {});
-    if (music && music.resume) music.resume().catch(() => {});
+       silence, so both contexts are resumed — and AWAITED — before the roll:
+       starting the MediaRecorder while the context is still suspended makes
+       the audio track deliver its first samples late, and the muxer ships
+       that as a 1–2s audio offset baked into the file. */
+    await Promise.allSettled([
+      voice && voice.ready ? voice.resume() : Promise.resolve(),
+      music && music.resume ? music.resume() : Promise.resolve(),
+    ]);
     const audioStream = (voice && voice.ready && voice.stream) || (music && music.stream) || null;
     const rolled = rec.start(stage, audioStream);
     if (!rolled) {
