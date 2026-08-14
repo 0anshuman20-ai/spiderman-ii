@@ -623,6 +623,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
   let suitOn = 0;
   let graceT = 0;          // hold timer that survives tracking dropouts
   let everLocked = false;  // once true, the suit never reveals raw video again
+  let jawAnim = 0;         // eased mask jaw — audio-authoritative during script takes
 
   function updateSegments() {
     const p = tracker.points.pose;
@@ -854,13 +855,28 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       uniforms.uMouthC.value.set(f.mouth.x, f.mouth.y * ASPECT);
       uniforms.uMouthW.value = Math.max(0.02, f.mouthW * 0.85);
       uniforms.uMouthOpen.value = f.mouthOpen;
-      /* TRUE LIP SYNC: the mask's mouth is driven by BOTH your real jaw AND
-         the live loudness of the synthesized voice (rig.level tracks the TTS
-         output). When a line plays, the fabric mouth articulates with the
-         AUDIO's actual syllables — so the mask never sits still mid-word and
-         never flaps after the line ends. */
+      /* TRUE LIP SYNC — the AUDIO is the single source of truth.
+         During a script take (rig.voiceActive) your real jaw is only the
+         TRIGGER that fires a line; it must never drive the visible mouth,
+         because human timing is imperfect: if your lips keep moving after
+         the line's audio ends, the mask would silently flap. So:
+           line playing (buffered) -> mouth follows the audio's syllables;
+           line over               -> mouth SHUTS, even if your lips move;
+           browser-voice fallback  -> audio isn't in the chain, follow lips;
+           no script loaded        -> classic behavior, your jaw owns it. */
       const audioJaw = Math.min(1, (rig.level || 0) * 1.1);
-      uniforms.uJaw.value = Math.max(rig.jaw, audioJaw * 0.8);
+      let jawTarget;
+      if (rig.voiceActive) {
+        if (rig.voicePlaying) jawTarget = rig.voiceBuffered ? audioJaw : rig.jaw;
+        else jawTarget = 0;
+      } else {
+        jawTarget = Math.max(rig.jaw, audioJaw * 0.8);
+      }
+      // fast attack so no syllable is missed; the release is quick but eased
+      // so the mouth closes cleanly (~80ms) instead of snapping shut
+      jawAnim += (jawTarget - jawAnim) * (jawTarget > jawAnim ? 0.75 : 1 - Math.exp(-dt * 24));
+      if (jawAnim < 0.01) jawAnim = 0;
+      uniforms.uJaw.value = jawAnim;
       uniforms.uPucker.value = rig.pucker;
       uniforms.uSmile.value = rig.smile;
     } else if (graceT > 0 && everLocked) {
