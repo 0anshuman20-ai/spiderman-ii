@@ -112,6 +112,11 @@ export class SpideyVoice {
     this.synthState = 'empty'; // empty | working | ready | fallback | error
     this._quietT = 1;          // seconds of closed mouth accumulated
     this._cooldown = 0;
+    /* DIRECTOR PACING — lips still fire a line INSTANTLY, but the director
+       never lets dead air onto the tape: if the mouth hesitates, the next
+       line auto-fires. First line lands within FIRST_LINE_MAX of the roll. */
+    this.autoPace = true;
+    this._sinceEnd = 0;        // seconds since the last line finished (rec only)
     this._src = null;
     this._utter = null;        // live speechSynthesis utterance (fallback mode)
     this.mood = 'hero';        // named delivery; prosody numbers live server-side only
@@ -294,6 +299,12 @@ export class SpideyVoice {
     this.currentLine = -1;
     this._quietT = 1;      // first mouth movement fires line 1 instantly
     this._cooldown = 0;
+    this._sinceEnd = 0;    // director clock: line 1 auto-fires within FIRST_LINE_MAX
+  }
+
+  /** the whole script has been spoken and nothing is playing — the outro window */
+  get done() {
+    return this.lines.length > 0 && this.idx >= this.lines.length && !this.playing;
   }
 
   /* Does this browser actually have an installed voice we can speak with?
@@ -341,6 +352,7 @@ export class SpideyVoice {
       this.currentLine = -1;
       this._cooldown = 0.18;
       this._quietT = 0;
+      this._sinceEnd = 0;    // restart the director clock for the next line
     };
     u.onend = done;
     u.onerror = done;
@@ -381,6 +393,7 @@ export class SpideyVoice {
       this._src = null;
       this._cooldown = 0.18; // brief guard so one mouth move can't chain two lines
       this._quietT = 0;
+      this._sinceEnd = 0;    // restart the director clock for the next line
     };
     try { src.start(); } catch (_) { this.playing = false; this.currentLine = -1; }
   }
@@ -397,10 +410,19 @@ export class SpideyVoice {
     const rms = Math.min(1, Math.sqrt(s / (this._levelBuf.length / 4)) * 3);
     this.level = { rms, gateOpen: this.playing };
 
-    if (!recording) { this._quietT = 1; return; }
+    if (!recording) { this._quietT = 1; this._sinceEnd = 0; return; }
     if (this.playing) return;
+    this._sinceEnd += dt;
     if (this._cooldown > 0) { this._cooldown = Math.max(0, this._cooldown - dt); return; }
     if (this.idx >= this.lines.length) return;
+    /* DIRECTOR PACING — dead air never reaches the tape. The performer's lips
+       are still the fastest trigger, but past the pacing window the next line
+       fires itself: 0.45s max for the cold open, 0.7s between lines. */
+    if (this.autoPace && this._sinceEnd >= (this.idx === 0 ? 0.45 : 0.7)) {
+      this._quietT = 0;
+      this._playLine(this.idx);
+      return;
+    }
     // 0.06: catch the very FIRST millimeter of lip movement — the old 0.09
     // threshold let the mouth visibly open a beat before the audio landed
     if (jaw < 0.06) { this._quietT += dt; return; }

@@ -13,11 +13,11 @@
 /* per-world musical identity: root (Hz), scale intervals (semitones),
    tempo, filter brightness, character mix */
 const WORLD_MUSIC = {
-  'nebula-drift': { root: 110.0, scale: [0, 3, 5, 7, 10], bpm: 64, bright: 1400, swell: 0.15 },
-  'red-planet': { root: 98.0, scale: [0, 1, 5, 7, 8], bpm: 56, bright: 900, swell: 0.35 },
-  'derelict-station': { root: 82.4, scale: [0, 3, 5, 7, 10], bpm: 50, bright: 2100, swell: 0.22 },
-  'asteroid-earth': { root: 130.8, scale: [0, 2, 4, 7, 9], bpm: 66, bright: 1700, swell: 0.1 },
-  'dying-star': { root: 65.4, scale: [0, 2, 3, 7, 8], bpm: 46, bright: 700, swell: 0.5 },
+  'nebula-drift': { root: 110.0, scale: [0, 3, 5, 7, 10], bpm: 64, bright: 1400, swell: 0.15, heroBpm: 122 },
+  'red-planet': { root: 98.0, scale: [0, 1, 5, 7, 8], bpm: 56, bright: 900, swell: 0.35, heroBpm: 112 },
+  'derelict-station': { root: 82.4, scale: [0, 3, 5, 7, 10], bpm: 50, bright: 2100, swell: 0.22, heroBpm: 116 },
+  'asteroid-earth': { root: 130.8, scale: [0, 2, 4, 7, 9], bpm: 66, bright: 1700, swell: 0.1, heroBpm: 128 },
+  'dying-star': { root: 65.4, scale: [0, 2, 3, 7, 8], bpm: 46, bright: 700, swell: 0.5, heroBpm: 108 },
 };
 
 /* deterministic PRNG — the bed for a world is the same on every boot */
@@ -39,6 +39,8 @@ function noiseBuffer(ctx, seconds = 2) {
 const BED_LEVEL = 0.055;   // ≈ -22 dBFS under voice
 const BED_SOLO = 0.11;     // ≈ -16 dBFS when nothing else is talking
 const DUCK_RATIO = 0.6;    // ~ -4.4 dB while the gate is open
+const SCORE_LEVEL = 0.16;  // the hero score drives harder than the ambient bed
+const SCORE_DUCK = 0.42;   // …so it ducks deeper when a line is speaking
 
 export class MusicEngine {
   constructor(voice) {
@@ -50,6 +52,8 @@ export class MusicEngine {
     this.worldKey = null;
     this.bed = null;         // current bed graph
     this.ownCtx = false;
+    this.scoreOn = false;    // the hero score is driving (recording in progress)
+    this._scoreTimer = null; // lookahead scheduler interval
   }
 
   /* build the mix bus. Safe to call once; never throws. */
@@ -66,6 +70,7 @@ export class MusicEngine {
 
       this.musicBus = ctx.createGain(); this.musicBus.gain.value = 1;
       this.bedBus = ctx.createGain(); this.bedBus.gain.value = BED_LEVEL;
+      this.scoreBus = ctx.createGain(); this.scoreBus.gain.value = 0;
       this.sfxBus = ctx.createGain(); this.sfxBus.gain.value = 0.22;
       this.duckGain = ctx.createGain(); this.duckGain.gain.value = 1;
 
@@ -76,6 +81,7 @@ export class MusicEngine {
       this.comp.attack.value = 0.02; this.comp.release.value = 0.3;
 
       this.bedBus.connect(this.duckGain); this.duckGain.connect(this.musicBus);
+      this.scoreBus.connect(this.duckGain); // the score rides the same sidechain as the bed
       this.sfxBus.connect(this.musicBus);
       this.musicBus.connect(this.comp);
 
@@ -115,14 +121,21 @@ export class MusicEngine {
     if (on && !this.bed && this.worldKey) this._startBed(this.worldKey);
   }
 
-  setBedVolume(v) { this.bedVol = v; if (this.ready) this._ramp(this.bedBus.gain, BED_LEVEL * v, 0.15); }
+  setBedVolume(v) {
+    this.bedVol = v;
+    if (!this.ready) return;
+    this._ramp(this.bedBus.gain, BED_LEVEL * v * (this.scoreOn ? 0.35 : 1), 0.15);
+    if (this.scoreOn) this._ramp(this.scoreBus.gain, SCORE_LEVEL * v, 0.15);
+  }
   setSfxVolume(v) { this.sfxVol = v; if (this.ready) this._ramp(this.sfxBus.gain, 0.22 * v, 0.1); }
   setMonitor(on) { if (this.ready) this._ramp(this.monitorGain.gain, on ? 0.8 : 0, 0.1); }
 
-  /* sidechain-lite: poll the voice gate from the telemetry interval */
+  /* sidechain-lite: poll the voice gate from the telemetry interval.
+     The hero score is louder than the ambient bed, so it ducks deeper. */
   duck(gateOpen) {
     if (!this.ready) return;
-    this._ramp(this.duckGain.gain, gateOpen ? DUCK_RATIO : 1, gateOpen ? 0.06 : 0.35);
+    const down = this.scoreOn ? SCORE_DUCK : DUCK_RATIO;
+    this._ramp(this.duckGain.gain, gateOpen ? down : 1, gateOpen ? 0.06 : 0.35);
   }
 
   /* ------------------------------------------------------------------ */
@@ -133,6 +146,8 @@ export class MusicEngine {
     this.worldKey = key;
     if (!this.enabled) return;
     this._startBed(key);
+    // a world swap mid-take retunes the hero score to the new key + tempo
+    if (this.scoreOn) { this.stopScore(); this.startScore(); }
   }
 
   _startBed(key) {
@@ -213,6 +228,159 @@ export class MusicEngine {
         try { bedGain.disconnect(); } catch (_) {}
       },
     };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* THE HERO SCORE — the take's engine room. While recording, the sleepy
+     ambient bed steps back and a driving, fully-synthesized groove takes
+     over: four-on-the-floor kick, backbeat snare, 8th-note hats, a pumping
+     bass riff in the world's key and seeded lead plucks, with a snare fill
+     into every 4-bar turnaround. Sample-accurate lookahead scheduling —
+     setInterval only tops up the queue, the AudioContext clock owns time. */
+
+  startScore() {
+    if (!this.ready || !this.enabled || this.scoreOn) return;
+    this.scoreOn = true;
+    const ctx = this.ctx;
+    const key = this.worldKey || 'nebula-drift';
+    const spec = WORLD_MUSIC[key] || WORLD_MUSIC['nebula-drift'];
+    const rand = rng(`${key}::hero-score`);
+    const bpm = spec.heroBpm || 118;
+    const step = 60 / bpm / 2;            // 8th-note grid
+    const steps = 32;                     // 4-bar loop
+
+    // seeded melodic material — the same world always plays the same riff
+    const bassPat = [];
+    const leadPat = [];
+    for (let i = 0; i < steps; i++) {
+      bassPat.push(spec.scale[Math.floor(rand() * spec.scale.length)]);
+      leadPat.push(rand() < 0.3 ? spec.scale[Math.floor(rand() * spec.scale.length)] : null);
+    }
+
+    this._ramp(this.scoreBus.gain, SCORE_LEVEL * this.bedVol, 0.3);
+    this._ramp(this.bedBus.gain, BED_LEVEL * this.bedVol * 0.35, 0.5); // bed steps back
+
+    let t = ctx.currentTime + 0.06;
+    let i = 0;
+    const tick = () => {
+      if (ctx.state !== 'running') return;
+      while (t < ctx.currentTime + 0.18) {
+        this._scoreStep(i % steps, t, step, spec, bassPat, leadPat);
+        i += 1;
+        t += step;
+      }
+    };
+    this._scoreTimer = setInterval(tick, 40);
+    tick();
+  }
+
+  stopScore() {
+    if (!this.scoreOn) return;
+    this.scoreOn = false;
+    if (this._scoreTimer) { clearInterval(this._scoreTimer); this._scoreTimer = null; }
+    if (!this.ready) return;
+    this._ramp(this.scoreBus.gain, 0, 0.25);
+    this._ramp(this.bedBus.gain, BED_LEVEL * this.bedVol, 0.6); // bed returns
+  }
+
+  /** one 8th-note slot of the groove, scheduled at AudioContext time t */
+  _scoreStep(i, t, step, spec, bassPat, leadPat) {
+    const bar = Math.floor(i / 8);
+    const pos = i % 8;                     // 8 eighths per bar
+    // drums: kick on every beat, snare backbeat, hats on every 8th
+    if (pos % 2 === 0) this._kick(t, pos === 0 ? 1 : 0.82);
+    if (pos === 2 || pos === 6) this._snare(t, 0.95);
+    this._hat(t, pos % 2 === 1 ? 0.85 : 0.45);
+    // turnaround: 16th snare roll through the back half of bar 4
+    if (bar === 3 && pos >= 6) this._snare(t + step * 0.5, 0.5 + (pos - 6) * 0.2);
+    // bass: root on the beat, seeded riff notes off the beat, one octave down
+    const deg = pos % 2 === 0 ? 0 : bassPat[i];
+    this._bass(t, (spec.root / 2) * Math.pow(2, deg / 12), step * 0.92);
+    // lead plucks: sparse seeded melody two octaves up
+    if (leadPat[i] != null) this._pluck(t, spec.root * 4 * Math.pow(2, leadPat[i] / 12));
+  }
+
+  _kick(t, v = 1) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.9 * v, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    o.connect(g); g.connect(this.scoreBus);
+    o.start(t); o.stop(t + 0.25);
+  }
+
+  _snare(t, v = 1) {
+    const ctx = this.ctx;
+    const n = ctx.createBufferSource(); n.buffer = this.noise;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1900; bp.Q.value = 0.8;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.5 * v, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+    n.connect(bp); bp.connect(g); g.connect(this.scoreBus);
+    n.start(t); n.stop(t + 0.16);
+    const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = 190;
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.3 * v, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    o.connect(og); og.connect(this.scoreBus);
+    o.start(t); o.stop(t + 0.1);
+  }
+
+  _hat(t, v = 0.5) {
+    const ctx = this.ctx;
+    const n = ctx.createBufferSource(); n.buffer = this.noise;
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7000;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.18 * v, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.045);
+    n.connect(hp); hp.connect(g); g.connect(this.scoreBus);
+    n.start(t); n.stop(t + 0.06);
+  }
+
+  _bass(t, f, dur) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 340; lp.Q.value = 1.1;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.34, t + 0.012);
+    g.gain.setTargetAtTime(0, t + dur * 0.7, 0.05);
+    o.connect(lp); lp.connect(g); g.connect(this.scoreBus);
+    o.start(t); o.stop(t + dur + 0.15);
+  }
+
+  _pluck(t, f) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.11, t + 0.008);
+    g.gain.setTargetAtTime(0, t + 0.06, 0.09);
+    o.connect(lp); lp.connect(g); g.connect(this.scoreBus);
+    o.start(t); o.stop(t + 0.6);
+  }
+
+  /** the closing cadence — a hit plus a ringing hero chord, right before the cut */
+  outro() {
+    if (!this.ready || !this.enabled) return;
+    const ctx = this.ctx, t0 = this._now();
+    this.impact();
+    this.whoosh(700);
+    const spec = WORLD_MUSIC[this.worldKey] || WORLD_MUSIC['nebula-drift'];
+    [0, 7, 12].forEach((semi, k) => {
+      const o = ctx.createOscillator(); o.type = k === 0 ? 'triangle' : 'sine';
+      o.frequency.value = spec.root * 2 * Math.pow(2, semi / 12);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(0.16, t0 + 0.03);
+      g.gain.setTargetAtTime(0, t0 + 0.35, 0.28);
+      o.connect(g); g.connect(this.sfxBus);
+      o.start(t0); o.stop(t0 + 1.6);
+    });
   }
 
   /* ------------------------------------------------------------------ */
@@ -304,6 +472,8 @@ export class MusicEngine {
   }
 
   dispose() {
+    if (this._scoreTimer) { clearInterval(this._scoreTimer); this._scoreTimer = null; }
+    this.scoreOn = false;
     if (this.bed) this.bed.stop();
     this.bed = null;
     if (this.ownCtx && this.ctx) { try { this.ctx.close(); } catch (_) {} }

@@ -44,6 +44,11 @@ export default function Studio() {
   const captionsRef = useRef(true);    // mirrored into the frame callback — ON: captions carry retention
   const capLineRef = useRef(-1);       // last line the karaoke caption was fired for
   const paramsTimerRef = useRef(null); // debounce for world-editor rebuilds
+  /* THE AUTO-CUT — when the last voiced line lands, the outro sting fires and
+     the take cuts itself a beat later: zero dead air after the final word. */
+  const toggleRecRef = useRef(null);   // latest toggleRec, callable from the poll
+  const doneTRef = useRef(0);          // seconds since the script finished
+  const outroFiredRef = useRef(false); // the closing sting fires exactly once
 
   const [booted, setBooted] = useState(null); // null | 'live' | 'sim'
   const [booting, setBooting] = useState(false);
@@ -256,6 +261,22 @@ export default function Studio() {
         setElapsed(el);
         setCutting(recorderRef.current.paused);
         if (scriptRef.current) setBeatIdx(beatRef.current);
+        /* THE AUTO-CUT — the last voiced line has landed: fire the outro
+           cadence immediately (so it lives INSIDE the file), then cut the
+           take a beat later. No trailing dead air, ever. */
+        if (v && v.ready && v.canRoll() && v.lines.length > 0 && v.done) {
+          if (!outroFiredRef.current) {
+            outroFiredRef.current = true;
+            if (musicRef.current) musicRef.current.outro();
+          }
+          doneTRef.current += 0.2;
+          if (doneTRef.current >= 1.4) {
+            doneTRef.current = -999; // one-shot guard
+            if (toggleRecRef.current) toggleRecRef.current();
+          }
+        } else if (doneTRef.current > 0) {
+          doneTRef.current = 0;
+        }
       } else {
         setCutting(false);
       }
@@ -314,6 +335,14 @@ export default function Studio() {
       stage.setCaption(null);
       return;
     }
+    /* THE HERO SCORE — frame one opens on an impact and the driving groove is
+       already running, so the take never has a cold, silent opening. */
+    if (music && music.ready) {
+      music.startScore();
+      music.impact();
+    }
+    doneTRef.current = 0;
+    outroFiredRef.current = false;
     setRecording(true);
   }, []);
 
@@ -357,6 +386,7 @@ export default function Studio() {
       const take = await rec.stop();
       const perf = perfRecRef.current.stop();
       if (voiceRef.current) voiceRef.current.stopPlayback(); // cut any mid-line audio with the take
+      if (musicRef.current) musicRef.current.stopScore();    // groove out, ambient bed back
       setRecording(false); setElapsed(0);
       stage.setHud('COSMIC WEAVER ── STANDBY');
       stage.setCaption(null);
@@ -384,6 +414,9 @@ export default function Studio() {
       }
     }
   }, [startRecording]);
+
+  // the telemetry poll cuts the take through this ref — always the latest closure
+  useEffect(() => { toggleRecRef.current = toggleRec; }, [toggleRec]);
 
   const pickScript = useCallback((s) => {
     scriptRef.current = s;
