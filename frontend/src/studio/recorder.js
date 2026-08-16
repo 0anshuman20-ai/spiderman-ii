@@ -43,9 +43,9 @@ const WEBM_FIRST = [
    is visually indistinguishable for vertical social video and keeps the
    encoder comfortably inside realtime on hardware AND software paths. */
 const TIERS = {
-  high: { captureFps: 30, videoBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
-  medium: { captureFps: 30, videoBps: 8_000_000, audioBps: 160_000, ladder: MP4_FIRST },
-  low: { captureFps: 24, videoBps: 4_000_000, audioBps: 128_000, ladder: WEBM_FIRST },
+  high: { captureFps: 30, videoBps: 18_000_000, audioBps: 192_000, ladder: MP4_FIRST },
+  medium: { captureFps: 30, videoBps: 11_000_000, audioBps: 160_000, ladder: MP4_FIRST },
+  low: { captureFps: 24, videoBps: 5_000_000, audioBps: 128_000, ladder: WEBM_FIRST },
 };
 
 /** true when WebGL is running on a CPU rasterizer (SwiftShader / llvmpipe / ANGLE
@@ -197,10 +197,13 @@ export class Recorder {
       /* FLUSH THE TAIL: with 500ms timeslices the final <=500ms of audio+video
          rides only on the browser's implicit stop-flush — which Chromium has
          historically dropped under encoder load. requestData() forces the
-         encoder to emit everything it holds BEFORE stop(), so the last words
-         of the take are guaranteed to be inside the file. */
+         encoder to emit everything it holds BEFORE stop(), and a short settle
+         beat gives that flush time to land as a dataavailable chunk, so the
+         last words of the take are guaranteed to be inside the file. */
       try { this.rec.requestData(); } catch (_) { /* inactive or unsupported — stop() still flushes */ }
-      try { this.rec.stop(); } catch (_) { this.recording = false; cleanup(); resolve(null); }
+      setTimeout(() => {
+        try { this.rec.stop(); } catch (_) { this.recording = false; cleanup(); resolve(null); }
+      }, 250);
     });
   }
 }
