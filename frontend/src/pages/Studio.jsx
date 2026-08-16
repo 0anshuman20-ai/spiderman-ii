@@ -233,7 +233,9 @@ export default function Studio() {
            the real audio duration; the finished line then HOLDS through the
            outro so the closer stays on screen into the final frame. */
         const isLast = voice.currentLine === voice.lines.length - 1;
-        if (line) stage.playCaption(line.text, voice.lineDuration(voice.currentLine), isLast ? 1.6 : 0);
+        // 2.8s hold rides the full 2.6s outro window, so the closing words are
+        // still on screen in the file's final frame
+        if (line) stage.playCaption(line.text, voice.lineDuration(voice.currentLine), isLast ? 2.8 : 0);
       }
     });
     setBooting(false);
@@ -282,7 +284,10 @@ export default function Studio() {
             outroFiredRef.current = true;
             if (musicRef.current) musicRef.current.outro();
           }
-          const outroWindow = 1.6 + v.tailSeconds();
+          /* 2.6s (was 1.6): the wider window guarantees the mask's mouth has
+             visibly CLOSED on tape and the final caption has held long enough
+             to read — even if the encoder drops a few tail frames at stop. */
+          const outroWindow = 2.6 + v.tailSeconds();
           if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow) {
             doneTRef.current = -999; // one-shot guard
             if (toggleRecRef.current) toggleRecRef.current();
@@ -312,10 +317,11 @@ export default function Studio() {
       world: stage.worldKey,
     });
     /* FIRST-FRAME HOOK — the opening frame IS the thumbnail. Never a fade-in:
-       hit frame one with a glitch burst + punch-in and the hook text already
-       burned on screen, so the 0.5s a swiper gives you is spent mid-action. */
+       hit frame one with a clean punch-in and the hook text already burned on
+       screen, so the 0.5s a swiper gives you is spent mid-action. (The old
+       glitch burst on frame one read as a broken encode, not a style choice —
+       the take now opens crisp; scripted beats can still call the glitch FX.) */
     capLineRef.current = -1;
-    stage.glitch(0.5);
     stage.punch();
     const hookText = script ? (script.hook || (script.beats[0] && script.beats[0].text)) : null;
     if (hookText && captionsRef.current) stage.playCaption(hookText, 2.2);

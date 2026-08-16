@@ -450,12 +450,17 @@ function drawLens(g, x, y, size, angle, mirror, squash, glow) {
   g.scale(mirror * size, size * Math.max(0.12, squash));
   g.lineJoin = 'round';
 
-  // soft shadow bed so the rim reads as raised from the mask
+  /* soft shadow bed so the rim reads as raised from the mask.
+     TIGHT by design: the old bed was drawn 42–50% larger than the lens with a
+     strong black gradient — against a bright world it read as a dark halo
+     floating OUTSIDE the eye (most visible in the final seconds when the head
+     settles). It now hugs the rubber rim (barely 4% past it) at a fraction of
+     the opacity, so the raised-rim read survives without any visible spill. */
   g.save();
-  g.scale(1.42, 1.5);
+  g.scale(1.31, 1.36);
   lensPath(g);
-  const bed = g.createRadialGradient(0, 0.1, 0.2, 0, 0.1, 1.4);
-  bed.addColorStop(0, 'rgba(0,0,0,0.55)');
+  const bed = g.createRadialGradient(0, 0.1, 0.35, 0, 0.1, 1.05);
+  bed.addColorStop(0, 'rgba(0,0,0,0.30)');
   bed.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = bed; g.fill();
   g.restore();
