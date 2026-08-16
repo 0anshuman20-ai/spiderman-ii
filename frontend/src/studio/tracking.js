@@ -139,13 +139,18 @@ export class Tracker {
         // canonical face-mesh indices: eye corners 33/133 (viewer-left eye), 362/263 (viewer-right)
         const eLx = (lm[33].x + lm[133].x) / 2, eLy = (lm[33].y + lm[133].y) / 2;
         const eRx = (lm[362].x + lm[263].x) / 2, eRy = (lm[362].y + lm[263].y) / 2;
-        f.eyeL.x = lerp(f.eyeL.x, eLx, kPos); f.eyeL.y = lerp(f.eyeL.y, eLy, kPos);
-        f.eyeR.x = lerp(f.eyeR.x, eRx, kPos); f.eyeR.y = lerp(f.eyeR.y, eRy, kPos);
+        /* RAW eye anchors — no tracker-side EMA. The lens compositor runs
+           these through One-Euro filters (speed-adaptive: still when still,
+           lag-free in motion); stacking a fixed EMA in front of One-Euro
+           re-introduces exactly the whip-lag the filter exists to remove.
+           eyeDist/angle feed the same filters, so they ship raw too. */
+        f.eyeL.x = eLx; f.eyeL.y = eLy;
+        f.eyeR.x = eRx; f.eyeR.y = eRy;
         sm(f.center, 168);   // nose bridge between the eyes
         sm(f.chin, 152); sm(f.forehead, 10);
         const aspect = CROP_H / CROP_W;
-        f.eyeDist = lerp(f.eyeDist, Math.hypot(eRx - eLx, (eRy - eLy) * aspect), kPos);
-        f.angle = lerp(f.angle, Math.atan2((eRy - eLy) * aspect, eRx - eLx), kPos);
+        f.eyeDist = Math.hypot(eRx - eLx, (eRy - eLy) * aspect);
+        f.angle = Math.atan2((eRy - eLy) * aspect, eRx - eLx);
         /* MOUTH CHANNELS ride the dedicated fast clock: the fabric-mouth model in
            the shader must articulate the instant your lips do, or the illusion of
            the mask "speaking" collapses into rubbery lag. */
