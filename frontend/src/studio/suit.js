@@ -544,18 +544,18 @@ function drawSpider(g, x, y, s, ang) {
   g.restore();
 }
 
-/* EXPRESSION → LENS: kept deliberately SUBTLE. The old table squashed the
-   lenses to 0.42 on "fury" and skewed them asymmetric on "smirk" — script
-   beats auto-switch expressions mid-take, so a few seconds in the eyes would
-   visibly change shape and lose their mirror. That read as a bug, not acting.
-   Now every expression keeps both lenses identical and near their true shape;
-   emotion lives in the GLOW, which can swing freely without deforming. */
-const EXPR = {
-  calm: { lens: 1, asym: 0, glow: 1 },
-  fury: { lens: 0.88, asym: 0, glow: 1.6 },
-  narrow: { lens: 0.92, asym: 0, glow: 1.2 },
-  shock: { lens: 1.06, asym: 0, glow: 1.4 },
-  smirk: { lens: 0.96, asym: 0, glow: 1.1 },
+/* EXPRESSION → LENS: ONE IMMUTABLE SHAPE. Earlier passes only "toned down"
+   the per-expression lens scaling (fury 0.88, shock 1.06, ...) — but script
+   beats auto-switch expressions mid-take, so the eyes still visibly resized
+   every few seconds. A real screen-suit lens is a rigid piece of hardware:
+   its geometry NEVER changes. Every entry is exactly 1 — emotion lives ONLY
+   in the GLOW, which can swing freely without touching a single vertex. */
+  const EXPR = {
+    calm: { lens: 1, asym: 0, glow: 1 },
+    fury: { lens: 1, asym: 0, glow: 1.6 },
+    narrow: { lens: 1, asym: 0, glow: 1.2 },
+    shock: { lens: 1, asym: 0, glow: 1.4 },
+    smirk: { lens: 1, asym: 0, glow: 1.1 },
 };
 
 export function createSuitLayer(tracker, rig, planeW, planeH) {
@@ -615,11 +615,42 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
   group.add(overlay);
 
   const exprState = { lens: 1, asym: 0, glow: 1 };
-  const lensState = { init: false, lx: 0, ly: 0, rx: 0, ry: 0, size: 0, angle: 0 };
-  /* blink hysteresis state: ONE shared gate for BOTH lenses. closed flips on
-     above 0.55 and releases below 0.30, so blendshape noise in between can
-     never touch the lens shape — and both eyes always squash identically. */
-  const blinkState = { closedL: false, vL: 0 };
+  /* ONE-EURO FILTER — the industry-standard filter for AR face anchors.
+     The old pipeline stacked TWO fixed EMAs (tracker kPos + a 0.4 lens EMA):
+     smooth when still, but during a fast head whip the lenses trailed the
+     face by many pixels. One-Euro is speed-adaptive — the cutoff opens with
+     velocity, so it is glassy-still at rest AND essentially lag-free in
+     motion. Each filter also exposes its velocity for a capped one-frame
+     lead that cancels the remaining detect→draw pipeline latency. */
+  function makeOneEuro(minCutoff, beta, dCutoff = 1.0) {
+    let x = null, dx = 0;
+    const alpha = (cutoff, dt) => { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); };
+    return {
+      filter(v, dt) {
+        if (x == null || !(dt > 0)) { x = v; dx = 0; return v; }
+        const rate = (v - x) / dt;
+        dx += (rate - dx) * alpha(dCutoff, dt);
+        const cutoff = minCutoff + beta * Math.abs(dx);
+        x += (v - x) * alpha(cutoff, dt);
+        return x;
+      },
+      get velocity() { return dx; },
+    };
+  }
+  /* SKULL-FRAME anchoring: instead of filtering four eye coordinates
+     independently (which can drift asymmetric), the lens transform is
+     decomposed into the rigid-skull quantities — seam midpoint, half-span,
+     roll, size — filtered individually, then the two lenses are
+     RECONSTRUCTED perfectly mirrored around the seam. Eyelid/expression
+     wobble on one corner can only nudge span/roll by half, never break
+     the mirror. */
+  const euro = {
+    midX: makeOneEuro(1.1, 0.02), midY: makeOneEuro(1.1, 0.02),
+    span: makeOneEuro(0.9, 0.015),
+    size: makeOneEuro(0.7, 0.01),
+    angle: makeOneEuro(1.0, 0.5),
+  };
+  let lastAngle = 0; // for wrap-safe angle filtering
   let suitOn = 0;
   let graceT = 0;          // hold timer that survives tracking dropouts
   let everLocked = false;  // once true, the suit never reveals raw video again
@@ -700,7 +731,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     }
   }
 
-  function drawOverlay(t) {
+  function drawOverlay(t, dt) {
     og.clearRect(0, 0, CROP_W, CROP_H);
     const f = tracker.points.face;
     if (f.ok > 0.15) {
@@ -718,7 +749,6 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       // old 0.58 read slightly bug-eyed at close camera distance
       const size = (eyeDistPx / yawC) * 0.52;
       const angle = f.angle;
-      const ca = Math.cos(angle), sa = Math.sin(angle);
       /* ---- mask center seam: forehead over the nose bridge to the chin ---- */
       const fhx = f.forehead.x * CROP_W, fhy = f.forehead.y * CROP_H;
       const chx = f.chin.x * CROP_W, chy = f.chin.y * CROP_H;
@@ -745,58 +775,38 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
          in the recolor pass itself — a second canvas shadow here would double
          up and read as a smudge, so the overlay draws nothing over the mouth. */
 
-      /* NO brow strokes: a real Spider-Man mask has no eyebrows. Expression
-         lives entirely in the lens squash below — exactly like the films. */
-      // lenses ride slightly outward + above your real eyes
+      /* NO brow strokes: a real Spider-Man mask has no eyebrows — and NO
+         expression/blink/brow term ever touches the lens geometry. The lens
+         is rigid hardware: one shape, one aspect, forever. */
+      /* SKULL-FRAME DECOMPOSITION: raw eye anchors collapse into midpoint +
+         half-span + roll + size; each scalar runs through its own One-Euro
+         filter; the two lenses are reconstructed perfectly mirrored. */
+      const exL = f.eyeL.x * CROP_W, eyL = f.eyeL.y * CROP_H;
+      const exR = f.eyeR.x * CROP_W, eyR = f.eyeR.y * CROP_H;
+      const fdt = Math.max(0.001, Math.min(0.1, dt || 0.016));
+      // capped one-frame velocity lead cancels detect→draw pipeline latency
+      const LEAD = Math.min(fdt, 1 / 30);
+      const fMidX = euro.midX.filter((exL + exR) / 2, fdt) + euro.midX.velocity * LEAD;
+      const fMidY = euro.midY.filter((eyL + eyR) / 2, fdt) + euro.midY.velocity * LEAD;
+      const fSpan = euro.span.filter(Math.hypot(exR - exL, eyR - eyL) / 2, fdt);
+      const fSize = euro.size.filter(size, fdt);
+      // wrap-safe roll: unwrap the raw angle against the last filtered value
+      let aIn = angle;
+      while (aIn - lastAngle > Math.PI) aIn -= Math.PI * 2;
+      while (aIn - lastAngle < -Math.PI) aIn += Math.PI * 2;
+      const fAngle = euro.angle.filter(aIn, fdt);
+      lastAngle = fAngle;
+      const fca = Math.cos(fAngle), fsa = Math.sin(fAngle);
+      // lenses ride slightly outward + above your real eyes (filtered frame)
       const offOut = eyeDistPx * 0.11, offUp = eyeDistPx * 0.08;
-      const rawL = {
-        x: f.eyeL.x * CROP_W - ca * offOut + sa * offUp,
-        y: f.eyeL.y * CROP_H - sa * offOut - ca * offUp,
-      };
-      const rawR = {
-        x: f.eyeR.x * CROP_W + ca * offOut + sa * offUp,
-        y: f.eyeR.y * CROP_H + sa * offOut - ca * offUp,
-      };
-      /* PERFECT EYES: raw landmarks jitter a pixel or two every frame, which
-         makes the lenses shimmer and drift out of symmetry. Both lenses are
-         smoothed through one shared filter (position, size, angle), so they
-         stay rock-steady AND perfectly mirrored around the mask seam. */
-      const ls = lensState;
-      if (!ls.init) {
-        ls.lx = rawL.x; ls.ly = rawL.y; ls.rx = rawR.x; ls.ry = rawR.y;
-        ls.size = size; ls.angle = angle; ls.init = true;
-      } else {
-        const sk = 0.4;                       // steady but never laggy
-        ls.lx += (rawL.x - ls.lx) * sk; ls.ly += (rawL.y - ls.ly) * sk;
-        ls.rx += (rawR.x - ls.rx) * sk; ls.ry += (rawR.y - ls.ry) * sk;
-        /* SIZE STABILITY DEADBAND: sub-3.5% size noise (landmark shimmer,
-           micro head bobs) is ignored entirely — the lenses only resize when
-           you genuinely move toward or away from the camera. */
-        if (Math.abs(size - ls.size) > ls.size * 0.035) ls.size += (size - ls.size) * 0.18;
-        let dA = angle - ls.angle;
-        if (dA > Math.PI) dA -= Math.PI * 2; else if (dA < -Math.PI) dA += Math.PI * 2;
-        ls.angle += dA * sk;
-      }
-      /* ---- ROCK-STEADY EYES: ONE gate, ONE shape, ALWAYS mirrored ----
-         The old per-eye hysteresis could latch one eye "closed" while the
-         other stayed open (blendshape noise sits in the hysteresis band on
-         one side only), so seconds into a take the two lenses drifted into
-         different shapes and never recovered. Now a SINGLE blink signal —
-         the minimum of both eyes, so it only fires when both really close —
-         drives one shared squash. The two lenses are mathematically
-         incapable of differing. */
-      const bst = blinkState;
-      const rawBlink = Math.min(rig.blinkL || 0, rig.blinkR || 0);
-      if (bst.closedL) { if (rawBlink < 0.30) bst.closedL = false; }
-      else if (rawBlink > 0.55) bst.closedL = true;
-      const shaped = bst.closedL ? Math.min(1, Math.max(0, (rawBlink - 0.18) / 0.62)) : 0;
-      bst.vL += (shaped - bst.vL) * 0.55;
-      const blink = bst.vL;
-      // brow deadband: resting brow chatter never wobbles the lens shape
-      const brow = rig.browUp > 0.14 ? (rig.browUp - 0.14) / 0.86 : 0;
-      const sq = exprState.lens * (1 - blink * 0.62) * (1 + brow * 0.12);
-      drawLens(og, ls.lx, ls.ly, ls.size, ls.angle, -1, sq, exprState.glow);
-      drawLens(og, ls.rx, ls.ry, ls.size, ls.angle, 1, sq, exprState.glow);
+      const lx = fMidX - fca * (fSpan + offOut) + fsa * offUp;
+      const ly = fMidY - fsa * (fSpan + offOut) - fca * offUp;
+      const rx = fMidX + fca * (fSpan + offOut) + fsa * offUp;
+      const ry = fMidY + fsa * (fSpan + offOut) - fca * offUp;
+      /* squash is CONSTANT 1: blinking, brow raises and expression beats can
+         change the glow, never the geometry — like the films' rigid lenses. */
+      drawLens(og, lx, ly, fSize, fAngle, -1, 1, exprState.glow);
+      drawLens(og, rx, ry, fSize, fAngle, 1, 1, exprState.glow);
       og.restore();
     }
     const p = tracker.points.pose;
@@ -907,7 +917,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     const target = EXPR[rig.expression] || EXPR.calm;
     ['lens', 'asym', 'glow'].forEach((key) => { exprState[key] += (target[key] - exprState[key]) * k; });
 
-    drawOverlay(t);
+    drawOverlay(t, dt);
   }
 
   function setRim(hex) { uniforms.uRim.value.setHex(hex); }

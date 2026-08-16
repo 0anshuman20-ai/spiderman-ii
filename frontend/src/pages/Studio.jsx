@@ -529,6 +529,14 @@ export default function Studio() {
       if (!s || !s.beats) return prev;
       const lines = s.beats.map((b) => b.text);
       if (s.loopLine) lines.push(s.loopLine);
+      /* the prefill IS the transmission's beat sheet — carry its emotes so
+         beat-aware pacing/prosody applies even when the sheet was opened
+         before ever touching the transmission picker */
+      if (voiceRef.current) {
+        const emotes = s.beats.map((b) => b.emote || 'neutral');
+        if (s.loopLine) emotes.push('neutral');
+        voiceRef.current.setLineEmotes(emotes);
+      }
       return lines.join('\n');
     });
     setScriptOpen(true);
@@ -693,7 +701,16 @@ export default function Studio() {
               style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--cw-border)', color: 'var(--cw-text-2)', minHeight: 160, resize: 'vertical' }}
               placeholder={'One line per beat, e.g.\nHey, your friendly neighborhood Spider-Man here.\nWith great power comes great responsibility.'}
               value={scriptText} data-testid="script-textarea"
-              onChange={(e) => setScriptText(e.target.value)} disabled={!!synthProg} />
+              onChange={(e) => {
+                setScriptText(e.target.value);
+                /* HAND-EDITED SCRIPT: the beat-sheet emotes are indexed by ROW,
+                   so any manual edit can shift the rows and land the wrong
+                   pacing/prosody on the wrong line. Clear them — an edited
+                   script reads with clean neutral pacing instead of a
+                   misaligned emotional map. Re-picking a transmission
+                   restores its emotes. */
+                if (voiceRef.current) voiceRef.current.setLineEmotes(null);
+              }} disabled={!!synthProg} />
             {synthProg && (
               <div className="mono text-[9px] mb-2" style={{ color: 'var(--cw-amber)' }} data-testid="synth-progress">
                 SYNTHESIZING SPIDER VOICE… {synthProg.total ? `${synthProg.done}/${synthProg.total}` : ''}

@@ -216,18 +216,30 @@ export function createStage(canvas) {
     capTex.needsUpdate = true;
   }
 
-  /** animate a spoken line word-by-word across durationSec */
-  function playCaption(text, durationSec = 2.4) {
+  /** animate a spoken line word-by-word across durationSec.
+      holdSec: EXTRA seconds the finished line stays on screen past its
+      natural breath — the FINAL line of a take passes the outro window here
+      so the closer is readable into the last frame instead of dying with
+      its audio. */
+  function playCaption(text, durationSec = 2.4, holdSec = 0) {
     const words = String(text || '').trim().split(/\s+/).filter(Boolean);
     if (!words.length) { setCaption(null); return; }
-    capAnim = { words, start: performance.now() / 1000, dur: Math.max(0.8, durationSec), drawn: -1 };
+    capAnim = {
+      words,
+      start: performance.now() / 1000,
+      dur: Math.max(0.8, durationSec),
+      hold: Math.max(0, holdSec || 0),
+      drawn: -1,
+    };
   }
 
   function updateCaptionAnim() {
     if (!capAnim) return;
     const now = performance.now() / 1000;
     const p = (now - capAnim.start) / capAnim.dur;
-    if (p >= 1.18) { // hold the last chunk a breath past the audio, then clear
+    // hold the last chunk a breath past the audio (plus any explicit hold —
+    // the final line rides the outro), then clear
+    if (now - capAnim.start >= capAnim.dur * 1.18 + capAnim.hold) {
       capAnim = null;
       capCtx.clearRect(0, 0, 1024, 220);
       capTex.needsUpdate = true;
