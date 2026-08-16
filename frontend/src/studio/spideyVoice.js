@@ -32,18 +32,36 @@ const TTS_ENDPOINTS = [
 
 /* split a script into speakable lines: hard breaks first, then sentences */
 export function splitScript(text) {
+  return splitScriptRows(text).map((r) => r.text);
+}
+
+/* row-aware split: each spoken line remembers which pasted ROW it came from,
+   so per-beat metadata (emote → pacing + prosody) survives sentence splitting */
+export function splitScriptRows(text) {
   const out = [];
   String(text || '')
     .split(/\n+/)
-    .forEach((row) => {
+    .forEach((row, rowIdx) => {
       row
         .split(/(?<=[.!?…])\s+/)
         .map((s) => s.trim())
         .filter(Boolean)
-        .forEach((s) => out.push(s));
+        .forEach((s) => out.push({ text: s, row: rowIdx }));
     });
   return out;
 }
+
+/* BEAT-AWARE DELIVERY — emote (from the script's beat sheet) shapes BOTH the
+   inter-line gap and the synthesis prosody, while the voice identity stays
+   locked server-side. Quips snap; heavy turns breathe. */
+const EMOTE_GAP = {
+  neutral: 0.65, scan: 0.65, smirk: 0.5,
+  anger: 0.5, glitch: 0.5, surge: 0.55, sad: 1.0,
+};
+const EMOTE_MOOD = {
+  neutral: 'hero', scan: 'hero', smirk: 'hero',
+  anger: 'urgent', glitch: 'urgent', surge: 'urgent', sad: 'somber',
+};
 
 /* ---- UPLOADED VOICE helpers: slice one performance file into per-line takes ---- */
 
@@ -120,6 +138,40 @@ export class SpideyVoice {
     this._src = null;
     this._utter = null;        // live speechSynthesis utterance (fallback mode)
     this.mood = 'hero';        // named delivery; prosody numbers live server-side only
+    this.lineEmotes = null;    // per-ROW emotes from the picked transmission (or null)
+    /* WALL-CLOCK TRUTH for the auto-cut: the exact performance.now() the final
+       audio actually ended. The old cutter counted poll ticks (interval
+       throttling made the counter run FASTER than reality under recording
+       load), which cut the file before the outro had physically elapsed. */
+    this.lastEndedAt = 0;
+  }
+
+  /* per-row emotes for the currently loaded script — pacing + prosody hints.
+     null clears them (e.g. the user hand-edited the script text). */
+  setLineEmotes(emotes) {
+    this.lineEmotes = Array.isArray(emotes) && emotes.length ? emotes : null;
+  }
+
+  /* emote for a given line index, resolved through its source row */
+  _emoteFor(i) {
+    const l = this.lines[i];
+    if (!l || !this.lineEmotes) return null;
+    const row = l.row != null ? l.row : i;
+    return this.lineEmotes[row] || null;
+  }
+
+  /** real seconds since the final line's audio ended (Infinity if not done) */
+  secondsSinceDone() {
+    if (!this.done || !this.lastEndedAt) return this.done ? 0 : Infinity;
+    return (performance.now() - this.lastEndedAt) / 1000;
+  }
+
+  /** audio still physically draining through the chain after the last sample:
+      context output latency + the compressor/limiter release tail */
+  tailSeconds() {
+    let lat = 0;
+    try { lat = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0); } catch (_) {}
+    return Math.min(0.6, lat) + 0.3;
   }
 
   /* pick the locked delivery for the NEXT synthesis — 'mystery' | 'hero' |
@@ -188,12 +240,13 @@ export class SpideyVoice {
   /* fetch one line as an AudioBuffer, walking the relay endpoints on failure.
      Same locked voice behind every door — only the transport differs. Every
      request is hard-capped so a dead network can never hang the sheet. */
-  async _fetchLine(text) {
+  async _fetchLine(text, mood) {
+    const useMood = mood || this.mood;
     for (const endpoint of TTS_ENDPOINTS) {
       const ctrl = new AbortController();
       const kill = setTimeout(() => ctrl.abort(), 20000);
       try {
-        const url = `${endpoint}?text=${encodeURIComponent(text)}&mood=${encodeURIComponent(this.mood)}`;
+        const url = `${endpoint}?text=${encodeURIComponent(text)}&mood=${encodeURIComponent(useMood)}`;
         const res = await fetch(url, { signal: ctrl.signal });
         clearTimeout(kill);
         if (!res.ok) continue;
@@ -210,14 +263,18 @@ export class SpideyVoice {
   async synthesize(text, onProgress) {
     if (!this.ready) return false;
     this.stopPlayback();
-    const parts = splitScript(text);
-    this.lines = parts.map((t) => ({ text: t, buffer: null, ok: false }));
+    const parts = splitScriptRows(text);
+    this.lines = parts.map((p) => ({ text: p.text, row: p.row, buffer: null, ok: false }));
     this.idx = 0; this.currentLine = -1;
     if (!parts.length) { this.synthState = 'empty'; return false; }
     this.synthState = 'working';
     let okCount = 0;
     for (let i = 0; i < this.lines.length; i++) {
-      const buf = await this._fetchLine(this.lines[i].text);
+      /* PROSODY PER BEAT — the beat's emote picks a locked server-side mood
+         (same voice, different rate/pitch), so emotion is baked into the audio */
+      const emote = this._emoteFor(i);
+      const mood = (emote && EMOTE_MOOD[emote]) || this.mood;
+      const buf = await this._fetchLine(this.lines[i].text, mood);
       this.lines[i].buffer = buf;
       this.lines[i].ok = !!buf;
       if (buf) okCount++;
@@ -253,9 +310,9 @@ export class SpideyVoice {
   async loadUpload(arrayBuffer, scriptText) {
     if (!this.ready) return { ok: false, message: 'audio engine offline' };
     if (scriptText != null && String(scriptText).trim()) {
-      const parts = splitScript(scriptText);
+      const parts = splitScriptRows(scriptText);
       if (parts.length) {
-        this.lines = parts.map((t) => ({ text: t, buffer: null, ok: false }));
+        this.lines = parts.map((p) => ({ text: p.text, row: p.row, buffer: null, ok: false }));
         this.idx = 0; this.currentLine = -1;
       }
     }
@@ -300,6 +357,7 @@ export class SpideyVoice {
     this._quietT = 1;      // first mouth movement fires line 1 instantly
     this._cooldown = 0;
     this._sinceEnd = 0;    // director clock: line 1 auto-fires within FIRST_LINE_MAX
+    this.lastEndedAt = 0;  // fresh take: the wall-clock end anchor resets
   }
 
   /** the whole script has been spoken and nothing is playing — the outro window */
@@ -353,6 +411,7 @@ export class SpideyVoice {
       this._cooldown = 0.18;
       this._quietT = 0;
       this._sinceEnd = 0;    // restart the director clock for the next line
+      this.lastEndedAt = performance.now(); // wall-clock anchor for the auto-cut
     };
     u.onend = done;
     u.onerror = done;
@@ -394,8 +453,20 @@ export class SpideyVoice {
       this._cooldown = 0.18; // brief guard so one mouth move can't chain two lines
       this._quietT = 0;
       this._sinceEnd = 0;    // restart the director clock for the next line
+      this.lastEndedAt = performance.now(); // wall-clock anchor for the auto-cut
     };
     try { src.start(); } catch (_) { this.playing = false; this.currentLine = -1; }
+  }
+
+  /** the pacing window before line i auto-fires: emote-shaped, deterministic */
+  _gapFor(i) {
+    if (i === 0) return 0.45; // cold open: never let the take breathe before line 1
+    const emote = this._emoteFor(i);
+    let gap = (emote && EMOTE_GAP[emote] != null) ? EMOTE_GAP[emote] : 0.65;
+    // punchline micro-pause: a "?" or "!" ending gets a beat before the follow-up
+    const prev = this.lines[i - 1];
+    if (prev && /[?!]…?$/.test(prev.text.trim())) gap += 0.15;
+    return gap;
   }
 
   /* per-frame lip watcher. jaw comes from the face tracker (0..1). While
@@ -417,8 +488,10 @@ export class SpideyVoice {
     if (this.idx >= this.lines.length) return;
     /* DIRECTOR PACING — dead air never reaches the tape. The performer's lips
        are still the fastest trigger, but past the pacing window the next line
-       fires itself: 0.45s max for the cold open, 0.7s between lines. */
-    if (this.autoPace && this._sinceEnd >= (this.idx === 0 ? 0.45 : 0.7)) {
+       fires itself. The gap is BEAT-AWARE: the cold open lands in 0.45s, quips
+       and escalations snap tight, somber turns get a real breath — and a line
+       that ended on "?" or "!" holds an extra 150ms so the punchline lands. */
+    if (this.autoPace && this._sinceEnd >= this._gapFor(this.idx)) {
       this._quietT = 0;
       this._playLine(this.idx);
       return;

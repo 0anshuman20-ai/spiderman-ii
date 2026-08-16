@@ -194,6 +194,12 @@ export class Recorder {
           createdAt: new Date().toISOString(),
         });
       };
+      /* FLUSH THE TAIL: with 500ms timeslices the final <=500ms of audio+video
+         rides only on the browser's implicit stop-flush — which Chromium has
+         historically dropped under encoder load. requestData() forces the
+         encoder to emit everything it holds BEFORE stop(), so the last words
+         of the take are guaranteed to be inside the file. */
+      try { this.rec.requestData(); } catch (_) { /* inactive or unsupported — stop() still flushes */ }
       try { this.rec.stop(); } catch (_) { this.recording = false; cleanup(); resolve(null); }
     });
   }

@@ -227,7 +227,13 @@ export default function Studio() {
           && voice.currentLine >= 0 && voice.currentLine !== capLineRef.current) {
         capLineRef.current = voice.currentLine;
         const line = voice.lines[voice.currentLine];
-        if (line) stage.playCaption(line.text, voice.lineDuration(voice.currentLine));
+        /* FINAL-LINE HOLD: the last caption used to die the instant its audio
+           did — the karaoke reached the closing words exactly as the cut
+           landed, so they were never readable. The words still pace across
+           the real audio duration; the finished line then HOLDS through the
+           outro so the closer stays on screen into the final frame. */
+        const isLast = voice.currentLine === voice.lines.length - 1;
+        if (line) stage.playCaption(line.text, voice.lineDuration(voice.currentLine), isLast ? 1.6 : 0);
       }
     });
     setBooting(false);
@@ -263,14 +269,21 @@ export default function Studio() {
         if (scriptRef.current) setBeatIdx(beatRef.current);
         /* THE AUTO-CUT — the last voiced line has landed: fire the outro
            cadence immediately (so it lives INSIDE the file), then cut the
-           take a beat later. No trailing dead air, ever. */
+           take a beat later. Timed on WALL CLOCK from the audio's real end
+           (the old tick counter assumed this interval ran exactly on time;
+           under recording load it's throttled, so ticks arrive late but each
+           still added a full 0.2s — the counter outran reality and cut the
+           file before the final words had physically elapsed). The window
+           also pads for the audio still draining through the output chain
+           (context latency + compressor/reverb tail), so the mix finishes
+           INSIDE the file, every time. */
         if (v && v.ready && v.canRoll() && v.lines.length > 0 && v.done) {
           if (!outroFiredRef.current) {
             outroFiredRef.current = true;
             if (musicRef.current) musicRef.current.outro();
           }
-          doneTRef.current += 0.2;
-          if (doneTRef.current >= 1.4) {
+          const outroWindow = 1.6 + v.tailSeconds();
+          if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow) {
             doneTRef.current = -999; // one-shot guard
             if (toggleRecRef.current) toggleRecRef.current();
           }
@@ -430,7 +443,15 @@ export default function Studio() {
     const lines = (s.beats || []).map((b) => b.text);
     if (s.loopLine) lines.push(s.loopLine);
     setScriptText(lines.join('\n'));
-    if (voiceRef.current) voiceRef.current.setMood('hero');
+    if (voiceRef.current) {
+      voiceRef.current.setMood('hero');
+      /* BEAT-AWARE DELIVERY — one emote per pasted row: the voice engine uses
+         these for emote-shaped inter-line gaps and per-line prosody moods
+         (same locked voice), so the read breathes like the beat sheet. */
+      const emotes = (s.beats || []).map((b) => b.emote || 'neutral');
+      if (s.loopLine) emotes.push('neutral');
+      voiceRef.current.setLineEmotes(emotes);
+    }
     if (stageRef.current) stageRef.current.setHud(`COSMIC WEAVER ── TRANSMISSION #${String(s.number).padStart(2, '0')}`);
   }, [setWorld]);
 
