@@ -99,7 +99,7 @@ function splitOnSilence(buf, ctx, { minGap = 0.35, minSeg = 0.25 } = {}) {
     env.push(Math.sqrt(s / Math.max(1, end - i)));
   }
   const peak = env.reduce((m, v) => Math.max(m, v), 0);
-  const thr = Math.max(0.006, peak * 0.06); // adaptive floor: survives quiet exports
+  const thr = Math.max(0.005, peak * 0.05); // adaptive floor: survives quiet exports
   const gapWins = Math.ceil(minGap / 0.02);
   const spans = [];
   let start = -1, quiet = 0;
@@ -109,8 +109,12 @@ function splitOnSilence(buf, ctx, { minGap = 0.35, minSeg = 0.25 } = {}) {
     if (start < 0) continue;
     quiet += 1;
     if (quiet >= gapWins || i >= env.length) {
-      const s0 = Math.max(0, (start - 2) * win);                       // keep the attack
-      const s1 = Math.min(data.length, (i - quiet + 1 + 4) * win);     // keep the tail
+      const s0 = Math.max(0, (start - 3) * win);                       // keep the attack
+      /* +10 windows (~200ms) of tail, up from ~80ms: soft trailing consonants
+         ("...s", "...t", "...ing") sit BELOW the adaptive threshold, so the
+         old tight tail physically chopped the end of words off every slice —
+         which is exactly "it cut out my last voices". */
+      const s1 = Math.min(data.length, (i - quiet + 1 + 10) * win);    // keep the tail
       if ((s1 - s0) / sr >= minSeg) spans.push([s0, s1]);
       start = -1; quiet = 0;
     }
@@ -328,9 +332,23 @@ export class SpideyVoice {
     let buf;
     try { buf = await this.ctx.decodeAudioData(arrayBuffer.slice(0)); }
     catch (_) { return { ok: false, message: 'could not decode that file — use mp3 / wav / m4a' }; }
-    const segs = splitOnSilence(buf, this.ctx);
+    let segs = splitOnSilence(buf, this.ctx);
     if (!segs.length) return { ok: false, message: 'no speech found in that file' };
     const n = this.lines.length;
+    /* ADAPTIVE SLICING — a natural read almost always runs LONGER than the
+       script planned: mid-sentence breaths open gaps wider than 0.35s, so one
+       spoken line shatters into several slices. Every later line then shifts
+       one slot earlier and the real ending gets crammed into the final slot.
+       When slices outnumber lines, re-slice with progressively wider gap
+       requirements and keep the count that lands closest to the line count —
+       your pauses set the pace, not a pre-decided timing. */
+    if (segs.length > n) {
+      for (const gap of [0.5, 0.7, 0.95]) {
+        const retry = splitOnSilence(buf, this.ctx, { minGap: gap });
+        if (retry.length >= n && retry.length < segs.length) segs = retry;
+        if (segs.length <= n) break;
+      }
+    }
     // extra slices fold into the final line; fewer slices leave the rest on TTS
     const mapped = segs.length > n
       ? [...segs.slice(0, n - 1), mergeBuffers(segs.slice(n - 1), this.ctx)]

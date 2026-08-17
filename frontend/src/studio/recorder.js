@@ -43,9 +43,13 @@ const WEBM_FIRST = [
    is visually indistinguishable for vertical social video and keeps the
    encoder comfortably inside realtime on hardware AND software paths. */
 const TIERS = {
-  high: { captureFps: 30, videoBps: 18_000_000, audioBps: 192_000, ladder: MP4_FIRST },
-  medium: { captureFps: 30, videoBps: 11_000_000, audioBps: 160_000, ladder: MP4_FIRST },
-  low: { captureFps: 24, videoBps: 5_000_000, audioBps: 128_000, ladder: WEBM_FIRST },
+  /* bitrates trimmed hard: 18 Mbps looked identical to 12 Mbps for vertical
+     social video but pushed most realtime encoders past their budget — the
+     classic symptom is the picture freezing in bursts mid-take while audio
+     continues. 12/8/4 keeps every tier comfortably inside realtime. */
+  high: { captureFps: 30, videoBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
+  medium: { captureFps: 30, videoBps: 8_000_000, audioBps: 160_000, ladder: MP4_FIRST },
+  low: { captureFps: 24, videoBps: 4_000_000, audioBps: 128_000, ladder: WEBM_FIRST },
 };
 
 /** true when WebGL is running on a CPU rasterizer (SwiftShader / llvmpipe / ANGLE
@@ -70,7 +74,9 @@ export function pickTier(stage) {
   const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
   const soft = isSoftwareGL(stage && stage.renderer);
   if (soft || cores <= 2 || (measured > 0 && measured < 28)) return 'low';
-  if (cores <= 4 || (measured > 0 && measured < 50)) return 'medium';
+  // 'high' now needs REAL headroom (many cores AND a proven 55+ fps stage):
+  // a machine that only just holds 50fps stalls the encoder once REC adds load
+  if (cores <= 6 || (measured > 0 && measured < 55)) return 'medium';
   return 'high';
 }
 

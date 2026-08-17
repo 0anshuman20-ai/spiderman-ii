@@ -879,7 +879,11 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
            line over               -> mouth SHUTS, even if your lips move;
            browser-voice fallback  -> audio isn't in the chain, follow lips;
            no script loaded        -> classic behavior, your jaw owns it. */
-      const audioJaw = Math.min(1, (rig.level || 0) * 1.1);
+      /* noise-floor gate: real recordings carry breath/room tone in their
+         tails, which kept the smoothed level just high enough to hold the
+         mouth ajar between syllables and after a line. Subtract the floor
+         BEFORE scaling so silence maps to a hard 0 and speech still hits 1. */
+      const audioJaw = Math.min(1, Math.max(0, (rig.level || 0) - 0.055) * 1.35);
       let jawTarget;
       if (rig.voiceActive) {
         if (rig.voicePlaying) jawTarget = rig.voiceBuffered ? audioJaw : rig.jaw;
@@ -887,10 +891,14 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       } else {
         jawTarget = Math.max(rig.jaw, audioJaw * 0.8);
       }
-      // fast attack so no syllable is missed; the release is quick but eased
-      // so the mouth closes cleanly (~80ms) instead of snapping shut
-      jawAnim += (jawTarget - jawAnim) * (jawTarget > jawAnim ? 0.75 : 1 - Math.exp(-dt * 24));
-      if (jawAnim < 0.01) jawAnim = 0;
+      /* fast attack so no syllable is missed; the release is quick but eased.
+         A LINE ENDING is the one moment the close must be decisive: when the
+         target is a hard 0 (audio over) the release runs ~40% faster, so the
+         mask's lips are visibly SEALED before the next line or the cut —
+         never lingering half-open on tape. */
+      const closeRate = jawTarget === 0 ? 34 : 24;
+      jawAnim += (jawTarget - jawAnim) * (jawTarget > jawAnim ? 0.75 : 1 - Math.exp(-dt * closeRate));
+      if (jawAnim < 0.02) jawAnim = 0;
       uniforms.uJaw.value = jawAnim;
       uniforms.uPucker.value = rig.pucker;
       uniforms.uSmile.value = rig.smile;

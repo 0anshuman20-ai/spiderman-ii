@@ -224,8 +224,19 @@ export function createStage(canvas) {
   function playCaption(text, durationSec = 2.4, holdSec = 0) {
     const words = String(text || '').trim().split(/\s+/).filter(Boolean);
     if (!words.length) { setCaption(null); return; }
+    /* LENGTH-WEIGHTED PACING — a uniform per-word clock makes the highlight
+       sprint through long words and camp on short ones, which reads as
+       stutter against the audio. Weighting by character count (plus a fixed
+       per-word beat) tracks how speech actually spends time, so the hot word
+       glides with the voice instead of jumping. cum[i] = the 0..1 fraction of
+       the line's duration at which word i ENDS. */
+    const weights = words.map((w) => Math.max(2, w.replace(/[^\w]/g, '').length) + 2);
+    const total = weights.reduce((s, v) => s + v, 0);
+    let acc = 0;
+    const cum = weights.map((v) => { acc += v; return acc / total; });
     capAnim = {
       words,
+      cum,
       start: performance.now() / 1000,
       dur: Math.max(0.8, durationSec),
       hold: Math.max(0, holdSec || 0),
@@ -246,7 +257,11 @@ export function createStage(canvas) {
       return;
     }
     const n = capAnim.words.length;
-    const wIdx = Math.min(n - 1, Math.floor(Math.min(0.999, p) * n));
+    // length-weighted lookup: the active word is the first whose END fraction
+    // is still ahead of the playhead — matches how the audio spends its time
+    const pc = Math.min(0.999, p);
+    let wIdx = n - 1;
+    for (let i = 0; i < n; i++) { if (pc < capAnim.cum[i]) { wIdx = i; break; } }
     const chunk = Math.floor(wIdx / CAP_CHUNK);
     const key = chunk * 100 + (wIdx % CAP_CHUNK);
     if (key === capAnim.drawn) return;
