@@ -501,16 +501,17 @@ export const TRANSMISSIONS = [
 ];
 
 /* Scripts 1–3 are already published and stay untouched. Every later transmission
-   gets a shorter, simpler spoken pass while keeping its IDs, timing, worlds,
-   emotes, effects, captions, and fact notes stable. */
-const SIMPLE_REWRITES = {
+   follows a 25–35 second retention arc: instant curiosity, a new reveal every
+   few seconds, one clear emotional turn, a quotable payoff, and a loop or honest
+   question. Language stays simple enough to understand on the first listen. */
+const VIRAL_REWRITES = {
   4: [
     'I searched for your sun. I could not find it.',
     'From far away, it is just one tiny light.',
     'Two hundred billion stars hide it.',
     'Everyone you love lives beside that lost dot.',
     'That sounds scary. But being hard to find may keep you safe.',
-    'Maybe the universe missed you on purpose. Would you want it to find us?',
+    'Maybe being lost is the only reason Earth is still safe.',
   ],
   5: [
     'One hour for you could cost seven years on Earth.',
@@ -518,7 +519,7 @@ const SIMPLE_REWRITES = {
     'You come back after lunch. Your friends are seven years older.',
     'This is not just a movie idea. Gravity really bends time.',
     'Even your phone maps need time fixes from space.',
-    'Would you lose seven years for one hour among the stars?',
+    'One hour in space. Seven years gone. Would you still go?',
   ],
   6: [
     'Space is not empty. Something is touching you right now.',
@@ -526,7 +527,7 @@ const SIMPLE_REWRITES = {
     'That wind races past planets and pulls on comet tails.',
     'It even hits the top of Earth’s sky.',
     'The dark is not empty. It is a wild ocean.',
-    'And I just saw something move in the deep end.',
+    'And something in that ocean just pushed back.',
   ],
   7: [
     'I watched a blue sunset on Mars.',
@@ -534,7 +535,7 @@ const SIMPLE_REWRITES = {
     'Mars does the opposite.',
     'Its red dust lets blue light stay close to the sun.',
     'Same sun. Same light. A completely different goodbye.',
-    'Which sunset would you want to see once?',
+    'Red on Earth. Blue on Mars. Which goodbye would you choose?',
   ],
   8: [
     'This spoonful would weigh more than a mountain.',
@@ -542,7 +543,7 @@ const SIMPLE_REWRITES = {
     'One spoonful can weigh billions of tons.',
     'Imagine every person on Earth packed into one sugar cube.',
     'Now imagine that star spinning hundreds of times each second.',
-    'The scary part? The universe calls this normal.',
+    'A city-sized star. A mountain in one spoon. And space has millions of them.',
   ],
   9: [
     'Space has a smell. Astronauts all say the same thing.',
@@ -550,7 +551,7 @@ const SIMPLE_REWRITES = {
     'The smell sticks to their suits after they come inside.',
     'Space changes the suit, almost like fire changes wood.',
     'So the universe smells like something just burned.',
-    'My station smells like that now. Nothing here is on fire.',
+    'My station smells like that now. But I have not opened the door.',
   ],
   10: [
     'A machine from Earth may outlive every human.',
@@ -558,7 +559,7 @@ const SIMPLE_REWRITES = {
     'In forty thousand years, it will pass another star.',
     'Your cities may be gone. Voyager will still be moving.',
     'It carries Earth sounds on a gold record.',
-    'Long after we are gone, our hello will keep flying.',
+    'Humanity may end. But our first hello could fly forever.',
   ],
   11: [
     'The galaxy has billions of stars. So where is everyone?',
@@ -566,7 +567,7 @@ const SIMPLE_REWRITES = {
     'But every time we listen, we hear nothing.',
     'Maybe life is rare. Maybe it is hiding.',
     'Or maybe loud worlds do not stay loud for long.',
-    'If the dark can hear us, should Earth stay quiet?',
+    'Maybe the sky is silent because everyone else learned to hide.',
   ],
   12: [
     'Every world may face one test that almost no one survives.',
@@ -574,7 +575,7 @@ const SIMPLE_REWRITES = {
     'The scary question is simple.',
     'Did humans already pass it? Or is it still ahead?',
     'If it is behind us, we are a miracle. If not, the silent sky is a warning.',
-    'Which answer helps you sleep?',
+    'Miracle behind us. Warning ahead. Which one do you believe?',
   ],
   13: [
     'I tried to reach the edge of the universe.',
@@ -582,7 +583,7 @@ const SIMPLE_REWRITES = {
     'Some places move away so fast that light can never return.',
     'The farthest thing you see is not an edge.',
     'It is the oldest light that can still reach you.',
-    'Every second, more of the universe says goodbye forever.',
+    'While you watched this, another piece of the universe vanished forever.',
   ],
   14: [
     'The universe could end before I finish this video.',
@@ -590,7 +591,7 @@ const SIMPLE_REWRITES = {
     'One tiny change could make a bubble with new rules.',
     'It would spread at light speed and change everything it touched.',
     'No alarm. No time to run. You would never see it coming.',
-    'Good news: it has stayed quiet for billions of years. So far.',
+    'It has stayed quiet for billions of years. You are still here. So far.',
   ],
   15: [
     'Most matter in the universe cannot be seen.',
@@ -598,7 +599,7 @@ const SIMPLE_REWRITES = {
     'Something hidden holds them together.',
     'We call it dark matter because we do not know what it is.',
     'It may be passing through you right now.',
-    'You are made from the rare kind of matter that can look back.',
+    'The rarest matter in space may be the part that can look back.',
   ],
   16: [
     'Watch someone fall into a black hole. They never reach the end.',
@@ -723,7 +724,7 @@ const SIMPLE_REWRITES = {
 };
 
 for (const script of TRANSMISSIONS) {
-  const rewrite = SIMPLE_REWRITES[script.number];
+  const rewrite = VIRAL_REWRITES[script.number];
   if (!rewrite) continue;
   script.hook = rewrite[0];
   script.beats = script.beats.map((beat, index) => ({ ...beat, text: rewrite[index] || beat.text }));
@@ -809,9 +810,9 @@ export const LAUNCH_SEQUENCE = [
       B(5, 'A telescope heard one huge signal. Then it vanished.', 'scan', 'none', ''),
       B(12, 'The man watching circled it in red. He wrote one word: Wow.', 'neutral', 'zoom', ''),
       B(19, 'For almost fifty years, Earth listened for it again. Nothing.', 'sad', 'static', 'let the silence sit'),
-      B(25, 'But I heard it out here. And this time, it said a name.', 'narrow', 'glitch', 'cold. hold the lens.'),
+      B(25, 'But I heard it out here. And this time, it said one word.', 'narrow', 'glitch', 'cold. hold the lens.'),
     ],
-    loopLine: 'The name was Earth. So who called you first?',
+    loopLine: 'Earth. It said Earth. So tell me—who called you first?',
     videoTitle: 'Something Called Earth In 1977. It Never Called Back.',
     description: 'The Wow! signal: 72 seconds, louder than anything in the sky, never repeated, never explained. I know that sound. A transmission from somewhere past your sky.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['wow signal', 'seti', 'aliens', 'space mystery', 'unexplained', 'space facts', 'radio signal', 'science shorts', 'universe', 'shorts'],
@@ -829,9 +830,9 @@ export const LAUNCH_SEQUENCE = [
       B(5, 'Light needs three hundred million years just to cross it.', 'scan', 'zoom', ''),
       B(12, 'Thousands of galaxies should live there. We found only about sixty.', 'narrow', 'none', 'let the math land'),
       B(19, 'From the middle, your whole night sky could look empty.', 'sad', 'static', ''),
-      B(25, 'Imagine living there and thinking you were the only life anywhere.', 'shock', 'pulse', 'quiet horror'),
+      B(25, 'Imagine looking up your whole life and seeing absolutely nothing.', 'shock', 'pulse', 'quiet horror'),
     ],
-    loopLine: 'Maybe someone in that darkness is thinking the same thing about us.',
+    loopLine: 'Maybe someone in that darkness thinks they are alone. Just like us.',
     videoTitle: 'The Hole In The Universe Nobody Can Explain',
     description: 'A patch of space that should hold 10,000 galaxies. It holds 60. Nobody knows why. A transmission from somewhere past your sky.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['bootes void', 'space', 'void', 'space mystery', 'galaxies', 'dark matter', 'space facts', 'science shorts', 'universe', 'shorts'],
