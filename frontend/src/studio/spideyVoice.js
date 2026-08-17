@@ -119,6 +119,16 @@ function splitOnSilence(buf, ctx, { minGap = 0.35, minSeg = 0.25 } = {}) {
       start = -1; quiet = 0;
     }
   }
+  /* THE LAST WORDS GUARANTEE — the final span has nothing after it, so there
+     is zero cost to keeping extra tail. Soft closers ("...right?", trailing
+     "s"/"ng" sounds, a breath into silence) sit below the adaptive threshold
+     and were physically clipped by the shared 200ms tail — which is exactly
+     "my voice gets cut out at the end". Extend the LAST slice by up to 450ms
+     of whatever audio actually remains in the file. */
+  if (spans.length) {
+    const last = spans[spans.length - 1];
+    last[1] = Math.min(data.length, last[1] + Math.floor(sr * 0.45));
+  }
   return spans.map(([s0, s1]) => sliceBuffer(buf, ctx, s0, s1));
 }
 

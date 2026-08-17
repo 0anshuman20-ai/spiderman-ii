@@ -272,53 +272,102 @@ export function createStage(canvas) {
   let punchT = -10, glitchT = 0, running = true, lastT = performance.now() / 1000;
   let fpsAcc = 0, fpsN = 0, fps = 0;
 
+  /* ---- LOOP SURVIVAL LAYER ----
+     The old loop was a bare rAF chain: ONE exception anywhere in the frame
+     (tracker, beat FX, a world update) killed it permanently — the recording
+     kept rolling but the picture, the captions and the line-firing voice
+     watcher all froze mid-take. Three guards make the loop unkillable:
+     1. the whole frame body runs inside try/catch — an error logs and the
+        NEXT frame still schedules;
+     2. dual scheduling — rAF drives normally, but a backup timer fires the
+        frame if rAF is throttled (occluded window, focus loss, load spikes),
+        so voice pacing + captions + capture never stop;
+     3. WebGL context loss is survivable — rendering pauses but the loop (and
+        therefore the audio direction) keeps running, and drawing resumes the
+        moment the context is restored. */
+  let rafId = 0, backupTimer = 0;
+  let contextLost = false;
+  let frameErrLogs = 0;
+  let pushFrame = null; // set when the recorder captures via requestFrame()
+
+  canvas.addEventListener('webglcontextlost', (e) => {
+    try { e.preventDefault(); } catch (_) {}
+    contextLost = true;
+    console.error('[stage] WebGL context lost — loop continues, rendering paused');
+  }, false);
+  canvas.addEventListener('webglcontextrestored', () => {
+    contextLost = false;
+    console.warn('[stage] WebGL context restored — rendering resumed');
+  }, false);
+
+  function scheduleNext(onFrame) {
+    if (!running) return;
+    rafId = requestAnimationFrame(() => {
+      clearTimeout(backupTimer);
+      loop(onFrame);
+    });
+    /* backup: if rAF hasn't fired within 350ms (throttled/occluded), the timer
+       drives the frame instead — degraded fps, but NEVER a dead pipeline */
+    backupTimer = setTimeout(() => {
+      cancelAnimationFrame(rafId);
+      loop(onFrame);
+    }, 350);
+  }
+
   function loop(onFrame) {
     const t = performance.now() / 1000;
     const dt = Math.min(0.1, t - lastT); lastT = t;
     fpsAcc += dt; fpsN++;
     if (fpsAcc > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
 
-    if (onFrame) onFrame(t, dt, fps);
-    const rig = stage.rig;
-    if (rig) rig.tracking.fps = fps; // measured render fps into telemetry
-    if (suitLayer && rig) suitLayer.update(t, dt);
-    if (simActor && rig) {
-      // expression → lens language, matching the AR compositor's EXPR table
-      const EXPR_BROW = { calm: 0, fury: -0.9, narrow: -0.55, shock: 0.7, smirk: 0.2 };
-      const blink = Math.pow(Math.max(0, Math.sin(t * 0.9)), 48); // a slow natural blink
-      simFace[FACE.jaw] = rig.jaw;
-      simFace[FACE.blinkL] = Math.max(rig.blinkL, blink);
-      simFace[FACE.blinkR] = Math.max(rig.blinkR, blink);
-      simFace[FACE.brow] = EXPR_BROW[rig.expression] != null ? EXPR_BROW[rig.expression] : (rig.browUp - rig.browDown);
-      simFace[FACE.level] = rig.level;
-      simActor.idle(t, simFace, Math.min(1, rig.level * 1.4));
+    try {
+      if (onFrame) onFrame(t, dt, fps);
+      const rig = stage.rig;
+      if (rig) rig.tracking.fps = fps; // measured render fps into telemetry
+      if (suitLayer && rig) suitLayer.update(t, dt);
+      if (simActor && rig) {
+        // expression → lens language, matching the AR compositor's EXPR table
+        const EXPR_BROW = { calm: 0, fury: -0.9, narrow: -0.55, shock: 0.7, smirk: 0.2 };
+        const blink = Math.pow(Math.max(0, Math.sin(t * 0.9)), 48); // a slow natural blink
+        simFace[FACE.jaw] = rig.jaw;
+        simFace[FACE.blinkL] = Math.max(rig.blinkL, blink);
+        simFace[FACE.blinkR] = Math.max(rig.blinkR, blink);
+        simFace[FACE.brow] = EXPR_BROW[rig.expression] != null ? EXPR_BROW[rig.expression] : (rig.browUp - rig.browDown);
+        simFace[FACE.level] = rig.level;
+        simActor.idle(t, simFace, Math.min(1, rig.level * 1.4));
+      }
+      // audio-reactive worlds: the smoothed voice level pulses the scene
+      if (world.setEnergy) world.setEnergy(rig ? rig.level : 0);
+      world.update(t, dt);
+
+      // parallax: the space world shifts opposite your real head movement -> true depth
+      const rootX = rig ? rig.root.x : 0;
+      const rootZ = rig ? rig.root.z : 0;
+      // per-world far-layer counter-shift strengthens the depth read
+      if (world.parallax) world.parallax(rootX, rig ? rig.root.y || 0 : 0);
+      const drift = 0.05;
+      camera.position.x = baseCam.x + Math.sin(t * 0.11) * drift - rootX * 0.45;
+      camera.position.y = baseCam.y + Math.sin(t * 0.09 + 2) * drift * 0.5;
+      camera.position.z = baseCam.z - rootZ * 0.35;
+      const sincePunch = t - punchT;
+      const punch = sincePunch < 1.2 ? Math.exp(-sincePunch * 4) : 0;
+      camera.fov = 34 - punch * 5;
+      camera.updateProjectionMatrix();
+      camera.lookAt(0, 1.34, 0);
+
+      if (glitchT > 0) glitchT -= dt;
+      updateCaptionAnim();
+      grade.uniforms.uTime.value = t;
+      grade.uniforms.uGlitch.value = Math.max(0, Math.min(1, glitchT * 3));
+
+      if (!contextLost) composer.render();
+      // hand the freshly rendered frame straight to the encoder (see captureStream)
+      if (pushFrame) pushFrame();
+    } catch (err) {
+      // one bad frame must NEVER kill the take — log a few, keep rolling
+      if (frameErrLogs < 5) { frameErrLogs++; console.error('[stage] frame error (loop survives)', err); }
     }
-    // audio-reactive worlds: the smoothed voice level pulses the scene
-    if (world.setEnergy) world.setEnergy(rig ? rig.level : 0);
-    world.update(t, dt);
-
-    // parallax: the space world shifts opposite your real head movement -> true depth
-    const rootX = rig ? rig.root.x : 0;
-    const rootZ = rig ? rig.root.z : 0;
-    // per-world far-layer counter-shift strengthens the depth read
-    if (world.parallax) world.parallax(rootX, rig ? rig.root.y || 0 : 0);
-    const drift = 0.05;
-    camera.position.x = baseCam.x + Math.sin(t * 0.11) * drift - rootX * 0.45;
-    camera.position.y = baseCam.y + Math.sin(t * 0.09 + 2) * drift * 0.5;
-    camera.position.z = baseCam.z - rootZ * 0.35;
-    const sincePunch = t - punchT;
-    const punch = sincePunch < 1.2 ? Math.exp(-sincePunch * 4) : 0;
-    camera.fov = 34 - punch * 5;
-    camera.updateProjectionMatrix();
-    camera.lookAt(0, 1.34, 0);
-
-    if (glitchT > 0) glitchT -= dt;
-    updateCaptionAnim();
-    grade.uniforms.uTime.value = t;
-    grade.uniforms.uGlitch.value = Math.max(0, Math.min(1, glitchT * 3));
-
-    composer.render();
-    if (running) requestAnimationFrame(() => loop(onFrame));
+    scheduleNext(onFrame);
   }
 
   const stage = {
@@ -365,8 +414,39 @@ export function createStage(canvas) {
     playCaption,
     /* measured render fps — the recorder reads this to pick its capture tier */
     get fps() { return fps; },
-    captureStream(fpsWanted = 60) { return canvas.captureStream(fpsWanted); },
-    dispose() { running = false; world.dispose(); if (suitLayer) suitLayer.dispose(); if (simActor) simActor.dispose(); renderer.dispose(); },
+    /* EXPLICIT FRAME DELIVERY — captureStream(fps) leaves frame timing to the
+       browser's dirty-canvas heuristic, which is exactly the path that stalls
+       the video track mid-take under load (frozen picture, audio continues).
+       captureStream(0) + requestFrame() after every composer.render() hands
+       each finished frame straight to the encoder — throttled to the tier's
+       fps so a fast render loop can't flood a slow encoder. Falls back to the
+       classic fps-hint stream where requestFrame isn't supported. */
+    captureStream(fpsWanted = 60) {
+      try {
+        const s = canvas.captureStream(0);
+        const track = s.getVideoTracks()[0];
+        if (track && typeof track.requestFrame === 'function') {
+          const minGap = 1 / Math.max(1, fpsWanted);
+          let lastPush = 0;
+          pushFrame = () => {
+            if (track.readyState !== 'live') { pushFrame = null; return; }
+            const now = performance.now() / 1000;
+            if (now - lastPush < minGap * 0.85) return;
+            lastPush = now;
+            try { track.requestFrame(); } catch (_) { pushFrame = null; }
+          };
+          return s;
+        }
+      } catch (_) { /* fall through to the fps-hint capture */ }
+      return canvas.captureStream(fpsWanted);
+    },
+    dispose() {
+      running = false;
+      cancelAnimationFrame(rafId);
+      clearTimeout(backupTimer);
+      pushFrame = null;
+      world.dispose(); if (suitLayer) suitLayer.dispose(); if (simActor) simActor.dispose(); renderer.dispose();
+    },
   };
   return stage;
 }
