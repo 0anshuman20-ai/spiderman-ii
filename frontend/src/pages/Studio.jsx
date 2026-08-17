@@ -247,9 +247,24 @@ export default function Studio() {
            the real audio duration; the finished line then HOLDS through the
            outro so the closer stays on screen into the final frame. */
         const isLast = voice.currentLine === voice.lines.length - 1;
-        // 2.8s hold rides the full 2.6s outro window, so the closing words are
-        // still on screen in the file's final frame
-        if (line) stage.playCaption(line.text, voice.lineDuration(voice.currentLine), isLast ? 2.8 : 0);
+        if (line) {
+          /* SYNC, THREE WAYS AT ONCE:
+             1. startAt back-dates the karaoke clock to the instant the audio
+                PHYSICALLY started (not when this frame noticed the change);
+             2. delay hides the caption through the buffer's lead-in silence,
+                so no words show before the first one is spoken;
+             3. speechDur paces the highlight across the REAL first->last
+                voiced sample span — pacing across the raw buffer (padded
+                silence included) ran slower than the voice, a drift that
+                compounded through every line of the take. */
+          const timing = voice.lineTiming(voice.currentLine);
+          // 2.2s hold rides the tightened outro window, so the closing words
+          // are still on screen in the file's final frame
+          stage.playCaption(line.text, timing.speechDur, isLast ? 2.2 : 0, {
+            startAt: voice.lineStartedAt,
+            delay: timing.leadIn,
+          });
+        }
       }
     });
     setBooting(false);
@@ -298,10 +313,14 @@ export default function Studio() {
             outroFiredRef.current = true;
             if (musicRef.current) musicRef.current.outro();
           }
-          /* 2.6s (was 1.6): the wider window guarantees the mask's mouth has
-             visibly CLOSED on tape and the final caption has held long enough
-             to read — even if the encoder drops a few tail frames at stop. */
-          const outroWindow = 2.6 + v.tailSeconds();
+          /* 1.0s (was 2.6): secondsSinceDone() now counts from the REAL end of
+             speech (the padded buffer tail is subtracted at the source), so the
+             window no longer needs to over-compensate — and the old 2.6s left
+             seconds of voiceless video hanging at the end of every take. 1.0s
+             plus the physical drain (context latency + compressor release) is
+             exactly enough for the outro sting and the closer caption to land
+             inside the file with no dead air after the final word. */
+          const outroWindow = 1.0 + v.tailSeconds();
           if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow) {
             doneTRef.current = -999; // one-shot guard
             if (toggleRecRef.current) toggleRecRef.current();
