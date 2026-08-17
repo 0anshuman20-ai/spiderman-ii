@@ -220,8 +220,14 @@ export function createStage(canvas) {
       holdSec: EXTRA seconds the finished line stays on screen past its
       natural breath — the FINAL line of a take passes the outro window here
       so the closer is readable into the last frame instead of dying with
-      its audio. */
-  function playCaption(text, durationSec = 2.4, holdSec = 0) {
+      its audio.
+      opts.startAt: performance.now() ms the line's AUDIO physically started —
+      the clock back-dates to it, so caption pacing is anchored to the sound,
+      not to when a frame callback noticed the line change.
+      opts.delay: seconds of silence inside the buffer before the first voiced
+      sample — NOTHING draws until it elapses, so the caption never appears
+      before the word is actually spoken. */
+  function playCaption(text, durationSec = 2.4, holdSec = 0, opts = {}) {
     const words = String(text || '').trim().split(/\s+/).filter(Boolean);
     if (!words.length) { setCaption(null); return; }
     /* LENGTH-WEIGHTED PACING — a uniform per-word clock makes the highlight
@@ -234,19 +240,26 @@ export function createStage(canvas) {
     const total = weights.reduce((s, v) => s + v, 0);
     let acc = 0;
     const cum = weights.map((v) => { acc += v; return acc / total; });
+    const anchor = (typeof opts.startAt === 'number' && opts.startAt > 0 ? opts.startAt : performance.now()) / 1000;
     capAnim = {
       words,
       cum,
-      start: performance.now() / 1000,
-      dur: Math.max(0.8, durationSec),
+      start: anchor + Math.max(0, opts.delay || 0),
+      dur: Math.max(0.5, durationSec),
       hold: Math.max(0, holdSec || 0),
       drawn: -1,
     };
+    /* the previous line's caption clears NOW — during this line's lead-in
+       silence the frame stays clean instead of showing stale words */
+    capCtx.clearRect(0, 0, 1024, 220);
+    capTex.needsUpdate = true;
   }
 
   function updateCaptionAnim() {
     if (!capAnim) return;
     const now = performance.now() / 1000;
+    // lead-in silence still playing — the first word hasn't been spoken yet
+    if (now < capAnim.start) return;
     const p = (now - capAnim.start) / capAnim.dur;
     // hold the last chunk a breath past the audio (plus any explicit hold —
     // the final line rides the outro), then clear

@@ -425,6 +425,22 @@ export class SpideyVoice {
     return Math.max(1, words * 0.36); // fallback estimate for browser-voice lines
   }
 
+  /** REAL speech timing for a line — the caption layer paces against THIS.
+      leadIn: silence inside the buffer before the first voiced sample (the
+      caption must not appear until it elapses). speechDur: first->last voiced
+      sample — pacing words across the raw buffer duration (breath room + the
+      padded last-words tail included) made the highlight run slower than the
+      voice, a drift that compounds line after line. */
+  lineTiming(i) {
+    const l = this.lines[i];
+    if (l && l.buffer) {
+      const speechDur = (l.speechDur != null && l.speechDur > 0.05) ? l.speechDur : l.buffer.duration;
+      return { leadIn: Math.max(0, l.leadIn || 0), speechDur };
+    }
+    const words = l ? l.text.split(/\s+/).filter(Boolean).length : 6;
+    return { leadIn: 0, speechDur: Math.max(1, words * 0.36) };
+  }
+
   /* rewind for a fresh take */
   arm() {
     this.stopPlayback();
@@ -494,6 +510,7 @@ export class SpideyVoice {
     try {
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(u);
+      this.lineStartedAt = performance.now(); // caption layer back-dates to THIS
     } catch (_) { done(); }
   }
 
@@ -522,6 +539,7 @@ export class SpideyVoice {
     this.currentLine = i;
     this.idx = i + 1;
     this._src = src;
+    const line = this.lines[i];
     src.onended = () => {
       this.playing = false;
       this.currentLine = -1;
@@ -529,9 +547,20 @@ export class SpideyVoice {
       this._cooldown = 0.18; // brief guard so one mouth move can't chain two lines
       this._quietT = 0;
       this._sinceEnd = 0;    // restart the director clock for the next line
-      this.lastEndedAt = performance.now(); // wall-clock anchor for the auto-cut
+      /* wall-clock anchor for the auto-cut — back-dated past the buffer's
+         PADDED TAIL (breath room + the last-words guarantee, up to ~650ms of
+         pure silence). Counting the outro from the raw buffer end made every
+         take run visibly longer than the voice. */
+      let trail = 0;
+      if (line && line.buffer && line.speechDur != null && line.speechDur > 0.05) {
+        trail = Math.max(0, line.buffer.duration - (line.leadIn || 0) - line.speechDur);
+      }
+      this.lastEndedAt = performance.now() - trail * 1000;
     };
-    try { src.start(); } catch (_) { this.playing = false; this.currentLine = -1; }
+    try {
+      src.start();
+      this.lineStartedAt = performance.now(); // caption layer back-dates to THIS
+    } catch (_) { this.playing = false; this.currentLine = -1; }
   }
 
   /** the pacing window before line i auto-fires: emote-shaped, deterministic */
