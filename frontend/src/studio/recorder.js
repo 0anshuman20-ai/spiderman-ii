@@ -207,9 +207,13 @@ export class Recorder {
          beat gives that flush time to land as a dataavailable chunk, so the
          last words of the take are guaranteed to be inside the file. */
       try { this.rec.requestData(); } catch (_) { /* inactive or unsupported — stop() still flushes */ }
+      /* 400ms settle (was 250): under encoder load the forced flush can take a
+         beat to land as a dataavailable chunk — the wider window costs nothing
+         (the take keeps recording through it) and guarantees the final words
+         are physically inside the file before stop() seals it. */
       setTimeout(() => {
         try { this.rec.stop(); } catch (_) { this.recording = false; cleanup(); resolve(null); }
-      }, 250);
+      }, 400);
     });
   }
 }
