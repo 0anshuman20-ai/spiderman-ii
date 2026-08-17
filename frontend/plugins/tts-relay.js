@@ -43,7 +43,10 @@ async function synthesize(text, mood) {
   const hit = cache.get(key);
   if (hit) return hit;
   const tts = new MsEdgeTTS();
-  await tts.setMetadata(VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
+  // 48kHz/192k — the highest fidelity the endpoint ships. The old 24kHz/96k
+  // stream had no content above ~12kHz, which is the dull "phone speaker"
+  // sheen; full-band audio restores the air and crispness of a studio read.
+  await tts.setMetadata(VOICE, OUTPUT_FORMAT.AUDIO_48KHZ_192KBITRATE_MONO_MP3);
   const { audioStream } = await tts.toStream(text, prosody);
   const buf = await new Promise((resolve, reject) => {
     const chunks = [];

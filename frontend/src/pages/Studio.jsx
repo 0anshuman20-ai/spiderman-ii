@@ -210,7 +210,11 @@ export default function Studio() {
          the AUDIO authoritative over the mouth: during a script take the
          mask's lips follow the played line and shut when it ends — your real
          lips only trigger lines, they never flap the mask after the audio. */
-      rig.voiceActive = rec.recording && voice.ready && voice.canRoll() && voice.lines.length > 0;
+      /* audio-authoritative whenever a scripted line exists AND we're either
+         rolling or a line is audibly playing (preview too) — so the mask's
+         mouth always follows the sound and always seals when a line ends. */
+      rig.voiceActive = voice.ready && voice.canRoll() && voice.lines.length > 0
+        && (rec.recording || voice.playing);
       rig.voicePlaying = voice.playing;
       rig.voiceBuffered = !!voice._src; // false in browser-speech fallback
       if (voice.ready && rig.tracking.mode !== 'sim') {
@@ -559,7 +563,15 @@ export default function Studio() {
   }, []);
   const stopPersonalVoice = useCallback(() => {
     const recorder = personalRecorderRef.current;
-    if (recorder && recorder.state === 'recording') recorder.stop();
+    if (recorder && recorder.state === 'recording') {
+      /* FLUSH THE TAIL — with 250ms timeslices the final chunk (your last
+         words!) rides only on the implicit stop-flush, which Chromium drops
+         under load. requestData() forces the encoder to emit what it holds,
+         and a settle beat lets that chunk land BEFORE stop(), so the end of
+         your read is guaranteed to be inside the file. */
+      try { recorder.requestData(); } catch (_) {}
+      setTimeout(() => { try { if (recorder.state === 'recording') recorder.stop(); } catch (_) {} }, 300);
+    }
   }, []);
 
   const removePersonalVoice = useCallback(() => {
