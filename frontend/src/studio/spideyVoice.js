@@ -194,20 +194,22 @@ export class SpideyVoice {
 
       /* "voice inside the mask" chain — shared by every line */
       this.voiceIn = ctx.createGain(); this.voiceIn.gain.value = 1;
-      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 90; hp.Q.value = 0.7;
-      // Earbud repair stays gentle: add body and clear words without making the
-      // speaker sound artificial or exaggerating room noise.
-      const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 170; body.gain.value = 2.5;
-      const boxCut = ctx.createBiquadFilter(); boxCut.type = 'peaking'; boxCut.frequency.value = 360; boxCut.Q.value = 1.1; boxCut.gain.value = -2.5;
-      const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2400; presence.Q.value = 0.9; presence.gain.value = 3;
-      // A broad high-band cut acts as a safe, static de-esser for sharp earbud S sounds.
-      const deEss = ctx.createBiquadFilter(); deEss.type = 'peaking'; deEss.frequency.value = 7200; deEss.Q.value = 2; deEss.gain.value = -3;
-      const muffle = ctx.createBiquadFilter(); muffle.type = 'lowpass'; muffle.frequency.value = 10500; muffle.Q.value = 0.5;
+      const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 105; hp.Q.value = 0.72;
+      // Earbud repair: remove rumble and hollow room tone, then restore a warm,
+      // close-mic sound while keeping speech easy to understand on phone speakers.
+      const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 180; body.gain.value = 2;
+      const mudCut = ctx.createBiquadFilter(); mudCut.type = 'peaking'; mudCut.frequency.value = 320; mudCut.Q.value = 1.15; mudCut.gain.value = -3.5;
+      const nasalCut = ctx.createBiquadFilter(); nasalCut.type = 'peaking'; nasalCut.frequency.value = 900; nasalCut.Q.value = 1.3; nasalCut.gain.value = -1.5;
+      const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2600; presence.Q.value = 0.85; presence.gain.value = 3.5;
+      const clarity = ctx.createBiquadFilter(); clarity.type = 'highshelf'; clarity.frequency.value = 4500; clarity.gain.value = 1.5;
+      // A broad high-band cut safely softens sharp earbud S sounds.
+      const deEss = ctx.createBiquadFilter(); deEss.type = 'peaking'; deEss.frequency.value = 6800; deEss.Q.value = 2.2; deEss.gain.value = -3.5;
+      const hissCut = ctx.createBiquadFilter(); hissCut.type = 'lowpass'; hissCut.frequency.value = 12000; hissCut.Q.value = 0.5;
       const leveller = ctx.createDynamicsCompressor();
-      leveller.threshold.value = -30; leveller.knee.value = 14; leveller.ratio.value = 2; leveller.attack.value = 0.02; leveller.release.value = 0.3;
+      leveller.threshold.value = -32; leveller.knee.value = 16; leveller.ratio.value = 2.2; leveller.attack.value = 0.025; leveller.release.value = 0.28;
       const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -20; comp.knee.value = 8; comp.ratio.value = 3; comp.attack.value = 0.005; comp.release.value = 0.12;
-      const makeup = ctx.createGain(); makeup.gain.value = 1.75;
+      comp.threshold.value = -18; comp.knee.value = 10; comp.ratio.value = 3.2; comp.attack.value = 0.006; comp.release.value = 0.14;
+      const makeup = ctx.createGain(); makeup.gain.value = 1.55;
       const limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.06;
 
@@ -216,9 +218,10 @@ export class SpideyVoice {
       this.dest = ctx.createMediaStreamDestination();
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
-      this.voiceIn.connect(hp); hp.connect(body); body.connect(boxCut); boxCut.connect(presence);
-      presence.connect(deEss); deEss.connect(muffle); muffle.connect(leveller);
-      leveller.connect(comp); comp.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
+      this.voiceIn.connect(hp); hp.connect(body); body.connect(mudCut); mudCut.connect(nasalCut);
+      nasalCut.connect(presence); presence.connect(clarity); clarity.connect(deEss);
+      deEss.connect(hissCut); hissCut.connect(leveller); leveller.connect(comp);
+      comp.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
       this.outGain.connect(this.analyser);
       this.outGain.connect(this.dest);
       this.outGain.connect(this.monitorGain);
