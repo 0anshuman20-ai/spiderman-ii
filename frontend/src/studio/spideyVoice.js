@@ -195,25 +195,30 @@ export class SpideyVoice {
       /* "voice inside the mask" chain — shared by every line */
       this.voiceIn = ctx.createGain(); this.voiceIn.gain.value = 1;
       const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 90; hp.Q.value = 0.7;
-      // youthful presence: the band that makes the quips cut through
-      const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2600; presence.Q.value = 1.0; presence.gain.value = 3.5;
-      // a whisper of chest so it never sounds like a phone speaker
-      const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 170; body.gain.value = 2;
-      // the mask itself: fabric over the mouth shaves the very top octave
-      const muffle = ctx.createBiquadFilter(); muffle.type = 'lowpass'; muffle.frequency.value = 8600; muffle.Q.value = 0.6;
+      // Earbud repair stays gentle: add body and clear words without making the
+      // speaker sound artificial or exaggerating room noise.
+      const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 170; body.gain.value = 2.5;
+      const boxCut = ctx.createBiquadFilter(); boxCut.type = 'peaking'; boxCut.frequency.value = 360; boxCut.Q.value = 1.1; boxCut.gain.value = -2.5;
+      const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2400; presence.Q.value = 0.9; presence.gain.value = 3;
+      // A broad high-band cut acts as a safe, static de-esser for sharp earbud S sounds.
+      const deEss = ctx.createBiquadFilter(); deEss.type = 'peaking'; deEss.frequency.value = 7200; deEss.Q.value = 2; deEss.gain.value = -3;
+      const muffle = ctx.createBiquadFilter(); muffle.type = 'lowpass'; muffle.frequency.value = 10500; muffle.Q.value = 0.5;
+      const leveller = ctx.createDynamicsCompressor();
+      leveller.threshold.value = -30; leveller.knee.value = 14; leveller.ratio.value = 2; leveller.attack.value = 0.02; leveller.release.value = 0.3;
       const comp = ctx.createDynamicsCompressor();
-      comp.threshold.value = -22; comp.knee.value = 10; comp.ratio.value = 3.5; comp.attack.value = 0.004; comp.release.value = 0.14;
-      const makeup = ctx.createGain(); makeup.gain.value = 1.9;
+      comp.threshold.value = -20; comp.knee.value = 8; comp.ratio.value = 3; comp.attack.value = 0.005; comp.release.value = 0.12;
+      const makeup = ctx.createGain(); makeup.gain.value = 1.75;
       const limiter = ctx.createDynamicsCompressor();
-      limiter.threshold.value = -1.2; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.05;
+      limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.06;
 
       this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
       this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 1024;
       this.dest = ctx.createMediaStreamDestination();
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
-      this.voiceIn.connect(hp); hp.connect(presence); presence.connect(body); body.connect(muffle);
-      muffle.connect(comp); comp.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
+      this.voiceIn.connect(hp); hp.connect(body); body.connect(boxCut); boxCut.connect(presence);
+      presence.connect(deEss); deEss.connect(muffle); muffle.connect(leveller);
+      leveller.connect(comp); comp.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
       this.outGain.connect(this.analyser);
       this.outGain.connect(this.dest);
       this.outGain.connect(this.monitorGain);
