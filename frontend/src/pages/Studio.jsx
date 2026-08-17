@@ -67,6 +67,11 @@ export default function Studio() {
   const [synthProg, setSynthProg] = useState(null); // null | { done, total }
   const [uploadMsg, setUploadMsg] = useState(null); // null | { ok, message } — real-voice upload status
   const uploadInputRef = useRef(null);
+  const personalRecorderRef = useRef(null);
+  const personalStreamRef = useRef(null);
+  const personalTimerRef = useRef(null);
+  const personalChunksRef = useRef([]);
+  const [personalVoice, setPersonalVoice] = useState({ state: 'idle', seconds: 0, url: null, blob: null, level: 0, error: '' });
   const [tracking, setTracking] = useState({ face: false, pose: false, hands: false });
   const [fps, setFps] = useState(0);
   const [takes, setTakes] = useState([]);
@@ -97,6 +102,11 @@ export default function Studio() {
     if (paramsTimerRef.current) clearTimeout(paramsTimerRef.current);
     if (musicRef.current) { try { musicRef.current.dispose(); } catch (_) {} }
     if (voiceRef.current) { try { voiceRef.current.dispose(); } catch (_) {} }
+    if (personalTimerRef.current) clearInterval(personalTimerRef.current);
+    if (personalStreamRef.current) personalStreamRef.current.getTracks().forEach((track) => track.stop());
+    if (personalRecorderRef.current && personalRecorderRef.current.state === 'recording') {
+      try { personalRecorderRef.current.stop(); } catch (_) {}
+    }
     if (stageRef.current) { try { stageRef.current.dispose(); } catch (_) {} }
   }, []);
 
@@ -547,9 +557,93 @@ export default function Studio() {
     });
     setScriptOpen(true);
   }, []);
-  /* UPLOADED REAL VOICE — the highest-ROI fix: record the whole script in one
-     take (ElevenLabs export or your own read) with a clear pause between
-     lines; the engine slices it on silence and maps each slice to its line. */
+  const stopPersonalVoice = useCallback(() => {
+    const recorder = personalRecorderRef.current;
+    if (recorder && recorder.state === 'recording') recorder.stop();
+  }, []);
+
+  const removePersonalVoice = useCallback(() => {
+    stopPersonalVoice();
+    setPersonalVoice((prev) => {
+      if (prev.url) URL.revokeObjectURL(prev.url);
+      return { state: 'idle', seconds: 0, url: null, blob: null, level: 0, error: '' };
+    });
+  }, [stopPersonalVoice]);
+
+  const startPersonalVoice = useCallback(async () => {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      setPersonalVoice((prev) => ({ ...prev, error: 'This browser cannot record audio. Try Chrome or Edge.' }));
+      return;
+    }
+    removePersonalVoice();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+          voiceIsolation: { ideal: true },
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 48000 },
+          sampleSize: { ideal: 24 },
+          latency: { ideal: 0.01 },
+        },
+      });
+      personalStreamRef.current = stream;
+      const choices = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'];
+      const mimeType = choices.find((type) => MediaRecorder.isTypeSupported(type));
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType, audioBitsPerSecond: 192000 } : undefined);
+      personalRecorderRef.current = recorder;
+      personalChunksRef.current = [];
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      audioCtx.createMediaStreamSource(stream).connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      const startedAt = performance.now();
+      recorder.ondataavailable = (event) => { if (event.data.size) personalChunksRef.current.push(event.data); };
+      recorder.onstop = () => {
+        if (personalTimerRef.current) clearInterval(personalTimerRef.current);
+        const blob = new Blob(personalChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        stream.getTracks().forEach((track) => track.stop());
+        personalStreamRef.current = null;
+        audioCtx.close().catch(() => {});
+        setPersonalVoice((prev) => ({ ...prev, state: 'ready', blob, url, level: 0, error: '' }));
+      };
+      recorder.start(250);
+      setPersonalVoice({ state: 'recording', seconds: 0, url: null, blob: null, level: 0, error: '' });
+      personalTimerRef.current = setInterval(() => {
+        analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (const sample of samples) { const value = (sample - 128) / 128; sum += value * value; }
+        const liveLevel = Math.min(1, Math.sqrt(sum / samples.length) * 4);
+        setPersonalVoice((prev) => ({ ...prev, seconds: (performance.now() - startedAt) / 1000, level: liveLevel }));
+      }, 100);
+    } catch (err) {
+      const message = err && err.name === 'NotAllowedError'
+        ? 'Mic permission was blocked. Allow it in your browser, then try again.'
+        : `Could not start the mic: ${err.message || 'unknown error'}`;
+      setPersonalVoice((prev) => ({ ...prev, state: 'idle', error: message }));
+    }
+  }, [removePersonalVoice]);
+
+  const usePersonalVoice = useCallback(async () => {
+    const voice = voiceRef.current;
+    if (!personalVoice.blob || !voice || !voice.ready) return;
+    setUploadMsg({ ok: true, message: 'enhancing and matching your voice to the script…' });
+    try {
+      await voice.resume();
+      const res = await voice.loadUpload(await personalVoice.blob.arrayBuffer(), scriptText);
+      setUploadMsg(res);
+      if (res.ok) setTimeout(() => { setUploadMsg(null); setScriptOpen(false); }, 1200);
+    } catch (err) {
+      setUploadMsg({ ok: false, message: `voice processing failed: ${err.message}` });
+    }
+  }, [personalVoice.blob, scriptText]);
+
+  /* UPLOADED REAL VOICE — record the whole script in one take with a clear pause
+     between lines; the engine slices it and maps each slice to its line. */
   const onUploadVoice = useCallback(async (e) => {
     const f = e.target.files && e.target.files[0];
     e.target.value = '';
@@ -592,15 +686,15 @@ export default function Studio() {
           <div className="cw-boot-inner">
             <div className="mono text-[10px] mb-3" style={{ color: 'var(--cw-red)', letterSpacing: '0.3em' }}>SIGNAL ORIGIN: UNKNOWN SECTOR</div>
             <h1 className="mono text-4xl sm:text-5xl font-bold mb-2 tracking-tight">COSMIC<br />WEAVER</h1>
-            <p className="text-sm mb-1" style={{ color: 'var(--cw-text-2)' }}>Full-suit AR studio — you become COMPLETELY Spider-Man. The mask visibly lip-syncs as you talk, and your script is pre-voiced as Spidey: mouth a line and it plays instantly. Your mic is never used.</p>
-            <p className="mono text-[10px] mb-8" style={{ color: 'var(--cw-muted)' }}>FULL SUIT · SCRIPT-FIRST SPIDER VOICE · NO MIC — 1080×1920 · 60FPS · $0</p>
+            <p className="text-sm mb-1" style={{ color: 'var(--cw-text-2)' }}>Full-suit AR studio with two voice choices: use the Spider Voice, or record your own voice with earbud-friendly enhancement.</p>
+            <p className="mono text-[10px] mb-8" style={{ color: 'var(--cw-muted)' }}>FULL SUIT · SPIDER VOICE OR YOUR VOICE · 1080×1920 · 60FPS · $0</p>
             <div className="flex flex-col gap-3 items-start">
               <button className="cw-rec" data-testid="boot-live-btn" disabled={booting}
                 onClick={() => boot('live')}>{booting ? 'INITIALIZING…' : '● INITIALIZE FULL RIG'}</button>
               <button className="cw-chip" style={{ padding: '10px 18px' }} data-testid="boot-sim-btn" disabled={booting}
                 onClick={() => boot('sim')}><span>RUN SIM MODE — NO CAMERA</span></button>
             </div>
-            <p className="mono text-[9px] mt-8" style={{ color: 'var(--cw-muted)' }}>ALLOW CAMERA ONLY — THE MIC IS NEVER REQUESTED · WEAR HEADPHONES IF MONITORING</p>
+            <p className="mono text-[9px] mt-8" style={{ color: 'var(--cw-muted)' }}>CAMERA IS ASKED AT START · MIC IS ASKED ONLY IF YOU CHOOSE RECORD MY OWN VOICE</p>
           </div>
         </div>
       )}
@@ -716,7 +810,38 @@ export default function Studio() {
                    misaligned emotional map. Re-picking a transmission
                    restores its emotes. */
                 if (voiceRef.current) voiceRef.current.setLineEmotes(null);
-              }} disabled={!!synthProg} />
+              }} disabled={!!synthProg || personalVoice.state === 'recording'} />
+            <section className="mb-3 border p-3" style={{ borderColor: 'var(--cw-border)', background: 'rgba(255,255,255,0.025)' }} aria-labelledby="own-voice-title">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h3 id="own-voice-title" className="mono text-[10px]" style={{ color: 'var(--cw-cyan)' }}>RECORD MY OWN VOICE</h3>
+                {personalVoice.state === 'recording' && <span className="mono text-[10px]" style={{ color: 'var(--cw-red)' }}>● {fmtClock(personalVoice.seconds)}</span>}
+              </div>
+              <p className="mono text-[9px] mb-2" style={{ color: 'var(--cw-muted)' }}>
+                QUIET ROOM · EARBUD MIC 5–10 CM FROM YOUR MOUTH · AIM IT SLIGHTLY TO THE SIDE · PAUSE BETWEEN LINES
+              </p>
+              {personalVoice.state === 'recording' && (
+                <div className="cw-meter mb-2" aria-label="Microphone level"><div style={{ width: `${personalVoice.level * 100}%` }} /></div>
+              )}
+              {personalVoice.url && <audio className="w-full mb-2" src={personalVoice.url} controls preload="metadata" data-testid="personal-voice-preview" />}
+              <div className="flex flex-wrap gap-2">
+                {personalVoice.state !== 'recording' ? (
+                  <button className="cw-chip" style={{ padding: '9px 14px' }} disabled={!scriptText.trim() || !!synthProg}
+                    onClick={startPersonalVoice} data-testid="personal-voice-record"><span>{personalVoice.blob ? '● RE-RECORD' : '● START RECORDING'}</span></button>
+                ) : (
+                  <button className="cw-rec live" onClick={stopPersonalVoice} data-testid="personal-voice-stop">■ STOP</button>
+                )}
+                {personalVoice.blob && (
+                  <button className="cw-rec" disabled={!!synthProg} onClick={usePersonalVoice} data-testid="personal-voice-use">USE ENHANCED VOICE</button>
+                )}
+                {personalVoice.blob && (
+                  <button className="cw-chip" style={{ padding: '9px 14px' }} onClick={removePersonalVoice} data-testid="personal-voice-remove"><span>REMOVE</span></button>
+                )}
+              </div>
+              <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-text-2)' }}>
+                VOICE ENHANCEMENT REDUCES NOISE, ADDS CLARITY, EVENS VOLUME, AND STOPS CLIPPING. IT IMPROVES EARBUD AUDIO, BUT CANNOT TURN A NOISY ROOM INTO A STUDIO.
+              </p>
+              {personalVoice.error && <p className="mono text-[9px] mt-2" role="alert" style={{ color: 'var(--cw-red)' }}>{personalVoice.error}</p>}
+            </section>
             {synthProg && (
               <div className="mono text-[9px] mb-2" style={{ color: 'var(--cw-amber)' }} data-testid="synth-progress">
                 SYNTHESIZING SPIDER VOICE… {synthProg.total ? `${synthProg.done}/${synthProg.total}` : ''}
