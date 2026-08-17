@@ -167,22 +167,79 @@ export class SpideyVoice {
   /* measure the REAL speech inside a buffer: slices carry padded silence at
      head and tail (breath room + the last-words guarantee). Pacing captions
      across the raw buffer duration made the highlight run SLOWER than the
-     voice — a drift that grows through every line. leadIn = silence before
-     the first voiced sample; speechDur = first->last voiced sample. */
+     voice — a drift that grows through every line.
+     leadIn = silence before the first voiced sample; speechDur = first->last
+     voiced sample; env = a 20ms-window VOICED-TIME MAP (cumulative seconds of
+     actual speech at each window). The map is what kills mid-line drift:
+     linear pacing assumed the voice never breathes inside a line, so every
+     comma pause pushed the highlight ahead of the audio. Mapping word
+     positions onto VOICED time makes the highlight wait through pauses
+     exactly like the voice does. */
   _analyzeBuffer(buf) {
+    const fallback = { leadIn: 0, speechDur: buf.duration, env: null };
     try {
       const data = buf.getChannelData(0);
       const sr = buf.sampleRate;
-      const th = 0.015;
-      let first = -1;
-      let last = -1;
-      for (let i = 0; i < data.length; i += 16) { if (Math.abs(data[i]) > th) { first = i; break; } }
-      for (let i = data.length - 1; i >= 0; i -= 16) { if (Math.abs(data[i]) > th) { last = i; break; } }
-      if (first < 0 || last <= first) return { leadIn: 0, speechDur: buf.duration };
-      return { leadIn: first / sr, speechDur: (last - first) / sr };
+      const win = Math.max(1, Math.floor(sr * 0.02)); // 20ms RMS windows
+      const nW = Math.ceil(data.length / win);
+      const rms = new Float32Array(nW);
+      for (let w = 0; w < nW; w++) {
+        let s = 0;
+        const i0 = w * win;
+        const i1 = Math.min(data.length, i0 + win);
+        for (let i = i0; i < i1; i++) s += data[i] * data[i];
+        rms[w] = Math.sqrt(s / Math.max(1, i1 - i0));
+      }
+      let peak = 0;
+      for (let w = 0; w < nW; w++) peak = Math.max(peak, rms[w]);
+      const thr = Math.max(0.006, peak * 0.07); // adaptive: survives quiet takes
+      const cum = new Float32Array(nW); // cumulative VOICED seconds at window w's end
+      let firstW = -1;
+      let lastW = -1;
+      let acc = 0;
+      for (let w = 0; w < nW; w++) {
+        const voiced = rms[w] > thr;
+        if (voiced) {
+          acc += 0.02;
+          if (firstW < 0) firstW = w;
+          lastW = w;
+        }
+        cum[w] = acc;
+      }
+      if (firstW < 0 || lastW <= firstW || acc < 0.06) return fallback;
+      return {
+        leadIn: firstW * 0.02,
+        speechDur: (lastW + 1 - firstW) * 0.02,
+        env: { cum, winSec: 0.02, totalVoiced: acc },
+      };
     } catch (_) {
-      return { leadIn: 0, speechDur: buf.duration };
+      return fallback;
     }
+  }
+
+  /** ABSOLUTE per-word end times (seconds from the buffer's first sample) for
+      line i, derived from the buffer's voiced-time map. Each word's
+      character-weighted share is spent in VOICED time, then converted back to
+      real buffer time — so the highlight parks through breaths and pauses
+      instead of drifting ahead of the voice. null when no map exists. */
+  wordEndTimes(i) {
+    const l = this.lines[i];
+    if (!l || !l.buffer || !l.env || !l.env.totalVoiced) return null;
+    const words = l.text.split(/\s+/).filter(Boolean);
+    if (!words.length) return null;
+    const weights = words.map((w) => Math.max(2, w.replace(/[^\w]/g, '').length) + 2);
+    const total = weights.reduce((s, v) => s + v, 0);
+    const { cum, winSec, totalVoiced } = l.env;
+    const ends = [];
+    let acc = 0;
+    let w = 0;
+    for (let k = 0; k < words.length; k++) {
+      acc += weights[k];
+      const targetVoiced = (acc / total) * totalVoiced;
+      while (w < cum.length - 1 && cum[w] < targetVoiced - 1e-6) w++;
+      ends.push((w + 1) * winSec);
+    }
+    return ends;
   }
 
   /* per-row emotes for the currently loaded script — pacing + prosody hints.
@@ -328,6 +385,7 @@ export class SpideyVoice {
         const a = this._analyzeBuffer(buf);
         this.lines[i].leadIn = a.leadIn;
         this.lines[i].speechDur = a.speechDur;
+        this.lines[i].env = a.env;
       }
       if (buf) okCount++;
       if (onProgress) onProgress(i + 1, this.lines.length);
@@ -404,6 +462,7 @@ export class SpideyVoice {
         const a = this._analyzeBuffer(s);
         this.lines[i].leadIn = a.leadIn;
         this.lines[i].speechDur = a.speechDur;
+        this.lines[i].env = a.env;
       }
     });
     // lines the upload didn't cover stay speakable via TTS/fallback if they were
