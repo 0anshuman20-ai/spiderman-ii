@@ -158,6 +158,31 @@ export class SpideyVoice {
        throttling made the counter run FASTER than reality under recording
        load), which cut the file before the outro had physically elapsed. */
     this.lastEndedAt = 0;
+    /* wall-clock instant the CURRENT line's audio started — the caption layer
+       reads it to back-date its karaoke clock, so caption pacing is anchored
+       to when the audio physically began, not to when a poll noticed it. */
+    this.lineStartedAt = 0;
+  }
+
+  /* measure the REAL speech inside a buffer: slices carry padded silence at
+     head and tail (breath room + the last-words guarantee). Pacing captions
+     across the raw buffer duration made the highlight run SLOWER than the
+     voice — a drift that grows through every line. leadIn = silence before
+     the first voiced sample; speechDur = first->last voiced sample. */
+  _analyzeBuffer(buf) {
+    try {
+      const data = buf.getChannelData(0);
+      const sr = buf.sampleRate;
+      const th = 0.015;
+      let first = -1;
+      let last = -1;
+      for (let i = 0; i < data.length; i += 16) { if (Math.abs(data[i]) > th) { first = i; break; } }
+      for (let i = data.length - 1; i >= 0; i -= 16) { if (Math.abs(data[i]) > th) { last = i; break; } }
+      if (first < 0 || last <= first) return { leadIn: 0, speechDur: buf.duration };
+      return { leadIn: first / sr, speechDur: (last - first) / sr };
+    } catch (_) {
+      return { leadIn: 0, speechDur: buf.duration };
+    }
   }
 
   /* per-row emotes for the currently loaded script — pacing + prosody hints.
@@ -299,6 +324,11 @@ export class SpideyVoice {
       const buf = await this._fetchLine(this.lines[i].text, mood);
       this.lines[i].buffer = buf;
       this.lines[i].ok = !!buf;
+      if (buf) {
+        const a = this._analyzeBuffer(buf);
+        this.lines[i].leadIn = a.leadIn;
+        this.lines[i].speechDur = a.speechDur;
+      }
       if (buf) okCount++;
       if (onProgress) onProgress(i + 1, this.lines.length);
     }
@@ -365,7 +395,17 @@ export class SpideyVoice {
       : segs;
     this.stopPlayback();
     this.idx = 0; this.currentLine = -1;
-    mapped.forEach((s, i) => { if (i < n) { this.lines[i].buffer = s; this.lines[i].ok = true; } });
+    mapped.forEach((s, i) => {
+      if (i < n) {
+        this.lines[i].buffer = s;
+        this.lines[i].ok = true;
+        // your recorded read carries breaths + the padded tail inside each
+        // slice — measure the real speech so captions pace against IT
+        const a = this._analyzeBuffer(s);
+        this.lines[i].leadIn = a.leadIn;
+        this.lines[i].speechDur = a.speechDur;
+      }
+    });
     // lines the upload didn't cover stay speakable via TTS/fallback if they were
     this.synthState = 'ready';
     this.uploaded = true;
