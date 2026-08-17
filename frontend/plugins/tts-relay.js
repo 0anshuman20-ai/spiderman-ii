@@ -37,16 +37,21 @@ const DEFAULT_MOOD = "hero";
 const cache = new Map(); // `${mood}\u0000${text}` -> Buffer
 const CACHE_MAX = 200;
 
-async function synthesize(text, mood) {
-  const prosody = MOODS[mood] || MOODS[DEFAULT_MOOD];
-  const key = `${mood}\u0000${text}`;
-  const hit = cache.get(key);
-  if (hit) return hit;
+/* THE FORMAT LADDER — Microsoft silently dropped 48kHz/192k from the free
+   Edge endpoint: every 48k request now dies mid-stream with "no turn.end
+   received", which is exactly "the automated voice not working". The voice,
+   prosody, and 24kHz/96k all still work. So: try the premium format first
+   (in case it comes back), and the moment it fails, LOCK onto the format
+   that answered — one probe per server boot, never a per-line penalty. */
+const FORMATS = [
+  OUTPUT_FORMAT.AUDIO_48KHZ_192KBITRATE_MONO_MP3,
+  OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3,
+];
+let formatIdx = 0; // sticky: first format that succeeds wins for the session
+
+async function synthesizeWith(text, prosody, fmt) {
   const tts = new MsEdgeTTS();
-  // 48kHz/192k — the highest fidelity the endpoint ships. The old 24kHz/96k
-  // stream had no content above ~12kHz, which is the dull "phone speaker"
-  // sheen; full-band audio restores the air and crispness of a studio read.
-  await tts.setMetadata(VOICE, OUTPUT_FORMAT.AUDIO_48KHZ_192KBITRATE_MONO_MP3);
+  await tts.setMetadata(VOICE, fmt);
   const { audioStream } = await tts.toStream(text, prosody);
   const buf = await new Promise((resolve, reject) => {
     const chunks = [];
@@ -57,9 +62,30 @@ async function synthesize(text, mood) {
   });
   try { tts.close(); } catch (_) {}
   if (!buf || buf.length < 200) throw new Error("empty audio");
-  if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
-  cache.set(key, buf);
   return buf;
+}
+
+async function synthesize(text, mood) {
+  const prosody = MOODS[mood] || MOODS[DEFAULT_MOOD];
+  const key = `${mood}\u0000${text}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  let lastErr = null;
+  for (let i = formatIdx; i < FORMATS.length; i++) {
+    try {
+      const buf = await synthesizeWith(text, prosody, FORMATS[i]);
+      formatIdx = i; // this rung answered — every later line starts here
+      if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value);
+      cache.set(key, buf);
+      return buf;
+    } catch (err) {
+      lastErr = err;
+      if (i === formatIdx && i < FORMATS.length - 1) {
+        console.log(`[tts-relay] format ${i} failed (${err.message.slice(0, 60)}) — dropping to the next rung`);
+      }
+    }
+  }
+  throw lastErr || new Error("all formats failed");
 }
 
 /* The express handler for GET /tts. Exposed as a middleware entry so it can
