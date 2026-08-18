@@ -244,6 +244,11 @@ export function createStage(canvas) {
     capAnim = {
       words,
       cum,
+      /* the ENERGY CURVE measured from the line's real audio buffer —
+         cumulative voiced energy, normalized 0..1. When present, elapsed
+         time maps through it so the highlight moves with the voice and
+         holds through mid-line pauses instead of drifting ahead. */
+      curve: opts.curve && opts.curve.length > 1 ? opts.curve : null,
       start: anchor + Math.max(0, opts.delay || 0),
       dur: Math.max(0.5, durationSec),
       hold: Math.max(0, holdSec || 0),
@@ -270,9 +275,16 @@ export function createStage(canvas) {
       return;
     }
     const n = capAnim.words.length;
-    // length-weighted lookup: the active word is the first whose END fraction
-    // is still ahead of the playhead — matches how the audio spends its time
-    const pc = Math.min(0.999, p);
+    /* the playhead: with a measured energy curve, elapsed time converts to
+       the fraction of the line's VOICED ENERGY already spoken — the true
+       playhead. Without one (browser-voice fallback), raw time stands in. */
+    let pc;
+    if (capAnim.curve) {
+      const ci = Math.min(capAnim.curve.length - 1, Math.max(0, Math.floor(p * (capAnim.curve.length - 1))));
+      pc = Math.min(0.999, capAnim.curve[ci]);
+    } else {
+      pc = Math.min(0.999, p);
+    }
     let wIdx = n - 1;
     for (let i = 0; i < n; i++) { if (pc < capAnim.cum[i]) { wIdx = i; break; } }
     const chunk = Math.floor(wIdx / CAP_CHUNK);

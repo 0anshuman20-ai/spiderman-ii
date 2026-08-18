@@ -173,15 +173,50 @@ export class SpideyVoice {
     try {
       const data = buf.getChannelData(0);
       const sr = buf.sampleRate;
-      const th = 0.015;
+      /* RMS envelope in 10ms windows with an ADAPTIVE threshold (relative to
+         the buffer's own peak, like splitOnSilence). The old fixed 0.015
+         amplitude check sampled every 16th raw sample: quiet TTS lines and
+         soft uploads measured their lead-in and speech span WRONG, which
+         corrupted the caption start, the pacing, and the auto-cut tail math. */
+      const win = Math.max(1, Math.floor(sr * 0.01));
+      const nWin = Math.ceil(data.length / win);
+      const env = new Float32Array(nWin);
+      let peak = 0;
+      for (let w = 0; w < nWin; w++) {
+        let s = 0;
+        const a = w * win;
+        const b = Math.min(data.length, a + win);
+        for (let i = a; i < b; i++) s += data[i] * data[i];
+        const r = Math.sqrt(s / Math.max(1, b - a));
+        env[w] = r;
+        if (r > peak) peak = r;
+      }
+      if (peak <= 0) return { leadIn: 0, speechDur: buf.duration, curve: null };
+      const th = Math.max(0.004, peak * 0.06);
       let first = -1;
       let last = -1;
-      for (let i = 0; i < data.length; i += 16) { if (Math.abs(data[i]) > th) { first = i; break; } }
-      for (let i = data.length - 1; i >= 0; i -= 16) { if (Math.abs(data[i]) > th) { last = i; break; } }
-      if (first < 0 || last <= first) return { leadIn: 0, speechDur: buf.duration };
-      return { leadIn: first / sr, speechDur: (last - first) / sr };
+      for (let w = 0; w < nWin; w++) { if (env[w] > th) { first = w; break; } }
+      for (let w = nWin - 1; w >= 0; w--) { if (env[w] > th) { last = w; break; } }
+      if (first < 0 || last <= first) return { leadIn: 0, speechDur: buf.duration, curve: null };
+      /* THE ENERGY CURVE — cumulative voiced energy across the speech span,
+         normalized 0..1. The karaoke layer maps elapsed time through THIS
+         instead of assuming speech spends time uniformly: the hot word now
+         moves exactly when the voice does and HOLDS through mid-line pauses
+         (commas, breaths) instead of running ahead of the audio. Quiet
+         windows contribute a small floor so trailing soft consonants still
+         complete the last word. */
+      const span = last - first + 1;
+      const curve = new Float32Array(span);
+      let acc = 0;
+      for (let w = 0; w < span; w++) {
+        const e = env[first + w];
+        acc += e > th ? e : th * 0.15;
+        curve[w] = acc;
+      }
+      for (let w = 0; w < span; w++) curve[w] /= acc;
+      return { leadIn: (first * win) / sr, speechDur: (span * win) / sr, curve };
     } catch (_) {
-      return { leadIn: 0, speechDur: buf.duration };
+      return { leadIn: 0, speechDur: buf.duration, curve: null };
     }
   }
 
@@ -328,6 +363,7 @@ export class SpideyVoice {
         const a = this._analyzeBuffer(buf);
         this.lines[i].leadIn = a.leadIn;
         this.lines[i].speechDur = a.speechDur;
+        this.lines[i].curve = a.curve;
       }
       if (buf) okCount++;
       if (onProgress) onProgress(i + 1, this.lines.length);
@@ -404,6 +440,7 @@ export class SpideyVoice {
         const a = this._analyzeBuffer(s);
         this.lines[i].leadIn = a.leadIn;
         this.lines[i].speechDur = a.speechDur;
+        this.lines[i].curve = a.curve;
       }
     });
     // lines the upload didn't cover stay speakable via TTS/fallback if they were
@@ -435,10 +472,10 @@ export class SpideyVoice {
     const l = this.lines[i];
     if (l && l.buffer) {
       const speechDur = (l.speechDur != null && l.speechDur > 0.05) ? l.speechDur : l.buffer.duration;
-      return { leadIn: Math.max(0, l.leadIn || 0), speechDur };
+      return { leadIn: Math.max(0, l.leadIn || 0), speechDur, curve: l.curve || null };
     }
     const words = l ? l.text.split(/\s+/).filter(Boolean).length : 6;
-    return { leadIn: 0, speechDur: Math.max(1, words * 0.36) };
+    return { leadIn: 0, speechDur: Math.max(1, words * 0.36), curve: null };
   }
 
   /* rewind for a fresh take */
@@ -559,7 +596,14 @@ export class SpideyVoice {
     };
     try {
       src.start();
-      this.lineStartedAt = performance.now(); // caption layer back-dates to THIS
+      /* the sound physically renders one context latency AFTER start() is
+         called — stamping the anchor at the call made every caption lead the
+         voice by that much. Push the anchor forward by the base latency
+         (capped: outputLatency can spike on bluetooth and would over-shift
+         the recorded file, whose audio path has no output stage). */
+      let lat = 0;
+      try { lat = Math.min(0.12, this.ctx.baseLatency || 0) * 1000; } catch (_) {}
+      this.lineStartedAt = performance.now() + lat; // caption layer back-dates to THIS
     } catch (_) { this.playing = false; this.currentLine = -1; }
   }
 

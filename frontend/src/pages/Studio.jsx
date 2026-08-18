@@ -248,21 +248,25 @@ export default function Studio() {
            outro so the closer stays on screen into the final frame. */
         const isLast = voice.currentLine === voice.lines.length - 1;
         if (line) {
-          /* SYNC, THREE WAYS AT ONCE:
+          /* SYNC, FOUR WAYS AT ONCE:
              1. startAt back-dates the karaoke clock to the instant the audio
-                PHYSICALLY started (not when this frame noticed the change);
+                PHYSICALLY started (latency-compensated at the source);
              2. delay hides the caption through the buffer's lead-in silence,
                 so no words show before the first one is spoken;
              3. speechDur paces the highlight across the REAL first->last
                 voiced sample span — pacing across the raw buffer (padded
                 silence included) ran slower than the voice, a drift that
-                compounded through every line of the take. */
+                compounded through every line of the take;
+             4. curve — the buffer's measured energy curve — maps elapsed time
+                to the fraction of speech actually SPOKEN, so the hot word
+                rides the voice itself and holds through mid-line pauses. */
           const timing = voice.lineTiming(voice.currentLine);
           // 2.2s hold rides the tightened outro window, so the closing words
           // are still on screen in the file's final frame
           stage.playCaption(line.text, timing.speechDur, isLast ? 2.2 : 0, {
             startAt: voice.lineStartedAt,
             delay: timing.leadIn,
+            curve: timing.curve,
           });
         }
       }
