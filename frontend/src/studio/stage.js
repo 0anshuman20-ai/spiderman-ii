@@ -205,6 +205,11 @@ export function createStage(canvas) {
     let x = 512 - total / 2;
     const y = 116;
     words.forEach((w, i) => {
+      /* PROGRESSIVE REVEAL — words AFTER the active one stay invisible (their
+         space is reserved so nothing shifts when they land). Drawing the whole
+         chunk up front put the next words on screen before they were spoken —
+         exactly "it displays some words before I'm speaking". */
+      if (i > activeIdx) { x += widths[i]; return; }
       capCtx.strokeStyle = 'rgba(0,0,0,0.92)';
       capCtx.lineWidth = Math.max(10, size * 0.16);
       capCtx.strokeText(w, x, y);

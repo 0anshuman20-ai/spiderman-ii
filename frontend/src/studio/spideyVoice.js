@@ -54,10 +54,6 @@ export function splitScriptRows(text) {
 /* BEAT-AWARE DELIVERY — emote (from the script's beat sheet) shapes BOTH the
    inter-line gap and the synthesis prosody, while the voice identity stays
    locked server-side. Quips snap; heavy turns breathe. */
-const EMOTE_GAP = {
-  neutral: 0.65, scan: 0.65, smirk: 0.5,
-  anger: 0.5, glitch: 0.5, surge: 0.55, sad: 1.0,
-};
 const EMOTE_MOOD = {
   neutral: 'hero', scan: 'hero', smirk: 'hero',
   anger: 'urgent', glitch: 'urgent', surge: 'urgent', sad: 'somber',
@@ -143,6 +139,7 @@ export class SpideyVoice {
     this.playing = false;
     this.synthState = 'empty'; // empty | working | ready | fallback | error
     this._quietT = 1;          // seconds of closed mouth accumulated
+    this._openT = 0;           // seconds the mouth has been continuously open (line-idle only)
     this._cooldown = 0;
     /* DIRECTOR PACING — lips still fire a line INSTANTLY, but the director
        never lets dead air onto the tape: if the mouth hesitates, the next
@@ -186,13 +183,23 @@ export class SpideyVoice {
     try {
       const data = buf.getChannelData(0);
       const sr = buf.sampleRate;
-      const th = 0.015;
+      /* ADAPTIVE threshold — the old fixed 0.015 floor was deaf to soft line
+         endings (trailing "s"/"ng", a quiet "...right?"), so speechDur ended
+         EARLY: the karaoke finished + cleared while the voice was still on its
+         final words — exactly "some words cut out at last". Scale the floor to
+         the buffer's own peak so quiet tails are counted as speech. */
+      let peak = 0;
+      for (let i = 0; i < data.length; i += 8) { const v = Math.abs(data[i]); if (v > peak) peak = v; }
+      const th = Math.max(0.004, peak * 0.04);
       let first = -1;
       let last = -1;
-      for (let i = 0; i < data.length; i += 16) { if (Math.abs(data[i]) > th) { first = i; break; } }
-      for (let i = data.length - 1; i >= 0; i -= 16) { if (Math.abs(data[i]) > th) { last = i; break; } }
+      for (let i = 0; i < data.length; i += 8) { if (Math.abs(data[i]) > th) { first = i; break; } }
+      for (let i = data.length - 1; i >= 0; i -= 8) { if (Math.abs(data[i]) > th) { last = i; break; } }
       if (first < 0 || last <= first) return { leadIn: 0, speechDur: buf.duration };
-      return { leadIn: first / sr, speechDur: (last - first) / sr };
+      /* keep up to 120ms of real die-off after the last sample above threshold:
+         the quietest tail of a final consonant sits below ANY floor */
+      const end = Math.min(data.length, last + Math.floor(sr * 0.12));
+      return { leadIn: first / sr, speechDur: (end - first) / sr };
     } catch (_) {
       return { leadIn: 0, speechDur: buf.duration };
     }
@@ -463,6 +470,7 @@ export class SpideyVoice {
     this.idx = 0;
     this.currentLine = -1;
     this._quietT = 1;      // first mouth movement fires line 1 instantly
+    this._openT = 0;
     this._cooldown = 0;
     this._sinceEnd = 0;    // director clock: line 1 auto-fires within FIRST_LINE_MAX
     this.lastEndedAt = 0;  // fresh take: the wall-clock end anchor resets
@@ -585,15 +593,14 @@ export class SpideyVoice {
     } catch (_) { this.playing = false; this.currentLine = -1; this.lineStartedCtx = 0; }
   }
 
-  /** the pacing window before line i auto-fires: emote-shaped, deterministic */
+  /** SAFETY NET ONLY — the window before line i auto-fires when the tracker
+      has clearly lost the mouth. The old emote-paced 0.45–1.0s windows fired
+      lines BEFORE the performer's lips moved, which is exactly "it displays
+      words before I'm speaking" and "captions don't match my pace": a slow
+      reader was constantly overtaken by the director. YOUR MOUTH is now the
+      only clock; auto-fire exists purely to rescue a take from a dead tracker. */
   _gapFor(i) {
-    if (i === 0) return 0.45; // cold open: never let the take breathe before line 1
-    const emote = this._emoteFor(i);
-    let gap = (emote && EMOTE_GAP[emote] != null) ? EMOTE_GAP[emote] : 0.65;
-    // punchline micro-pause: a "?" or "!" ending gets a beat before the follow-up
-    const prev = this.lines[i - 1];
-    if (prev && /[?!]…?$/.test(prev.text.trim())) gap += 0.15;
-    return gap;
+    return i === 0 ? 2.5 : 4.0;
   }
 
   /* per-frame lip watcher. jaw comes from the face tracker (0..1). While
@@ -608,27 +615,34 @@ export class SpideyVoice {
     const rms = Math.min(1, Math.sqrt(s / (this._levelBuf.length / 4)) * 3);
     this.level = { rms, gateOpen: this.playing };
 
-    if (!recording) { this._quietT = 1; this._sinceEnd = 0; return; }
-    if (this.playing) return;
+    if (!recording) { this._quietT = 1; this._sinceEnd = 0; this._openT = 0; return; }
+    if (this.playing) { this._openT = 0; return; }
     this._sinceEnd += dt;
     if (this._cooldown > 0) { this._cooldown = Math.max(0, this._cooldown - dt); return; }
     if (this.idx >= this.lines.length) return;
-    /* DIRECTOR PACING — dead air never reaches the tape. The performer's lips
-       are still the fastest trigger, but past the pacing window the next line
-       fires itself. The gap is BEAT-AWARE: the cold open lands in 0.45s, quips
-       and escalations snap tight, somber turns get a real breath — and a line
-       that ended on "?" or "!" holds an extra 150ms so the punchline lands. */
-    if (this.autoPace && this._sinceEnd >= this._gapFor(this.idx)) {
-      this._quietT = 0;
+    /* YOUR MOUTH IS THE CLOCK. Speak fast: the onset fires the line with zero
+       added latency. Speak slow: the engine WAITS — nothing fires until your
+       lips do. The tracker being imperfect is covered two ways:
+       1. onset after a quiet gap (the classic trigger, 0.06 jaw / 70ms quiet);
+       2. a CONTINUOUS reader who never fully closes their mouth between lines
+          still fires once the mouth has been open 0.3s past the previous line
+          — no more waiting on a closed-mouth gap that never comes. */
+    const open = jaw >= 0.06;
+    if (open) this._openT += dt; else { this._openT = 0; this._quietT += dt; }
+    if (open && this._quietT > 0.07) {
+      this._quietT = 0; this._openT = 0;
       this._playLine(this.idx);
       return;
     }
-    // 0.06: catch the very FIRST millimeter of lip movement — the old 0.09
-    // threshold let the mouth visibly open a beat before the audio landed
-    if (jaw < 0.06) { this._quietT += dt; return; }
-    // lips just started moving after a quiet gap — fire NOW, zero added latency
-    if (this._quietT > 0.07) {
-      this._quietT = 0;
+    if (open && this._openT > 0.3 && this._sinceEnd > 0.25) {
+      this._quietT = 0; this._openT = 0;
+      this._playLine(this.idx);
+      return;
+    }
+    /* SAFETY NET, not a director: only when the mouth never registers at all
+       (tracking lost, camera blocked) does the take rescue itself. */
+    if (this.autoPace && this._sinceEnd >= this._gapFor(this.idx)) {
+      this._quietT = 0; this._openT = 0;
       this._playLine(this.idx);
     }
   }
