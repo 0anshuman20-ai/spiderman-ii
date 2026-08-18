@@ -162,6 +162,31 @@ export class SpideyVoice {
        reads it to back-date its karaoke clock, so caption pacing is anchored
        to when the audio physically began, not to when a poll noticed it. */
     this.lineStartedAt = 0;
+    /* AudioContext-clock anchor for the same instant. performance.now() and the
+       audio clock are DIFFERENT clocks: src.start() only SCHEDULES playback, and
+       the samples don't reach the speakers until one output-latency period later
+       (up to ~150ms under recording load). Anchoring captions on the wall clock
+       therefore started every line early by that latency. lineElapsed() reads
+       this anchor so the karaoke rides the clock the audio itself runs on. */
+    this.lineStartedCtx = 0;
+  }
+
+  /** seconds of the CURRENT line's buffer that have physically reached the
+      output, latency-compensated. null when no line is playing — the caption
+      layer freewheels on the wall clock once a line's audio has ended. */
+  lineElapsed() {
+    if (!this.playing || !this.lineStartedCtx) return null;
+    let t = 0;
+    try { t = this.ctx.currentTime - this.lineStartedCtx; } catch (_) { return null; }
+    if (!(t >= 0)) return null;
+    return t - this._outLatency();
+  }
+
+  /** audio pipeline latency: scheduled-to-audible delay for this context */
+  _outLatency() {
+    let lat = 0;
+    try { lat = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0); } catch (_) {}
+    return Math.min(0.6, lat);
   }
 
   /* measure the REAL speech inside a buffer: slices carry padded silence at
@@ -208,9 +233,7 @@ export class SpideyVoice {
   /** audio still physically draining through the chain after the last sample:
       context output latency + the compressor/limiter release tail */
   tailSeconds() {
-    let lat = 0;
-    try { lat = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0); } catch (_) {}
-    return Math.min(0.6, lat) + 0.3;
+    return this._outLatency() + 0.3;
   }
 
   /* pick the locked delivery for the NEXT synthesis — 'mystery' | 'hero' |
@@ -450,6 +473,8 @@ export class SpideyVoice {
     this._cooldown = 0;
     this._sinceEnd = 0;    // director clock: line 1 auto-fires within FIRST_LINE_MAX
     this.lastEndedAt = 0;  // fresh take: the wall-clock end anchor resets
+    this.lineStartedAt = 0;
+    this.lineStartedCtx = 0; // and the audio-clock caption anchor
   }
 
   /** the whole script has been spoken and nothing is playing — the outro window */
@@ -559,8 +584,12 @@ export class SpideyVoice {
     };
     try {
       src.start();
-      this.lineStartedAt = performance.now(); // caption layer back-dates to THIS
-    } catch (_) { this.playing = false; this.currentLine = -1; }
+      /* BOTH clocks are stamped at the same instant: lineStartedAt for anything
+         wall-clock, lineStartedCtx as the authoritative audio-clock anchor the
+         karaoke re-syncs against every frame. */
+      this.lineStartedAt = performance.now();
+      this.lineStartedCtx = this.ctx.currentTime;
+    } catch (_) { this.playing = false; this.currentLine = -1; this.lineStartedCtx = 0; }
   }
 
   /** the pacing window before line i auto-fires: emote-shaped, deterministic */

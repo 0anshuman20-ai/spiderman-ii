@@ -17,6 +17,12 @@ import { TakesPanel } from '../components/studio/TakesPanel';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+/* seconds the FINAL caption stays on screen past its own audio, so the closing
+   words are readable in the last frames. The auto-cut waits for the caption to
+   actually clear (stage.captionRemaining()), so raising this extends the take
+   instead of getting truncated by the cut. */
+const CLOSER_HOLD = 1.6;
+
 const FX_MAP = {
   glitch: (stage, voice, music) => { stage.glitch(0.45); voice.triggerGlitch(250); if (music) music.glitchZap(); },
   zoom: (stage, voice, music) => { stage.punch(); if (music) music.impact(); },
@@ -258,11 +264,17 @@ export default function Studio() {
                 silence included) ran slower than the voice, a drift that
                 compounded through every line of the take. */
           const timing = voice.lineTiming(voice.currentLine);
-          // 2.2s hold rides the tightened outro window, so the closing words
-          // are still on screen in the file's final frame
-          stage.playCaption(line.text, timing.speechDur, isLast ? 2.2 : 0, {
+          const myLine = voice.currentLine;
+          /* CLOSER_HOLD keeps the last caption readable past its audio; the
+             auto-cut below waits on stage.captionRemaining(), so this hold and
+             the outro window can no longer be tuned out of sync with each
+             other — whichever finishes last decides the cut. */
+          stage.playCaption(line.text, timing.speechDur, isLast ? CLOSER_HOLD : 0, {
             startAt: voice.lineStartedAt,
             delay: timing.leadIn,
+            /* the karaoke re-reads the real audio playhead every frame; guarded
+               by line identity so a stale closure can't pace the wrong line */
+            clock: () => (voice.currentLine === myLine ? voice.lineElapsed() : null),
           });
         }
       }
@@ -321,7 +333,17 @@ export default function Studio() {
              exactly enough for the outro sting and the closer caption to land
              inside the file with no dead air after the final word. */
           const outroWindow = 1.0 + v.tailSeconds();
-          if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow) {
+          /* THE CUT WAITS FOR WHICHEVER FINISHES LAST — the audio drain or the
+             closing caption. Previously these were two independently hand-tuned
+             numbers: the window was 1.0s + drain while the final caption held
+             2.2s, so the cut landed while the closer still had ~1.2s to run and
+             chopped the last words off the file. Reading the caption's real
+             remaining time makes truncation structurally impossible, and adds no
+             dead air beyond what the caption needs. */
+          const st = stageRef.current;
+          const capLeft = st && st.captionRemaining ? st.captionRemaining() : 0;
+          const closerDone = capLeft <= 0;
+          if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow && closerDone) {
             doneTRef.current = -999; // one-shot guard
             if (toggleRecRef.current) toggleRecRef.current();
           }
