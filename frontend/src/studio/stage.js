@@ -221,9 +221,11 @@ export function createStage(canvas) {
       natural breath — the FINAL line of a take passes the outro window here
       so the closer is readable into the last frame instead of dying with
       its audio.
-      opts.startAt: performance.now() ms the line's AUDIO physically started —
-      the clock back-dates to it, so caption pacing is anchored to the sound,
-      not to when a frame callback noticed the line change.
+      opts.startAt: performance.now() ms the line's AUDIO was scheduled — only a
+      fallback anchor now; the audio clock below is authoritative.
+      opts.clock: () => seconds of this line on the recorder's AudioContext
+      timeline (null when it isn't playing). Sampled EVERY frame so render-loop
+      stalls are corrected instead of accumulating as drift.
       opts.delay: seconds of silence inside the buffer before the first voiced
       sample — NOTHING draws until it elapses, so the caption never appears
       before the word is actually spoken. */
@@ -244,9 +246,19 @@ export function createStage(canvas) {
     capAnim = {
       words,
       cum,
-      start: anchor + Math.max(0, opts.delay || 0),
+      /* wall-clock fallback anchor — used only until the audio clock reports, and
+         to freewheel after the line's audio has ended */
+      t0: anchor,
+      leadIn: Math.max(0, opts.delay || 0),
       dur: Math.max(0.5, durationSec),
       hold: Math.max(0, holdSec || 0),
+      /* () => seconds of THIS line's audio physically played, or null when it
+         isn't playing. Read EVERY frame so latency and render-loop stalls are
+         corrected out instead of accumulating into drift. */
+      clock: typeof opts.clock === 'function' ? opts.clock : null,
+      hasAudio: false, // has the audio clock ever reported?
+      lastAudio: 0,    // last authoritative audio-clock reading
+      lastWall: 0,     // wall clock at that reading, for freewheeling past it
       drawn: -1,
     };
     /* the previous line's caption clears NOW — during this line's lead-in
@@ -255,15 +267,53 @@ export function createStage(canvas) {
     capTex.needsUpdate = true;
   }
 
+  /* seconds of the line's audio elapsed, resolved against the AUDIO clock when
+     it's live. A caption that keeps its own performance.now() clock cannot
+     correct itself: any stall (GC, recording load) is baked in for the rest of
+     the line. Re-reading the audio playhead every frame makes drift impossible
+     while the line plays, and the wall clock only freewheels the tail. */
+  function captionElapsed(a) {
+    const wall = performance.now() / 1000;
+    if (a.clock) {
+      const t = a.clock();
+      /* only non-numbers mean "no audio clock available"; zero is a valid
+         scheduled start position on the recorder's AudioContext timeline */
+      if (typeof t === 'number' && isFinite(t)) {
+        a.hasAudio = true;
+        a.lastAudio = t;
+        a.lastWall = wall;
+        return t;
+      }
+    }
+    // audio finished (or never reported): continue from the last true reading
+    if (a.hasAudio) return a.lastAudio + (wall - a.lastWall);
+    return wall - a.t0;
+  }
+
+  /* a finished caption lingers this long past its last word. Formerly the hold
+     was `dur * 1.18` — proportional stretch that silently re-added the padding
+     the speechDur fix removed (720ms on a 4s line), so long captions outlived
+     the voice. A fixed breath clears every line right after the audio. */
+  const CAP_BREATH = 0.25;
+
+  /** seconds until the live caption clears (0 when nothing is showing) — the
+      auto-cut reads this so the take can never end mid-caption */
+  function captionRemaining() {
+    if (!capAnim) return 0;
+    const t = captionElapsed(capAnim) - capAnim.leadIn;
+    return Math.max(0, capAnim.dur + CAP_BREATH + capAnim.hold - t);
+  }
+
   function updateCaptionAnim() {
     if (!capAnim) return;
-    const now = performance.now() / 1000;
-    // lead-in silence still playing — the first word hasn't been spoken yet
-    if (now < capAnim.start) return;
-    const p = (now - capAnim.start) / capAnim.dur;
-    // hold the last chunk a breath past the audio (plus any explicit hold —
-    // the final line rides the outro), then clear
-    if (now - capAnim.start >= capAnim.dur * 1.18 + capAnim.hold) {
+    // time INTO the spoken words: the buffer's lead-in silence is discounted, so
+    // nothing draws until the first word is actually sounding
+    const t = captionElapsed(capAnim) - capAnim.leadIn;
+    if (t < 0) return;
+    const p = t / capAnim.dur;
+    // clear a fixed breath past the audio (plus any explicit hold — the final
+    // line rides the outro)
+    if (t >= capAnim.dur + CAP_BREATH + capAnim.hold) {
       capAnim = null;
       capCtx.clearRect(0, 0, 1024, 220);
       capTex.needsUpdate = true;
@@ -425,6 +475,7 @@ export function createStage(canvas) {
     setHudOn(on) { hudOn = on; },
     setCaption,
     playCaption,
+    captionRemaining,
     /* measured render fps — the recorder reads this to pick its capture tier */
     get fps() { return fps; },
     /* EXPLICIT FRAME DELIVERY — captureStream(fps) leaves frame timing to the

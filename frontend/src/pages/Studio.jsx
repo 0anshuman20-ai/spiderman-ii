@@ -17,6 +17,12 @@ import { TakesPanel } from '../components/studio/TakesPanel';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+/* seconds the FINAL caption stays on screen past its own audio, so the closing
+   words are readable in the last frames. The auto-cut waits for the caption to
+   actually clear (stage.captionRemaining()), so raising this extends the take
+   instead of getting truncated by the cut. */
+const CLOSER_HOLD = 1.6;
+
 const FX_MAP = {
   glitch: (stage, voice, music) => { stage.glitch(0.45); voice.triggerGlitch(250); if (music) music.glitchZap(); },
   zoom: (stage, voice, music) => { stage.punch(); if (music) music.impact(); },
@@ -218,7 +224,13 @@ export default function Studio() {
       rig.voicePlaying = voice.playing;
       rig.voiceBuffered = !!voice._src; // false in browser-speech fallback
       if (voice.ready && rig.tracking.mode !== 'sim') {
-        rig.level += (Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel())) - rig.level) * 0.35;
+        const voiceLevel = Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel()));
+        /* Audio already has a short analyser window and the suit owns the final
+           jaw easing. A third 0.35 smoothing pass here delayed every consonant
+           by several frames. Follow attacks immediately; retain only a brief
+           release so the world/meter remains stable between waveform samples. */
+        const k = voiceLevel >= rig.level ? 1 : 1 - Math.exp(-dt * 28);
+        rig.level += (voiceLevel - rig.level) * k;
       }
       // auto-perform teleprompter cues while recording — on RECORDED time, so
       // beat cues stay glued to the exported file even across jump-cuts
@@ -249,20 +261,25 @@ export default function Studio() {
         const isLast = voice.currentLine === voice.lines.length - 1;
         if (line) {
           /* SYNC, THREE WAYS AT ONCE:
-             1. startAt back-dates the karaoke clock to the instant the audio
-                PHYSICALLY started (not when this frame noticed the change);
+             1. clock samples the recorder's AudioContext timeline every frame
+                (startAt is only the browser-speech fallback);
              2. delay hides the caption through the buffer's lead-in silence,
                 so no words show before the first one is spoken;
              3. speechDur paces the highlight across the REAL first->last
                 voiced sample span — pacing across the raw buffer (padded
-                silence included) ran slower than the voice, a drift that
-                compounded through every line of the take. */
+                silence included) ran slower than the voice. */
           const timing = voice.lineTiming(voice.currentLine);
-          // 2.2s hold rides the tightened outro window, so the closing words
-          // are still on screen in the file's final frame
-          stage.playCaption(line.text, timing.speechDur, isLast ? 2.2 : 0, {
+          const myLine = voice.currentLine;
+          /* CLOSER_HOLD keeps the last caption readable past its audio; the
+             auto-cut below waits on stage.captionRemaining(), so this hold and
+             the outro window can no longer be tuned out of sync with each
+             other — whichever finishes last decides the cut. */
+          stage.playCaption(line.text, timing.speechDur, isLast ? CLOSER_HOLD : 0, {
             startAt: voice.lineStartedAt,
             delay: timing.leadIn,
+            /* the karaoke re-reads the real audio playhead every frame; guarded
+               by line identity so a stale closure can't pace the wrong line */
+            clock: () => (voice.currentLine === myLine ? voice.lineElapsed() : null),
           });
         }
       }
@@ -321,7 +338,17 @@ export default function Studio() {
              exactly enough for the outro sting and the closer caption to land
              inside the file with no dead air after the final word. */
           const outroWindow = 1.0 + v.tailSeconds();
-          if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow) {
+          /* THE CUT WAITS FOR WHICHEVER FINISHES LAST — the audio drain or the
+             closing caption. Previously these were two independently hand-tuned
+             numbers: the window was 1.0s + drain while the final caption held
+             2.2s, so the cut landed while the closer still had ~1.2s to run and
+             chopped the last words off the file. Reading the caption's real
+             remaining time makes truncation structurally impossible, and adds no
+             dead air beyond what the caption needs. */
+          const st = stageRef.current;
+          const capLeft = st && st.captionRemaining ? st.captionRemaining() : 0;
+          const closerDone = capLeft <= 0;
+          if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow && closerDone) {
             doneTRef.current = -999; // one-shot guard
             if (toggleRecRef.current) toggleRecRef.current();
           }

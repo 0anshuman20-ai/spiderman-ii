@@ -158,10 +158,23 @@ export class SpideyVoice {
        throttling made the counter run FASTER than reality under recording
        load), which cut the file before the outro had physically elapsed. */
     this.lastEndedAt = 0;
-    /* wall-clock instant the CURRENT line's audio started — the caption layer
-       reads it to back-date its karaoke clock, so caption pacing is anchored
-       to when the audio physically began, not to when a poll noticed it. */
-    this.lineStartedAt = 0;
+  /* Matching anchors for the CURRENT line. lineStartedAt is the fallback for
+     browser speech; lineStartedCtx is authoritative for buffered audio because
+     it shares the recorder's AudioContext timeline. */
+  this.lineStartedAt = 0;
+  this.lineStartedCtx = 0;
+  }
+
+  /** seconds of the CURRENT line present on the recorder's AudioContext
+      timeline. The recording consumes MediaStreamDestination directly, BEFORE
+      the speaker output path, so baseLatency/outputLatency must NOT be subtracted
+      here — those values describe speaker monitoring, not the exported track.
+      null when no buffered line is playing; captions then freewheel their tail. */
+  lineElapsed() {
+    if (!this.playing || !this._src || !this.lineStartedCtx) return null;
+    let t = 0;
+    try { t = this.ctx.currentTime - this.lineStartedCtx; } catch (_) { return null; }
+    return t >= 0 ? t : null;
   }
 
   /* measure the REAL speech inside a buffer: slices carry padded silence at
@@ -205,12 +218,11 @@ export class SpideyVoice {
     return (performance.now() - this.lastEndedAt) / 1000;
   }
 
-  /** audio still physically draining through the chain after the last sample:
-      context output latency + the compressor/limiter release tail */
+  /** conservative recorder-side release after the final source sample. Speaker
+      output latency is intentionally excluded: MediaStreamDestination receives
+      the mix before the hardware output path. */
   tailSeconds() {
-    let lat = 0;
-    try { lat = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0); } catch (_) {}
-    return Math.min(0.6, lat) + 0.3;
+    return 0.3;
   }
 
   /* pick the locked delivery for the NEXT synthesis — 'mystery' | 'hero' |
@@ -252,8 +264,12 @@ export class SpideyVoice {
       const limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.06;
 
-      this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
-      this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 1024;
+    this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
+    /* 256 samples is ~5ms at 48kHz. The old 1024-sample (~21ms) analysis
+       window blurred consonant onsets before two more visual smoothing stages,
+       making the mask trail syllables by several frames. */
+    this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 256;
+    this.analyser.smoothingTimeConstant = 0;
       this.dest = ctx.createMediaStreamDestination();
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
@@ -450,6 +466,8 @@ export class SpideyVoice {
     this._cooldown = 0;
     this._sinceEnd = 0;    // director clock: line 1 auto-fires within FIRST_LINE_MAX
     this.lastEndedAt = 0;  // fresh take: the wall-clock end anchor resets
+    this.lineStartedAt = 0;
+    this.lineStartedCtx = 0; // and the audio-clock caption anchor
   }
 
   /** the whole script has been spoken and nothing is playing — the outro window */
@@ -559,8 +577,12 @@ export class SpideyVoice {
     };
     try {
       src.start();
-      this.lineStartedAt = performance.now(); // caption layer back-dates to THIS
-    } catch (_) { this.playing = false; this.currentLine = -1; }
+      /* BOTH clocks are stamped at the same instant: lineStartedAt for anything
+         wall-clock, lineStartedCtx as the authoritative audio-clock anchor the
+         karaoke re-syncs against every frame. */
+      this.lineStartedAt = performance.now();
+      this.lineStartedCtx = this.ctx.currentTime;
+    } catch (_) { this.playing = false; this.currentLine = -1; this.lineStartedCtx = 0; }
   }
 
   /** the pacing window before line i auto-fires: emote-shaped, deterministic */
