@@ -383,11 +383,16 @@ export default function Studio() {
        the take now opens crisp; scripted beats can still call the glitch FX.) */
     capLineRef.current = -1;
     stage.punch();
-    const hookText = script ? (script.hook || (script.beats[0] && script.beats[0].text)) : null;
-    if (hookText && captionsRef.current) stage.playCaption(hookText, 2.2);
     // audio for the file: the synthesized spider voice (mic never used); else the
     // music engine's own MediaStreamDestination so a video-only session still ships with score
     const voice = voiceRef.current;
+    /* the frame-one hook caption burned script words onto the screen BEFORE the
+       performer spoke them — "it displays some words before I'm speaking". On a
+       voiced take the first words now appear only when line 1's audio fires;
+       the hook still opens freestyle (no scripted lines) takes. */
+    const voicedTake = !!(voice && voice.ready && voice.canRoll() && voice.lines.length > 0);
+    const hookText = script ? (script.hook || (script.beats[0] && script.beats[0].text)) : null;
+    if (hookText && captionsRef.current && !voicedTake) stage.playCaption(hookText, 2.2);
     const music = musicRef.current;
     if (voice && voice.ready) voice.arm(); // rewind to line 1 — first mouth move fires it
     /* AUDIO INTO THE FILE — always hand the recorder the voice engine's
