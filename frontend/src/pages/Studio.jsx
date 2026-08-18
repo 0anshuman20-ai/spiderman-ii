@@ -224,7 +224,13 @@ export default function Studio() {
       rig.voicePlaying = voice.playing;
       rig.voiceBuffered = !!voice._src; // false in browser-speech fallback
       if (voice.ready && rig.tracking.mode !== 'sim') {
-        rig.level += (Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel())) - rig.level) * 0.35;
+        const voiceLevel = Math.min(1, Math.max(voice.level.rms * 4, voice.outputLevel()));
+        /* Audio already has a short analyser window and the suit owns the final
+           jaw easing. A third 0.35 smoothing pass here delayed every consonant
+           by several frames. Follow attacks immediately; retain only a brief
+           release so the world/meter remains stable between waveform samples. */
+        const k = voiceLevel >= rig.level ? 1 : 1 - Math.exp(-dt * 28);
+        rig.level += (voiceLevel - rig.level) * k;
       }
       // auto-perform teleprompter cues while recording — on RECORDED time, so
       // beat cues stay glued to the exported file even across jump-cuts
@@ -255,14 +261,13 @@ export default function Studio() {
         const isLast = voice.currentLine === voice.lines.length - 1;
         if (line) {
           /* SYNC, THREE WAYS AT ONCE:
-             1. startAt back-dates the karaoke clock to the instant the audio
-                PHYSICALLY started (not when this frame noticed the change);
+             1. clock samples the recorder's AudioContext timeline every frame
+                (startAt is only the browser-speech fallback);
              2. delay hides the caption through the buffer's lead-in silence,
                 so no words show before the first one is spoken;
              3. speechDur paces the highlight across the REAL first->last
                 voiced sample span — pacing across the raw buffer (padded
-                silence included) ran slower than the voice, a drift that
-                compounded through every line of the take. */
+                silence included) ran slower than the voice. */
           const timing = voice.lineTiming(voice.currentLine);
           const myLine = voice.currentLine;
           /* CLOSER_HOLD keeps the last caption readable past its audio; the

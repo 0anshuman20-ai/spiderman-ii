@@ -223,9 +223,9 @@ export function createStage(canvas) {
       its audio.
       opts.startAt: performance.now() ms the line's AUDIO was scheduled — only a
       fallback anchor now; the audio clock below is authoritative.
-      opts.clock: () => seconds of this line's audio that have physically played
-      (null when it isn't playing). Sampled EVERY frame, so output latency and
-      render-loop stalls are corrected out instead of accumulating as drift.
+      opts.clock: () => seconds of this line on the recorder's AudioContext
+      timeline (null when it isn't playing). Sampled EVERY frame so render-loop
+      stalls are corrected instead of accumulating as drift.
       opts.delay: seconds of silence inside the buffer before the first voiced
       sample — NOTHING draws until it elapses, so the caption never appears
       before the word is actually spoken. */
@@ -276,10 +276,8 @@ export function createStage(canvas) {
     const wall = performance.now() / 1000;
     if (a.clock) {
       const t = a.clock();
-      /* negatives are VALID and meaningful: during the output-latency period the
-         samples are scheduled but not yet audible, so the playhead is legitimately
-         before zero and the caption must stay hidden. Only non-numbers mean "no
-         audio clock available". */
+      /* only non-numbers mean "no audio clock available"; zero is a valid
+         scheduled start position on the recorder's AudioContext timeline */
       if (typeof t === 'number' && isFinite(t)) {
         a.hasAudio = true;
         a.lastAudio = t;

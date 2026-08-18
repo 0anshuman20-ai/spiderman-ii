@@ -158,35 +158,23 @@ export class SpideyVoice {
        throttling made the counter run FASTER than reality under recording
        load), which cut the file before the outro had physically elapsed. */
     this.lastEndedAt = 0;
-    /* wall-clock instant the CURRENT line's audio started — the caption layer
-       reads it to back-date its karaoke clock, so caption pacing is anchored
-       to when the audio physically began, not to when a poll noticed it. */
-    this.lineStartedAt = 0;
-    /* AudioContext-clock anchor for the same instant. performance.now() and the
-       audio clock are DIFFERENT clocks: src.start() only SCHEDULES playback, and
-       the samples don't reach the speakers until one output-latency period later
-       (up to ~150ms under recording load). Anchoring captions on the wall clock
-       therefore started every line early by that latency. lineElapsed() reads
-       this anchor so the karaoke rides the clock the audio itself runs on. */
-    this.lineStartedCtx = 0;
+  /* Matching anchors for the CURRENT line. lineStartedAt is the fallback for
+     browser speech; lineStartedCtx is authoritative for buffered audio because
+     it shares the recorder's AudioContext timeline. */
+  this.lineStartedAt = 0;
+  this.lineStartedCtx = 0;
   }
 
-  /** seconds of the CURRENT line's buffer that have physically reached the
-      output, latency-compensated. null when no line is playing — the caption
-      layer freewheels on the wall clock once a line's audio has ended. */
+  /** seconds of the CURRENT line present on the recorder's AudioContext
+      timeline. The recording consumes MediaStreamDestination directly, BEFORE
+      the speaker output path, so baseLatency/outputLatency must NOT be subtracted
+      here — those values describe speaker monitoring, not the exported track.
+      null when no buffered line is playing; captions then freewheel their tail. */
   lineElapsed() {
-    if (!this.playing || !this.lineStartedCtx) return null;
+    if (!this.playing || !this._src || !this.lineStartedCtx) return null;
     let t = 0;
     try { t = this.ctx.currentTime - this.lineStartedCtx; } catch (_) { return null; }
-    if (!(t >= 0)) return null;
-    return t - this._outLatency();
-  }
-
-  /** audio pipeline latency: scheduled-to-audible delay for this context */
-  _outLatency() {
-    let lat = 0;
-    try { lat = (this.ctx.baseLatency || 0) + (this.ctx.outputLatency || 0); } catch (_) {}
-    return Math.min(0.6, lat);
+    return t >= 0 ? t : null;
   }
 
   /* measure the REAL speech inside a buffer: slices carry padded silence at
@@ -230,10 +218,11 @@ export class SpideyVoice {
     return (performance.now() - this.lastEndedAt) / 1000;
   }
 
-  /** audio still physically draining through the chain after the last sample:
-      context output latency + the compressor/limiter release tail */
+  /** conservative recorder-side release after the final source sample. Speaker
+      output latency is intentionally excluded: MediaStreamDestination receives
+      the mix before the hardware output path. */
   tailSeconds() {
-    return this._outLatency() + 0.3;
+    return 0.3;
   }
 
   /* pick the locked delivery for the NEXT synthesis — 'mystery' | 'hero' |
@@ -275,8 +264,12 @@ export class SpideyVoice {
       const limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.06;
 
-      this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
-      this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 1024;
+    this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
+    /* 256 samples is ~5ms at 48kHz. The old 1024-sample (~21ms) analysis
+       window blurred consonant onsets before two more visual smoothing stages,
+       making the mask trail syllables by several frames. */
+    this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 256;
+    this.analyser.smoothingTimeConstant = 0;
       this.dest = ctx.createMediaStreamDestination();
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
