@@ -43,7 +43,7 @@ export const ExpressionPanel = ({ expr, onExpr, onGlitch }) => (
 
 /* SPIDER VOICE — script-first, mic-free. Shows the synthesized line queue and
    which line is armed/playing; your lips fire each line during the take. */
-export const VoicePanel = ({ synthState, lines, currentLine, nextLine, monitor, onMonitor, level, voiceOk, onEditScript, recording }) => (
+export const VoicePanel = ({ synthState, lines, currentLine, nextLine, monitor, onMonitor, level, voiceOk, onEditScript, recording, micLive }) => (
   <div className="cw-panel" data-testid="voice-panel">
     <h2>◪ Spider Voice</h2>
     <div className="flex items-center gap-1.5 mb-2">
@@ -57,11 +57,14 @@ export const VoicePanel = ({ synthState, lines, currentLine, nextLine, monitor, 
       </div>
     </div>
     <div className="mono text-[9px] mb-2" data-testid="voice-synth-status"
-      style={{ color: synthState === 'ready' ? 'var(--cw-green)' : synthState === 'error' ? 'var(--cw-red)' : 'var(--cw-amber)' }}>
+      style={{ color: synthState === 'ready' || (synthState === 'live' && micLive) ? 'var(--cw-green)' : synthState === 'error' ? 'var(--cw-red)' : 'var(--cw-amber)' }}>
       {synthState === 'empty' && 'NO SCRIPT — REC WILL ASK FOR ONE FIRST'}
       {synthState === 'working' && 'SYNTHESIZING SPIDER VOICE…'}
       {synthState === 'ready' && `${lines.length} LINES VOICED · YOUR LIPS FIRE EACH LINE`}
       {synthState === 'fallback' && `${lines.length} LINES ON THE BROWSER VOICE · TTS OFFLINE · SPEAKERS ONLY, NOT IN THE FILE`}
+      {synthState === 'live' && (micLive
+        ? `LIVE MIC · ${lines.length} LINES · SPEAK EACH LINE ON CAMERA — CAPTIONS RIDE YOUR VOICE`
+        : 'LIVE MIC LOST — REOPEN SCRIPT & VOICE TO RE-ARM IT')}
       {synthState === 'error' && 'TTS UNREACHABLE — CHECK CONNECTION, THEN RE-SYNTH'}
     </div>
     {lines.length > 0 && (
@@ -86,8 +89,10 @@ export const VoicePanel = ({ synthState, lines, currentLine, nextLine, monitor, 
     </div>
     <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-muted)' }}>
       {recording
-        ? 'ROLLING — MOUTH THE NEXT LINE AND IT PLAYS INSTANTLY'
-        : voiceOk ? 'MIC IS NEVER USED · VOICE IS 100% SYNTHESIZED' : 'AUDIO ENGINE OFFLINE'}
+        ? (micLive ? 'ROLLING — SPEAK THE NEXT LINE · YOUR VOICE IS ENHANCED LIVE INTO THE FILE' : 'ROLLING — MOUTH THE NEXT LINE AND IT PLAYS INSTANTLY')
+        : voiceOk
+          ? (micLive ? 'LIVE MIC ARMED · REAL-TIME NOISE KILL + EQ + COMPRESSION' : 'MIC IS NEVER USED · VOICE IS 100% SYNTHESIZED')
+          : 'AUDIO ENGINE OFFLINE'}
     </p>
   </div>
 );

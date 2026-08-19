@@ -67,7 +67,7 @@ export default function Studio() {
   const [level, setLevel] = useState(0);
   const [micOk, setMicOk] = useState(false); // = spider-voice engine online (mic is never used)
   // SPIDER VOICE — script-first: the script is synthesized BEFORE any take
-  const [voiceUi, setVoiceUi] = useState({ synthState: 'empty', lines: [], currentLine: -1, nextLine: 0 });
+  const [voiceUi, setVoiceUi] = useState({ synthState: 'empty', lines: [], currentLine: -1, nextLine: 0, micLive: false });
   const [scriptOpen, setScriptOpen] = useState(false);
   const [scriptText, setScriptText] = useState('');
   const [synthProg, setSynthProg] = useState(null); // null | { done, total }
@@ -724,6 +724,30 @@ export default function Studio() {
     }
   }, [scriptText]);
 
+  /* LIVE MIC — your REAL voice, live during the camera take, running through
+     the full real-time enhancement chain (OS noise suppression + repair EQ +
+     broadcast compression) straight into the file. Lines are fired by your
+     VOICE, so the caption can only ever follow what you are actually saying. */
+  const goLiveMic = useCallback(async () => {
+    const voice = voiceRef.current;
+    if (!voice || !voice.ready || !scriptText.trim()) return;
+    setUploadMsg({ ok: true, message: 'opening the mic + live enhancer…' });
+    try {
+      await voice.resume();
+      const res = await voice.enableLiveMic(scriptText);
+      setUploadMsg(res);
+      if (res.ok) setTimeout(() => { setUploadMsg(null); setScriptOpen(false); }, 1200);
+    } catch (err) {
+      setUploadMsg({ ok: false, message: `live mic failed: ${err.message}` });
+    }
+  }, [scriptText]);
+
+  const stopLiveMic = useCallback(() => {
+    const voice = voiceRef.current;
+    if (voice) voice.disableLiveMic();
+    setUploadMsg(null);
+  }, []);
+
   const doSynth = useCallback(async () => {
     const voice = voiceRef.current;
     if (!voice || !voice.ready || !scriptText.trim()) return;
@@ -739,8 +763,10 @@ export default function Studio() {
   }, []);
 
   const fmtClock = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-  // a take may roll once the script is voiced — decoded TTS, or the browser voice
-  const voiceRollable = voiceUi.synthState === 'ready' || voiceUi.synthState === 'fallback';
+  // a take may roll once the script is voiced — decoded TTS, the browser voice,
+  // or the LIVE MIC (your real voice, enhanced in real time during the take)
+  const voiceRollable = voiceUi.synthState === 'ready' || voiceUi.synthState === 'fallback'
+    || (voiceUi.synthState === 'live' && voiceUi.micLive);
 
   return (
     <div className={`min-h-screen ${glitchUi ? 'cw-glitching' : ''}`} data-testid="studio-root">
@@ -791,7 +817,7 @@ export default function Studio() {
         <div className="lg:col-span-3 space-y-3 order-2 lg:order-1">
           <VoicePanel synthState={voiceUi.synthState} lines={voiceUi.lines} currentLine={voiceUi.currentLine}
             nextLine={voiceUi.nextLine} monitor={monitor} onMonitor={onMonitor} level={level}
-            voiceOk={micOk} onEditScript={openScript} recording={recording} />
+            voiceOk={micOk} onEditScript={openScript} recording={recording} micLive={voiceUi.micLive} />
           <MusicPanel on={musicOn} onOn={onMusicOn} bedVol={bedVol} onBedVol={onBedVol}
             sfxVol={sfxVol} onSfxVol={onSfxVol} monitor={musicMonitor} onMonitor={onMusicMonitor} ready={musicReady} />
           <ScenePanel world={world} onWorld={setWorld} />
@@ -874,6 +900,10 @@ export default function Studio() {
                    misaligned emotional map. Re-picking a transmission
                    restores its emotes. */
                 if (voiceRef.current) voiceRef.current.setLineEmotes(null);
+                /* LIVE MIC stays armed through an edit: re-bind the fresh lines
+                   immediately so the caption queue can never go stale against
+                   what you are about to say on camera */
+                if (voiceRef.current && voiceRef.current.micMode) voiceRef.current.enableLiveMic(e.target.value);
               }} disabled={!!synthProg || personalVoice.state === 'recording'} />
             <section className="mb-3 border p-3" style={{ borderColor: 'var(--cw-border)', background: 'rgba(255,255,255,0.025)' }} aria-labelledby="own-voice-title">
               <div className="flex items-center justify-between gap-2 mb-2">
@@ -917,6 +947,11 @@ export default function Studio() {
               </div>
             )}
             <div className="flex flex-wrap items-center gap-2">
+              <button className={`cw-rec ${voiceUi.micLive ? 'live' : ''}`} data-testid="live-mic-btn"
+                disabled={!scriptText.trim() || !!synthProg || !micOk || personalVoice.state === 'recording'}
+                onClick={voiceUi.micLive ? stopLiveMic : goLiveMic}>
+                {voiceUi.micLive ? '● LIVE MIC ON — TURN OFF' : '● SPEAK LIVE ON CAMERA'}
+              </button>
               <button className="cw-rec" data-testid="script-synth-btn"
                 disabled={!scriptText.trim() || !!synthProg || !micOk} onClick={doSynth}>
                 {synthProg ? 'VOICING…' : '◪ VOICE THE SCRIPT'}
@@ -933,10 +968,10 @@ export default function Studio() {
                 <span>CLOSE</span>
               </button>
             </div>
-            <p className="mono text-[9px] mt-2" style={{ color: 'var(--cw-muted)' }}>
-              REAL VOICE = THE #1 RETENTION FIX. RECORD THE WHOLE SCRIPT AS ONE MP3/WAV
-              (ELEVENLABS OR YOUR OWN READ) WITH A CLEAR PAUSE BETWEEN LINES — THE ENGINE
-              SLICES IT AND MAPS EACH SLICE TO ITS LINE AUTOMATICALLY.
+            <p className="mono text-[9px] mt-2" style={{ color: voiceUi.micLive ? 'var(--cw-green)' : 'var(--cw-muted)' }}>
+              {voiceUi.micLive
+                ? 'LIVE MIC ARMED — CLOSE THIS SHEET, HIT REC, AND SPEAK EACH LINE ON CAMERA. YOUR VOICE IS ENHANCED IN REAL TIME AND THE CAPTION FOLLOWS THE WORDS YOU ACTUALLY SAY.'
+                : 'SPEAK LIVE = YOUR REAL VOICE, RECORDED WITH THE CAMERA AND ENHANCED IN REAL TIME (NOISE KILL, EQ REPAIR, BROADCAST COMPRESSION). CAPTIONS ARE DRIVEN BY YOUR VOICE, NOT LIP GUESSES — PAUSE BRIEFLY BETWEEN LINES.'}
             </p>
             {uploadMsg && (
               <div className="mono text-[9px] mt-2" data-testid="upload-status"
