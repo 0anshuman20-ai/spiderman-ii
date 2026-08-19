@@ -70,6 +70,29 @@ function sliceBuffer(buf, ctx, s0, s1) {
   return out;
 }
 
+/* SAVE-TIME ENHANCEMENT stage 1: peak-normalize the whole performance before
+   slicing. Quiet phone/earbud recordings otherwise hit the broadcast chain far
+   below its designed operating level — the compressors barely engage and the
+   take ships thin and inconsistent. DC offset is removed in the same pass. */
+function normalizeBuffer(buf) {
+  try {
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      const d = buf.getChannelData(ch);
+      let mean = 0;
+      for (let i = 0; i < d.length; i++) mean += d[i];
+      mean /= Math.max(1, d.length);
+      let peak = 0;
+      for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i] - mean); if (v > peak) peak = v; }
+      if (peak < 0.0005) continue; // silence — nothing to normalize
+      const g = 0.891 / peak;      // ~-1 dBFS target
+      if (Math.abs(mean) > 1e-4 || g < 0.99 || g > 1.01) {
+        for (let i = 0; i < d.length; i++) d[i] = (d[i] - mean) * g;
+      }
+    }
+  } catch (_) { /* normalization is an enhancement, never a blocker */ }
+  return buf;
+}
+
 function mergeBuffers(bufs, ctx) {
   if (bufs.length === 1) return bufs[0];
   const sr = bufs[0].sampleRate;
@@ -160,6 +183,27 @@ export class SpideyVoice {
      it shares the recorder's AudioContext timeline. */
   this.lineStartedAt = 0;
   this.lineStartedCtx = 0;
+    /* ---- LIVE MIC MODE ----
+       Your REAL voice, live, during the camera take: mic -> repair EQ ->
+       the same broadcast chain (presence, de-ess, two-stage compression,
+       limiter) -> straight into the recorder. Lines are fired by your VOICE
+       (mic energy), never by lip tracking — so the caption can only ever
+       follow what you are actually saying. */
+    this.micMode = false;
+    this.micStream = null;
+    this._micNodes = null;
+    this._noiseFloor = 0.01;   // adaptive room-noise estimate (VAD floor)
+    this._voicedT = 0;         // seconds of continuous voice (onset detector)
+    this._silT = 0;            // seconds of continuous silence inside a line
+    this._lineDurT = 0;        // seconds of real voice inside the current line
+    this._spw = 0.36;          // YOUR measured seconds-per-word (adapts every line)
+    this._lastLiveElapsed = 0; // monotonic guard for the live caption clock
+    /* live speech recognition: counts the words you have ACTUALLY spoken so
+       the karaoke highlight rides your real words, not a timing estimate */
+    this._recog = null;
+    this._recogOn = false;
+    this._recogWords = 0;
+    this._wordsAtLineStart = 0;
   }
 
   /** seconds of the CURRENT line present on the recorder's AudioContext
@@ -168,6 +212,33 @@ export class SpideyVoice {
       here — those values describe speaker monitoring, not the exported track.
       null when no buffered line is playing; captions then freewheel their tail. */
   lineElapsed() {
+    /* LIVE MIC: the caption clock is your ACTUAL SPEECH. Primary source is the
+       live recognizer's word count (the highlight can never run ahead of words
+       you haven't said, nor lag words you have); when recognition is silent or
+       unsupported it falls back to real elapsed time at YOUR measured pace. */
+    if (this.micMode) {
+      if (!this.playing || !this.lineStartedCtx) return null;
+      let t = 0;
+      try { t = this.ctx.currentTime - this.lineStartedCtx; } catch (_) { return null; }
+      if (t < 0) return null;
+      const l = this.lines[this.currentLine];
+      if (l) {
+        const total = l.text.split(/\s+/).filter(Boolean).length || 1;
+        const est = Math.max(0.5, total * this._spw);
+        const heard = Math.max(0, this._recogWords - this._wordsAtLineStart);
+        if (this._recogOn && heard > 0) {
+          /* the highlight may run at most ~1.5 words ahead of what the
+             recognizer confirmed, and never behind what it confirmed */
+          const cap = Math.min(1, (heard + 1.5) / total) * est;
+          const floor = Math.min(1, heard / total) * est * 0.96;
+          t = Math.max(Math.min(t, cap), floor);
+        }
+      }
+      // monotonic: a late recognition result must never rewind the karaoke
+      t = Math.max(t, this._lastLiveElapsed);
+      this._lastLiveElapsed = t;
+      return t;
+    }
     if (!this.playing || !this._src || !this.lineStartedCtx) return null;
     let t = 0;
     try { t = this.ctx.currentTime - this.lineStartedCtx; } catch (_) { return null; }
@@ -241,7 +312,8 @@ export class SpideyVoice {
   /* the take may roll once every line is voiced — either as decoded buffers or
      via the browser's own speech engine when the free TTS is unreachable */
   canRoll() {
-    return this.synthState === 'ready' || this.synthState === 'fallback';
+    return this.synthState === 'ready' || this.synthState === 'fallback'
+      || (this.synthState === 'live' && this.micMode);
   }
 
   async init() {
@@ -332,6 +404,7 @@ export class SpideyVoice {
      true when at least one line synthesized. */
   async synthesize(text, onProgress) {
     if (!this.ready) return false;
+    this.disableLiveMic(); // TTS take: the live mic must not bleed into the mix
     this.stopPlayback();
     const parts = splitScriptRows(text);
     this.lines = parts.map((p) => ({ text: p.text, row: p.row, buffer: null, ok: false }));
@@ -384,6 +457,7 @@ export class SpideyVoice {
      because each line simply gets a better buffer. */
   async loadUpload(arrayBuffer, scriptText) {
     if (!this.ready) return { ok: false, message: 'audio engine offline' };
+    this.disableLiveMic(); // sliced-take mode replaces the live mic path
     if (scriptText != null && String(scriptText).trim()) {
       const parts = splitScriptRows(scriptText);
       if (parts.length) {
@@ -395,6 +469,10 @@ export class SpideyVoice {
     let buf;
     try { buf = await this.ctx.decodeAudioData(arrayBuffer.slice(0)); }
     catch (_) { return { ok: false, message: 'could not decode that file — use mp3 / wav / m4a' }; }
+    /* SAVE-TIME ENHANCEMENT: normalize + de-DC the recording first so the
+       slicer's adaptive thresholds and the playback broadcast chain (presence,
+       de-ess, two-stage compression, limiter) all operate at design level */
+    buf = normalizeBuffer(buf);
     let segs = splitOnSilence(buf, this.ctx);
     if (!segs.length) return { ok: false, message: 'no speech found in that file' };
     const n = this.lines.length;
@@ -461,7 +539,9 @@ export class SpideyVoice {
       return { leadIn: Math.max(0, l.leadIn || 0), speechDur };
     }
     const words = l ? l.text.split(/\s+/).filter(Boolean).length : 6;
-    return { leadIn: 0, speechDur: Math.max(1, words * 0.36) };
+    /* live-mic lines have no buffer: pace at YOUR measured seconds-per-word
+       (updated after every spoken line), not a fixed guess */
+    return { leadIn: 0, speechDur: Math.max(0.5, words * this._spw) };
   }
 
   /* rewind for a fresh take */
@@ -476,6 +556,13 @@ export class SpideyVoice {
     this.lastEndedAt = 0;  // fresh take: the wall-clock end anchor resets
     this.lineStartedAt = 0;
     this.lineStartedCtx = 0; // and the audio-clock caption anchor
+    // live-mic take: fresh VAD + recognition anchors for line 1
+    this._voicedT = 0;
+    this._silT = 0;
+    this._lineDurT = 0;
+    this._lastLiveElapsed = 0;
+    this._recogWords = 0;
+    this._wordsAtLineStart = 0;
   }
 
   /** the whole script has been spoken and nothing is playing — the outro window */
@@ -608,6 +695,8 @@ export class SpideyVoice {
      the "it already knows the script" sync. */
   update(dt, jaw, recording) {
     if (!this.ready) return;
+    /* LIVE MIC MODE — your voice is the audio AND the clock; jaw is ignored */
+    if (this.micMode) { this._updateLiveMic(dt, recording); return; }
     // live output level for meters / music ducking
     this.analyser.getByteTimeDomainData(this._levelBuf);
     let s = 0;
@@ -647,6 +736,230 @@ export class SpideyVoice {
     }
   }
 
+  /* ---- LIVE MIC MODE — record your real voice WITH the camera, live ----
+     mic (browser noiseSuppression + echoCancellation + voiceIsolation)
+       -> repair EQ (rumble cut, body shelf, boxiness cut, harshness cut, trim)
+       -> the existing broadcast chain (presence, clarity, de-ess, two-stage
+          compression, makeup, limiter)
+       -> the recorder's MediaStreamDestination.
+     Every stage of "extreme enhancement" runs in real time DURING the take. */
+  async enableLiveMic(scriptText) {
+    if (!this.ready) return { ok: false, message: 'audio engine offline' };
+    const parts = splitScriptRows(scriptText || '');
+    if (!parts.length) return { ok: false, message: 'paste or pick a script first' };
+    const bindScript = () => {
+      this.stopPlayback();
+      this.lines = parts.map((p) => ({ text: p.text, row: p.row, buffer: null, ok: true }));
+      this.idx = 0; this.currentLine = -1;
+      this.synthState = 'live';
+    };
+    if (this.micMode && this.micStream) { bindScript(); return { ok: true, message: `live mic armed — ${parts.length} lines` }; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return { ok: false, message: 'this browser cannot capture a microphone' };
+    }
+    let stream;
+    try {
+      /* the OS-level cleanup does what no WebAudio graph can: noiseSuppression
+         kills fans/room hiss at the source, echoCancellation stops speaker
+         bleed, voiceIsolation (where supported) is a full ML voice extractor.
+         AGC stays OFF — the chain's own leveller/comp owns the dynamics. */
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: false },
+          voiceIsolation: { ideal: true },
+          channelCount: { ideal: 1 },
+          sampleRate: { ideal: 48000 },
+        },
+      });
+    } catch (err) {
+      const message = err && err.name === 'NotAllowedError'
+        ? 'mic permission blocked — allow it in the browser, then try again'
+        : `mic failed: ${err && err.message ? err.message : 'unknown error'}`;
+      return { ok: false, message };
+    }
+    const ctx = this.ctx;
+    this.micStream = stream;
+    const src = ctx.createMediaStreamSource(stream);
+    /* earbud/laptop-mic repair BEFORE the broadcast chain: these capsules are
+       thin, boxy and harsh — fix the tone first so the compressors downstream
+       are working with a voice, not a problem */
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 82; hp.Q.value = 0.71;
+    const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 175; body.gain.value = 3;
+    const box = ctx.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 300; box.Q.value = 1.1; box.gain.value = -2;
+    const harsh = ctx.createBiquadFilter(); harsh.type = 'peaking'; harsh.frequency.value = 4200; harsh.Q.value = 1.4; harsh.gain.value = -2.5;
+    const trim = ctx.createGain(); trim.gain.value = 1.9; // make-up into the chain (~+5.6 dB)
+    src.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh); harsh.connect(trim);
+    trim.connect(this.voiceIn); // -> presence/clarity/de-ess/leveller/comp/limiter -> recorder
+    /* dedicated VAD analyser on the repaired-but-uncompressed signal: the
+       broadcast chain's compression would flatten the on/off contrast the
+       voice detector needs */
+    this.micAnalyser = ctx.createAnalyser();
+    this.micAnalyser.fftSize = 512;
+    this.micAnalyser.smoothingTimeConstant = 0;
+    trim.connect(this.micAnalyser);
+    this._micBuf = new Uint8Array(this.micAnalyser.fftSize);
+    this._micNodes = [src, hp, body, box, harsh, trim];
+    this.micMode = true;
+    this.uploaded = false;
+    this._noiseFloor = 0.01;
+    this._spw = 0.36;
+    bindScript();
+    if (this.onStatus) this.onStatus({ level: 'ok', message: 'live mic + enhancer online' });
+    return { ok: true, message: `live mic on — speak each line during the take (${parts.length} lines)` };
+  }
+
+  disableLiveMic() {
+    this._stopRecognition();
+    if (this.micStream) {
+      try { this.micStream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+      this.micStream = null;
+    }
+    if (this._micNodes) {
+      this._micNodes.forEach((n) => { try { n.disconnect(); } catch (_) {} });
+      this._micNodes = null;
+    }
+    this.micAnalyser = null;
+    if (this.micMode) {
+      this.micMode = false;
+      this.playing = false; this.currentLine = -1;
+      // whatever buffers survive decide the state; otherwise back to empty
+      this.synthState = this.lines.some((l) => l.buffer) ? 'ready' : 'empty';
+    }
+  }
+
+  /* live word counter — webkitSpeechRecognition where available. It listens to
+     the same mic in parallel and reports the words you have ACTUALLY said;
+     the karaoke highlight is slaved to that count. Unsupported browsers fall
+     back to the adaptive-pace clock automatically. */
+  _startRecognition() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    this._recogWords = 0;
+    this._wordsAtLineStart = 0;
+    if (!SR) { this._recogOn = false; return; }
+    try {
+      const r = new SR();
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = 'en-US';
+      r.onresult = (e) => {
+        let words = 0;
+        for (let i = 0; i < e.results.length; i++) {
+          const alt = e.results[i][0];
+          if (alt && alt.transcript) words += alt.transcript.trim().split(/\s+/).filter(Boolean).length;
+        }
+        // monotonic: interim retractions must never rewind the caption
+        if (words > this._recogWords) this._recogWords = words;
+      };
+      r.onerror = () => {};
+      r.onend = () => { if (this._recogOn) { try { r.start(); } catch (_) { this._recogOn = false; } } };
+      r.start();
+      this._recog = r;
+      this._recogOn = true;
+    } catch (_) { this._recogOn = false; }
+  }
+
+  _stopRecognition() {
+    this._recogOn = false;
+    if (this._recog) {
+      try { this._recog.onend = null; this._recog.stop(); } catch (_) {}
+      this._recog = null;
+    }
+  }
+
+  _startLiveLine() {
+    const i = this.idx;
+    this.playing = true;
+    this.currentLine = i;
+    this.idx = i + 1;
+    this._quietT = 0;
+    this._silT = 0;
+    this._lineDurT = this._voicedT;
+    this._lastLiveElapsed = 0;
+    /* back-date both anchors by the onset detector's confirmation window, so
+       the caption clock starts at the true first voiced instant */
+    this.lineStartedAt = performance.now() - this._voicedT * 1000;
+    this.lineStartedCtx = this.ctx.currentTime - this._voicedT;
+    this._wordsAtLineStart = this._recogWords;
+    this._voicedT = 0;
+  }
+
+  _endLiveLine(sil) {
+    const l = this.lines[this.currentLine];
+    if (l) {
+      /* learn YOUR pace: real voiced seconds / words in the line, folded into
+         an EMA so the next line's caption paces at how you actually read */
+      const words = l.text.split(/\s+/).filter(Boolean).length || 1;
+      const spw = Math.max(0.3, this._lineDurT) / words;
+      if (spw > 0.12 && spw < 1.2) this._spw = this._spw * 0.6 + spw * 0.4;
+    }
+    this.playing = false;
+    this.currentLine = -1;
+    this._cooldown = 0.15;
+    this._quietT = 0.2;
+    this._voicedT = 0;
+    this._sinceEnd = 0;
+    // the line really ended when the silence STARTED, not when we confirmed it
+    this.lastEndedAt = performance.now() - (sil || 0) * 1000;
+  }
+
+  _updateLiveMic(dt, recording) {
+    // mic RMS from the repaired signal
+    let rms = 0;
+    if (this.micAnalyser) {
+      this.micAnalyser.getByteTimeDomainData(this._micBuf);
+      let s = 0;
+      for (let i = 0; i < this._micBuf.length; i += 2) { const v = (this._micBuf[i] - 128) / 128; s += v * v; }
+      rms = Math.min(1, Math.sqrt(s / (this._micBuf.length / 2)) * 4);
+    }
+    /* adaptive noise floor: drops fast toward silence, climbs very slowly, so
+       speech can never teach the detector that talking is "background" */
+    if (rms < this._noiseFloor) this._noiseFloor += (rms - this._noiseFloor) * Math.min(1, dt * 5);
+    else this._noiseFloor += (rms - this._noiseFloor) * Math.min(1, dt * 0.04);
+    this._noiseFloor = Math.min(this._noiseFloor, 0.25);
+    const voiced = rms > Math.max(0.02, this._noiseFloor * 3 + 0.012);
+    this.level = { rms, gateOpen: voiced };
+
+    // the recognizer rides the take: on when rolling, off when cut
+    if (recording && !this._recogOn && !this._recogStartedForTake) {
+      this._recogStartedForTake = true;
+      this._startRecognition();
+    }
+    if (!recording && (this._recogOn || this._recogStartedForTake)) {
+      this._recogStartedForTake = false;
+      this._stopRecognition();
+    }
+
+    if (!recording) {
+      if (this.playing) this._endLiveLine(0);
+      this._quietT = 1; this._voicedT = 0; this._sinceEnd = 0;
+      return;
+    }
+    this._sinceEnd += dt;
+    if (this.playing) {
+      if (voiced) { this._silT = 0; this._lineDurT += dt; }
+      else {
+        this._silT += dt;
+        /* a clear pause (0.55s) closes the line — long enough that breaths and
+           commas inside a sentence never split it, short enough that the next
+           line arms before you resume */
+        if (this._silT >= 0.55) this._endLiveLine(this._silT);
+      }
+      return;
+    }
+    if (this._cooldown > 0) {
+      this._cooldown = Math.max(0, this._cooldown - dt);
+      if (!voiced) this._quietT += dt;
+      return;
+    }
+    if (this.idx >= this.lines.length) return;
+    if (voiced) this._voicedT += dt; else { this._voicedT = 0; this._quietT += dt; }
+    /* onset: ~70ms of sustained voice fires the next line; the anchors are
+       back-dated by that confirmation window so nothing is ever late */
+    if (this._voicedT >= 0.07) this._startLiveLine();
+  }
+
   stopPlayback() {
     if (this._src) { try { this._src.onended = null; this._src.stop(); } catch (_) {} }
     this._src = null;
@@ -682,6 +995,7 @@ export class SpideyVoice {
   async resume() { if (this.ctx && this.ctx.state !== 'running') await this.ctx.resume(); }
 
   dispose() {
+    this.disableLiveMic();
     this.stopPlayback();
     try { if (this.ctx) this.ctx.close(); } catch (_) {}
     this.ready = false;

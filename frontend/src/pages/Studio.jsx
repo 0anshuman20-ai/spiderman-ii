@@ -306,8 +306,9 @@ export default function Studio() {
         setVoiceUi((prev) => (
           prev.synthState === v.synthState && prev.lines === v.lines
             && prev.currentLine === v.currentLine && prev.nextLine === v.idx
+            && prev.micLive === !!v.micMode
             ? prev
-            : { synthState: v.synthState, lines: v.lines, currentLine: v.currentLine, nextLine: v.idx }
+            : { synthState: v.synthState, lines: v.lines, currentLine: v.currentLine, nextLine: v.idx, micLive: !!v.micMode }
         ));
       }
       if (recorderRef.current.recording) {
