@@ -374,7 +374,7 @@ export default function Studio() {
     beatRef.current = 0; setBeatIdx(0);
     recStartRef.current = performance.now();
     perfRecRef.current.start({
-      name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'veyl-freestyle',
+      name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'spacespidey-freestyle',
       world: stage.worldKey,
     });
     /* FIRST-FRAME HOOK — the opening frame IS the thumbnail. Never a fade-in:
@@ -477,7 +477,7 @@ export default function Studio() {
       stage.setCaption(null);
       if (take) {
         const script = scriptRef.current;
-        const name = script ? `transmission-${String(script.number).padStart(2, '0')}-take` : 'veyl-freestyle-take';
+        const name = script ? `transmission-${String(script.number).padStart(2, '0')}-take` : 'spacespidey-freestyle-take';
         const entry = { ...take, id: `${Date.now()}`, name: `${name}-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}` };
         setTakes((p) => [entry, ...p]);
            // the take as DATA: a `.veyl` rig timeline into the Vault for the Omega Room

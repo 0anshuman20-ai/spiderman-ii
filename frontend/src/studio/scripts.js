@@ -84,7 +84,7 @@ const B = (t, text, emote = 'neutral', fx = 'none', note = '') => ({ t, text, em
 export const TRANSMISSIONS = [
   // ============ PILLAR: TRANSMISSION (1-10) ============
   {
-    id: 1, number: 1, pillar: 'transmission', title: 'Your Voice Is Four Years Late', world: 'nebula-drift', durationSec: 28, mood: 'hero',
+    id: 6, number: 6, pillar: 'transmission', title: 'Your Voice Is Four Years Late', world: 'nebula-drift', durationSec: 28, mood: 'hero',
     firstFrame: 'THIS IS 4 YEARS OLD',
     hook: 'You are hearing a voice that is four years late.',
     beats: [
@@ -104,7 +104,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The old script opened by introducing a character. This one opens by making the viewer part of the physics — they are already inside the delay. The loop line makes replaying the video the punchline of the joke.',
   },
   {
-    id: 2, number: 2, pillar: 'transmission', title: 'A Black Hole Has Been Humming For 2.5 Billion Years', world: 'dying-star', durationSec: 29, mood: 'somber',
+    id: 7, number: 7, pillar: 'transmission', title: 'A Black Hole Has Been Humming For 2.5 Billion Years', world: 'dying-star', durationSec: 29, mood: 'somber',
     firstFrame: 'IT NEVER STOPS',
     hook: 'Something out here has been screaming one note since before Earth had life.',
     beats: [
@@ -124,7 +124,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Replaces the abstract word "hum" with "screaming", puts a timescale the viewer can compare to their own species in beat one, and ends on a present-tense fact that is still happening during the rewatch.',
   },
   {
-    id: 3, number: 3, pillar: 'transmission', title: 'You Have Never Seen The Sky', world: 'asteroid-earth', durationSec: 27, mood: 'somber',
+    id: 8, number: 8, pillar: 'transmission', title: 'You Have Never Seen The Sky', world: 'asteroid-earth', durationSec: 27, mood: 'somber',
     firstFrame: 'THIS SKY IS FAKE',
     hook: 'You have never once seen the real night sky.',
     beats: [
@@ -144,7 +144,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The claim is an accusation, not a fact, so the viewer stays to disprove it. "Watching ghosts" is the quotable line and the caption, and the loop line assigns homework that ends in a rewatch.',
   },
   {
-    id: 4, number: 4, pillar: 'transmission', title: 'Your Sun Is Invisible From Here', world: 'nebula-drift', durationSec: 27, mood: 'somber',
+    id: 9, number: 9, pillar: 'transmission', title: 'Your Sun Is Invisible From Here', world: 'nebula-drift', durationSec: 27, mood: 'somber',
     firstFrame: 'I CANNOT FIND YOUR SUN',
     hook: 'I looked for your sun tonight. I could not find it.',
     beats: [
@@ -164,7 +164,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The turn at 22 seconds flips a depressing fact into a survival instinct, which is what makes it shareable rather than just sad. The pinned comment is a two-option vote, the fastest kind of comment to leave.',
   },
   {
-    id: 5, number: 5, pillar: 'transmission', title: 'One Hour Here Costs Seven Years There', world: 'dying-star', durationSec: 30, mood: 'urgent',
+    id: 10, number: 10, pillar: 'transmission', title: 'One Hour Here Costs Seven Years There', world: 'dying-star', durationSec: 30, mood: 'urgent',
     firstFrame: '1 HOUR = 7 YEARS',
     hook: 'One hour where I am standing costs you seven years.',
     beats: [
@@ -184,7 +184,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The GPS beat is the credibility spike — it converts a movie idea into something in the viewer\'s pocket, which is what stops the "this is fake" comments that kill a video\'s like ratio.',
   },
   {
-    id: 6, number: 6, pillar: 'transmission', title: 'Space Is Touching You Right Now', world: 'nebula-drift', durationSec: 28, mood: 'urgent',
+    id: 11, number: 11, pillar: 'transmission', title: 'Space Is Touching You Right Now', world: 'nebula-drift', durationSec: 28, mood: 'urgent',
     firstFrame: 'IT IS TOUCHING YOU',
     hook: 'Something from the sun is touching you right now.',
     beats: [
@@ -204,7 +204,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Proximity beats scale. "It is touching you" outperforms every version of "space is huge", and the aurora beat gives the fact a receipt the viewer has already seen photos of.',
   },
   {
-    id: 7, number: 7, pillar: 'transmission', title: 'Sunsets Are Blue On Mars', world: 'red-planet', durationSec: 26, mood: 'somber',
+    id: 12, number: 12, pillar: 'transmission', title: 'Sunsets Are Blue On Mars', world: 'red-planet', durationSec: 26, mood: 'somber',
     firstFrame: 'BLUE SUNSET',
     hook: 'I watched a sunset today. It was blue.',
     beats: [
@@ -224,7 +224,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The shortest script in the pillar and the most rewatched kind: pure visual payoff with a symmetry the brain enjoys completing. The dare in the pinned comment supplies the conflict the fact itself lacks.',
   },
   {
-    id: 8, number: 8, pillar: 'transmission', title: 'A Spoon Of This Weighs More Than A Mountain', world: 'dying-star', durationSec: 29, mood: 'urgent',
+    id: 13, number: 13, pillar: 'transmission', title: 'A Spoon Of This Weighs More Than A Mountain', world: 'dying-star', durationSec: 29, mood: 'urgent',
     firstFrame: 'ONE SPOON',
     hook: 'One spoon of this would weigh more than a mountain.',
     beats: [
@@ -244,7 +244,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Swaps "four billion tons" for "every human alive" — a number nobody feels, replaced by a picture everybody sees. The spin beat is the second climax, which stops the drop-off that usually follows the main reveal.',
   },
   {
-    id: 9, number: 9, pillar: 'transmission', title: 'Space Has A Smell', world: 'derelict-station', durationSec: 28, mood: 'hero',
+    id: 14, number: 14, pillar: 'transmission', title: 'Space Has A Smell', world: 'derelict-station', durationSec: 28, mood: 'hero',
     firstFrame: 'IT SMELLS LIKE THIS',
     hook: 'Space has a smell, and every astronaut describes it the same way.',
     beats: [
@@ -264,7 +264,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Smell is the least-used sense in space content, so the premise itself is the pattern interrupt. The loop line converts a science fact into a horror cliffhanger at zero cost.',
   },
   {
-    id: 10, number: 10, pillar: 'transmission', title: 'The Machine That Outlives Everyone', world: 'asteroid-earth', durationSec: 30, mood: 'somber',
+    id: 15, number: 15, pillar: 'transmission', title: 'The Machine That Outlives Everyone', world: 'asteroid-earth', durationSec: 30, mood: 'somber',
     firstFrame: 'IT NEVER CAME BACK',
     hook: 'Something you built will outlive your entire species.',
     beats: [
@@ -286,7 +286,7 @@ export const TRANSMISSIONS = [
 
   // ============ PILLAR: MYSTERY (11-18) ============
   {
-    id: 11, number: 11, pillar: 'mystery', title: 'Two Hundred Billion Stars. Nobody Home.', world: 'nebula-drift', durationSec: 30, mood: 'somber',
+    id: 16, number: 16, pillar: 'mystery', title: 'Two Hundred Billion Stars. Nobody Home.', world: 'nebula-drift', durationSec: 30, mood: 'somber',
     firstFrame: 'NOBODY IS HOME',
     hook: 'Two hundred billion stars in this galaxy. Nobody is home.',
     beats: [
@@ -306,7 +306,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The three-option beat is engineered comment bait — it hands the viewer a ready-made one-word reply, which is the cheapest possible comment to leave and the fastest signal to trigger.',
   },
   {
-    id: 12, number: 12, pillar: 'mystery', title: 'The Test Almost Nobody Survives', world: 'asteroid-earth', durationSec: 30, mood: 'urgent',
+    id: 17, number: 17, pillar: 'mystery', title: 'The Test Almost Nobody Survives', world: 'asteroid-earth', durationSec: 30, mood: 'urgent',
     firstFrame: 'BEHIND US OR AHEAD?',
     hook: 'There is one test every civilisation takes. Almost nobody passes.',
     beats: [
@@ -326,7 +326,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Frames an abstraction as a personal verdict on the viewer\'s own species, then withholds the answer. Withholding is what earns the follow — the payoff is promised to a future transmission, not to this video.',
   },
   {
-    id: 13, number: 13, pillar: 'mystery', title: 'The Universe Has No Edge. It Has A Deadline.', world: 'nebula-drift', durationSec: 29, mood: 'somber',
+    id: 18, number: 18, pillar: 'mystery', title: 'The Universe Has No Edge. It Has A Deadline.', world: 'nebula-drift', durationSec: 29, mood: 'somber',
     firstFrame: 'THERE IS NO EDGE',
     hook: 'I flew toward the edge of the universe. There is no edge.',
     beats: [
@@ -346,7 +346,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The reframe in the final beat ("a deadline") gives an old topic a new sentence, which is what makes it re-postable. The loop line makes the loss happen during the video, so the rewatch feels urgent instead of optional.',
   },
   {
-    id: 14, number: 14, pillar: 'mystery', title: 'The Universe Could End Mid-Sentence', world: 'dying-star', durationSec: 29, mood: 'urgent',
+    id: 19, number: 19, pillar: 'mystery', title: 'The Universe Could End Mid-Sentence', world: 'dying-star', durationSec: 29, mood: 'urgent',
     firstFrame: 'NO WARNING',
     hook: 'The universe could end before I finish this sentence.',
     beats: [
@@ -366,7 +366,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The title promise is structural: the video must finish for the joke to land, which is a retention mechanism written into the premise. The pinned question is emotional rather than factual, and emotional prompts get far longer comments.',
   },
   {
-    id: 15, number: 15, pillar: 'mystery', title: 'Most Of Everything Is Invisible', world: 'nebula-drift', durationSec: 29, mood: 'hero',
+    id: 20, number: 20, pillar: 'mystery', title: 'Most Of Everything Is Invisible', world: 'nebula-drift', durationSec: 29, mood: 'hero',
     firstFrame: '85% MISSING',
     hook: 'Most of the universe is missing, and it is passing through you.',
     beats: [
@@ -386,7 +386,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Puts the phenomenon inside the viewer\'s body by beat four — invasion is more compelling than scale. The flattering final beat ("you are the rare kind") is what converts an unsettling fact into a like.',
   },
   {
-    id: 16, number: 16, pillar: 'mystery', title: 'You Freeze Forever And Fall In Seconds', world: 'dying-star', durationSec: 30, mood: 'urgent',
+    id: 21, number: 21, pillar: 'mystery', title: 'You Freeze Forever And Fall In Seconds', world: 'dying-star', durationSec: 30, mood: 'urgent',
     firstFrame: 'BOTH ARE TRUE',
     hook: 'Nobody has ever seen anything fall into a black hole. Ever.',
     beats: [
@@ -406,7 +406,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'A genuine paradox invites argument, and argument is comment volume. The pinned comment forces a choice between two vivid deaths, which is the highest-response prompt format on this channel.',
   },
   {
-    id: 17, number: 17, pillar: 'mystery', title: 'Something Out Here Keeps Perfect Time', world: 'derelict-station', durationSec: 29, mood: 'urgent',
+    id: 22, number: 22, pillar: 'mystery', title: 'Something Out Here Keeps Perfect Time', world: 'derelict-station', durationSec: 29, mood: 'urgent',
     firstFrame: 'EVERY 16 DAYS',
     hook: 'Something out here sends the same signal every sixteen days.',
     beats: [
@@ -426,7 +426,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The "day fifteen" loop line manufactures a reason to return tomorrow, which is the only line in this pillar that builds a habit instead of a view. Keeping the catalog number out of the audio protects the share.',
   },
   {
-    id: 18, number: 18, pillar: 'mystery', title: 'The Star That Kept Switching Off', world: 'nebula-drift', durationSec: 29, mood: 'hero',
+    id: 23, number: 23, pillar: 'mystery', title: 'The Star That Kept Switching Off', world: 'nebula-drift', durationSec: 29, mood: 'hero',
     firstFrame: 'IT KEPT GOING DARK',
     hook: 'A star kept switching itself off, and no planet can do that.',
     beats: [
@@ -448,7 +448,7 @@ export const TRANSMISSIONS = [
 
   // ============ PILLAR: ANSWERS (19-23) ============
   {
-    id: 19, number: 19, pillar: 'answers', title: 'You Asked If I Am Human', world: 'derelict-station', durationSec: 28, mood: 'somber',
+    id: 24, number: 24, pillar: 'answers', title: 'You Asked If I Am Human', world: 'derelict-station', durationSec: 28, mood: 'somber',
     firstFrame: 'AM I HUMAN?',
     hook: 'You asked if there is still a human under this mask.',
     beats: [
@@ -468,7 +468,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Answer videos are the cheapest loyalty machine on the channel: the viewer sees their own question become content. The forgotten name is a deliberate gap the audience gets to fill, which is how a comment section becomes a co-author.',
   },
   {
-    id: 20, number: 20, pillar: 'answers', title: 'What I Eat Out Here', world: 'red-planet', durationSec: 26, mood: 'hero',
+    id: 25, number: 25, pillar: 'answers', title: 'What I Eat Out Here', world: 'red-planet', durationSec: 26, mood: 'hero',
     firstFrame: 'YOU ASKED. BAD IDEA.',
     hook: 'You asked what I eat out here. You will regret it.',
     beats: [
@@ -488,7 +488,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Comedy is the release valve in a channel built on dread — it widens the audience and keeps the feed from typecasting the account as horror only. The pinned question asks for a food, which is the single easiest comment anyone can leave.',
   },
   {
-    id: 21, number: 21, pillar: 'answers', title: 'Can You Actually See Earth From There?', world: 'asteroid-earth', durationSec: 27, mood: 'somber',
+    id: 26, number: 26, pillar: 'answers', title: 'Can You Actually See Earth From There?', world: 'asteroid-earth', durationSec: 27, mood: 'somber',
     firstFrame: 'THAT DOT IS YOU',
     hook: 'You asked if I can see Earth from here. That dot. Right there.',
     beats: [
@@ -508,7 +508,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The borders beat is the political-emotional spike that makes this the most shareable script in the pillar. Promising to pin the best reply next week converts commenters into returning viewers.',
   },
   {
-    id: 22, number: 22, pillar: 'answers', title: 'Why I Cannot Come Home', world: 'nebula-drift', durationSec: 28, mood: 'urgent',
+    id: 27, number: 27, pillar: 'answers', title: 'Why I Cannot Come Home', world: 'nebula-drift', durationSec: 28, mood: 'urgent',
     firstFrame: 'STOP ASKING ME',
     hook: 'You keep asking why I do not just come home. Fine.',
     beats: [
@@ -528,7 +528,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'A refusal is more interesting than an explanation. The line "I stay lost so you stay found" is written to be screenshotted, which is how lore episodes recruit viewers who never watch the science ones.',
   },
   {
-    id: 23, number: 23, pillar: 'answers', title: 'The Scariest Thing I Have Found', world: 'dying-star', durationSec: 29, mood: 'urgent',
+    id: 28, number: 28, pillar: 'answers', title: 'The Scariest Thing I Have Found', world: 'dying-star', durationSec: 29, mood: 'urgent',
     firstFrame: 'IT WAS CLEAN',
     hook: 'The scariest thing I have found out here was not a black hole.',
     beats: [
@@ -550,7 +550,7 @@ export const TRANSMISSIONS = [
 
   // ============ PILLAR: LORE (24-27) ============
   {
-    id: 24, number: 24, pillar: 'lore', title: 'Thirty-Nine Suits Went Dark', world: 'derelict-station', durationSec: 30, mood: 'somber',
+    id: 29, number: 29, pillar: 'lore', title: 'Thirty-Nine Suits Went Dark', world: 'derelict-station', durationSec: 30, mood: 'somber',
     firstFrame: 'MINE STAYED AWAKE',
     hook: 'Forty of us launched. Thirty-nine suits went dark on the pad.',
     beats: [
@@ -570,7 +570,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Opens on the number, not the backstory — the mystery is the hook and the exposition arrives after the viewer is committed. "Count them" gives obsessive viewers a job, and jobs produce long comments.',
   },
   {
-    id: 25, number: 25, pillar: 'lore', title: 'What The Red Threads Actually Are', world: 'nebula-drift', durationSec: 29, mood: 'hero',
+    id: 30, number: 30, pillar: 'lore', title: 'What The Red Threads Actually Are', world: 'nebula-drift', durationSec: 29, mood: 'hero',
     firstFrame: 'NOT DECORATION',
     hook: 'You keep asking about the red threads. Listen once.',
     beats: [
@@ -590,7 +590,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Welds the character to a real, searchable phenomenon — viewers who go and confirm the cosmic web come back trusting the channel. "What walks on a web" is the spider question the whole brand is built on.',
   },
   {
-    id: 26, number: 26, pillar: 'lore', title: 'The Thing That Follows Me', world: 'dying-star', durationSec: 30, mood: 'urgent',
+    id: 31, number: 31, pillar: 'lore', title: 'The Thing That Follows Me', world: 'dying-star', durationSec: 30, mood: 'urgent',
     firstFrame: 'IT IS CLOSER TONIGHT',
     hook: 'It is closer tonight, so I will say this fast.',
     beats: [
@@ -610,7 +610,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The retroactive reveal ("I left out one detail") rewards anyone who saw the earlier transmission and sends new viewers hunting for it, which is the only mechanic that turns Shorts views into channel views.',
   },
   {
-    id: 27, number: 27, pillar: 'lore', title: 'Suit Thirty-One Is Still Out There', world: 'derelict-station', durationSec: 30, mood: 'urgent',
+    id: 32, number: 32, pillar: 'lore', title: 'Suit Thirty-One Is Still Out There', world: 'derelict-station', durationSec: 30, mood: 'urgent',
     firstFrame: 'I AM NOT THE ONLY ONE',
     hook: 'I was not the only survivor. Someone wrote a number in the dust.',
     beats: [
@@ -632,7 +632,7 @@ export const TRANSMISSIONS = [
 
   // ============ PILLAR: TREND (28-30) ============
   {
-    id: 28, number: 28, pillar: 'trend', title: 'POV: Your Last Thirty Seconds Of Signal', world: 'red-planet', durationSec: 28, mood: 'somber',
+    id: 33, number: 33, pillar: 'trend', title: 'POV: Your Last Thirty Seconds Of Signal', world: 'red-planet', durationSec: 28, mood: 'somber',
     firstFrame: '30 SECONDS LEFT',
     hook: 'You get one last message to Earth. Thirty seconds. Go.',
     beats: [
@@ -651,7 +651,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'The comment section becomes the content, and "I will read the best one on air" is a genuine reward rather than an ask. The mundane detail (a cat, a window) is what makes people cry, and crying is what makes people share.',
   },
   {
-    id: 29, number: 29, pillar: 'trend', title: 'Space Facts That Feel Illegal', world: 'nebula-drift', durationSec: 28, mood: 'hero',
+    id: 34, number: 34, pillar: 'trend', title: 'Space Facts That Feel Illegal', world: 'nebula-drift', durationSec: 28, mood: 'hero',
     firstFrame: 'NUMBER FOUR IS WORSE',
     hook: 'Four things about your body in space that feel illegal.',
     beats: [
@@ -671,7 +671,7 @@ export const TRANSMISSIONS = [
     whyItWorks: 'Numbered lists are the highest-retention Shorts format because each number is a promise of an end, and the withheld fifth item is an unresolved loop that both drives comments and justifies the rewatch.',
   },
   {
-    id: 30, number: 30, pillar: 'trend', title: 'Rating Your Planets', world: 'asteroid-earth', durationSec: 30, mood: 'hero',
+    id: 35, number: 35, pillar: 'trend', title: 'Rating Your Planets', world: 'asteroid-earth', durationSec: 30, mood: 'hero',
     firstFrame: 'RATING YOUR PLANETS',
     hook: 'I flew through your solar system. Rating the planets. Honestly.',
     beats: [
@@ -704,7 +704,7 @@ export const TRANSMISSIONS = [
    Re-shoot in this order, one every 48 hours, same hour each time. */
 export const LAUNCH_SEQUENCE = [
   {
-    id: 31, number: 31, pillar: 'launch', publishOrder: 1, best: true, status: 'reshoot',
+    id: 1, number: 1, pillar: 'launch', publishOrder: 1, best: true, status: 'reshoot',
     title: 'LAUNCH 1 · The Sun Could Already Be Dead', world: 'asteroid-earth', durationSec: 27, mood: 'urgent',
     firstFrame: 'IT MIGHT BE GONE',
     hook: 'The sun could be dead right now. You would not know.',
@@ -726,7 +726,7 @@ export const LAUNCH_SEQUENCE = [
     whyItWorks: 'Zero prior knowledge required, personal stakes in the first sentence, and a closing line that physically sends the viewer to a window and back to the replay. This stays upload one.',
   },
   {
-    id: 32, number: 32, pillar: 'launch', publishOrder: 2, status: 'reshoot',
+    id: 2, number: 2, pillar: 'launch', publishOrder: 2, status: 'reshoot',
     title: 'LAUNCH 2 · You Are Faster Than A Bullet', world: 'nebula-drift', durationSec: 26, mood: 'urgent',
     firstFrame: 'YOU ARE NOT STILL',
     hook: 'You are moving faster than a bullet. Right now.',
@@ -748,7 +748,7 @@ export const LAUNCH_SEQUENCE = [
     whyItWorks: 'One relatable anchor replaces three unfeelable numbers, the final beat makes the fact happen to the viewer during the video, and the loop line turns a rewatch into a physical event.',
   },
   {
-    id: 33, number: 33, pillar: 'launch', publishOrder: 3, status: 'reshoot',
+    id: 3, number: 3, pillar: 'launch', publishOrder: 3, status: 'reshoot',
     title: 'LAUNCH 3 · The Prettiest Planet Rains Glass', world: 'derelict-station', durationSec: 28, mood: 'urgent',
     firstFrame: 'IT RAINS SIDEWAYS',
     hook: 'The prettiest planet in space wants you dead.',
@@ -770,7 +770,7 @@ export const LAUNCH_SEQUENCE = [
     whyItWorks: 'Beauty-to-horror inversion in six words a child understands, no unpronounceable names in the audio, and a closing dare that sends the viewer back to the opening shot.',
   },
   {
-    id: 34, number: 34, pillar: 'launch', publishOrder: 4, status: 'reshoot',
+    id: 4, number: 4, pillar: 'launch', publishOrder: 4, status: 'reshoot',
     title: 'LAUNCH 4 · Something Called Earth. Once.', world: 'derelict-station', durationSec: 29, mood: 'urgent',
     firstFrame: '72 SECONDS. ONCE.',
     hook: 'Earth got one phone call from space. It lasted seventy-two seconds.',
@@ -792,7 +792,7 @@ export const LAUNCH_SEQUENCE = [
     whyItWorks: 'The phone-call metaphor is instantly human with zero jargon, every beat is under twelve words, and the final beat plus loop line turn a true event into a serialized cliffhanger. This is the subscriber converter.',
   },
   {
-    id: 35, number: 35, pillar: 'launch', publishOrder: 5, status: 'reshoot',
+    id: 5, number: 5, pillar: 'launch', publishOrder: 5, status: 'reshoot',
     title: 'LAUNCH 5 · Ten Thousand Galaxies Are Missing', world: 'nebula-drift', durationSec: 28, mood: 'somber',
     firstFrame: '10,000 vs 60',
     hook: 'Ten thousand galaxies should be here. We found sixty.',
@@ -815,8 +815,34 @@ export const LAUNCH_SEQUENCE = [
   },
 ];
 
-/* the launch sequence leads the log — re-record these five first, in order */
+/* The five already-published videos take numbers 1-5, so the log matches what
+   is actually live on the channel. The 30 unshot scripts are 6-35. */
 TRANSMISSIONS.unshift(...LAUNCH_SEQUENCE);
+
+/* THE COUNT, so it is never ambiguous again:
+     #1-5   — already published. Weak hooks. Marked `status: 'reshoot'`.
+     #6-35  — 30 new scripts, none shot yet. This is the real queue.
+     total  — 35 entries in the log.
+
+   Recommended publish order for the new 30. NOT numerical order: this is
+   sorted by how little the viewer needs to already know, because a cold
+   audience will not sit through setup. Every entry is a script `number`. */
+export const PUBLISH_ORDER = [
+  8,  14, 12, 13, 7,  11, 6,  9,  10, 15,   // no prior knowledge needed — lead with these
+  34, 35, 33, 24, 25, 16, 17, 20, 18, 19,   // trend + lore + the easier mysteries
+  21, 22, 23, 26, 27, 28, 29, 30, 31, 32,   // heavier physics and long-form lore, once viewers return
+];
+
+/* Why #8 ("You Have Never Seen The Sky") is the first thing you publish:
+     - needs zero prior knowledge. Everyone has looked up at night.
+     - its loop is physical — the closing line sends the viewer outside, and
+       going outside sends them back to the video. That is a real rewatch,
+       which is the single strongest Shorts signal available.
+     - the pinned comment answers in one word, so hour-one comment velocity
+       (which sets the reach ceiling) is as cheap as it can possibly be.
+     - "night sky" and "stars" are high-volume evergreen searches, so it keeps
+       earning long after the initial push dies. */
+export const FIRST_PUBLISH = 8;
 
 /* Channel identity. Handles checked for spellability (say it once, type it
    right), search collision, and merch/series headroom. */
