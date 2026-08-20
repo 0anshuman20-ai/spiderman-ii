@@ -1,6 +1,6 @@
-/* SPACESPIDEY shooting-script library.
-   Channel: SPACESPIDEY — transmissions from somewhere past your sky.
-   Character: SPACESPIDEY, the last survivor of a suit woven from the cosmic web.
+/* SpaceSpidey shooting-script library.
+   Channel: SpaceSpidey — transmissions from somewhere past your sky.
+   Character: SpaceSpidey, the last survivor of a suit woven from the cosmic web.
    35 scripts: 5 launch uploads + 30 across 5 content pillars.
 
    Every script in this file is built on the same retention physics (see
@@ -9,8 +9,8 @@
    teleprompted, voiced and captioned. */
 
 export const CHANNEL = {
-  name: 'SPACESPIDEY',
-  spoken: 'Spacespidey',
+  name: 'SpaceSpidey',
+  spoken: 'SpaceSpidey',
   tagline: 'Transmissions from somewhere past your sky.',
 };
 
@@ -38,8 +38,8 @@ export const PILLARS = {
   launch: { label: 'LAUNCH', color: '#FF2E63', description: 'The first five uploads. Retention-engineered, loop-first, upload kit included.', cadence: 'day 1-9, one every 48h' },
   transmission: { label: 'TRANSMISSION', color: '#00FFFF', description: 'A mind-blowing space fact, witnessed first-person from out there.', cadence: '3x per week' },
   mystery: { label: 'MYSTERY', color: '#FFB000', description: 'Unsolved cosmic questions told by someone living inside them.', cadence: '2x per week' },
-  answers: { label: 'ANSWERS', color: '#00FF41', description: 'SPACESPIDEY replies to Earth comments, always in character.', cadence: '1-2x per week' },
-  lore: { label: 'LORE DROP', color: '#FF1A1A', description: 'Who SPACESPIDEY is, and what spun the suit. Cliffhangers only.', cadence: '1 per 8-10 videos' },
+  answers: { label: 'ANSWERS', color: '#00FF41', description: 'SpaceSpidey replies to Earth comments, always in character.', cadence: '1-2x per week' },
+  lore: { label: 'LORE DROP', color: '#FF1A1A', description: 'Who SpaceSpidey is, and what spun the suit. Cliffhangers only.', cadence: '1 per 8-10 videos' },
   trend: { label: 'TREND HIJACK', color: '#B366FF', description: 'Trending formats performed from a nebula. Contrast stops the scroll.', cadence: 'when a trend fits' },
 };
 
@@ -98,7 +98,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'This Message Left Space Four Years Ago',
     description: 'Radio and light cross the nearest star in 4.24 years. Every word of this transmission is older than the moment you are watching it.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['space', 'light years', 'speed of light', 'proxima centauri', 'space facts', 'astronomy', 'science shorts', 'universe', 'shorts', 'spacespidey'],
-    caption: 'Every word of this is four years old. #space #spacefacts #shorts #spacespidey',
+    caption: 'Every word of this is four years old. #space #spacefacts #shorts #SpaceSpidey',
     pinnedComment: 'One sentence you would send four years into the dark. Go. I read every one.',
     factCheck: 'Proxima Centauri is ~4.24 light-years away; light and radio take 4.24 years to cross it.',
     whyItWorks: 'The old script opened by introducing a character. This one opens by making the viewer part of the physics — they are already inside the delay. The loop line makes replaying the video the punchline of the joke.',
@@ -118,7 +118,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'A Black Hole Has Held One Note For 2.5 Billion Years',
     description: 'The black hole in the Perseus cluster generates pressure waves in the surrounding gas — a real note, B-flat, roughly 57 octaves below middle C. It has been sounding for about 2.5 billion years.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['black hole', 'space sounds', 'perseus cluster', 'nasa', 'space facts', 'astronomy', 'science shorts', 'universe', 'shorts', 'spacespidey'],
-    caption: 'One note. 2.5 billion years. Still going. #blackhole #space #shorts #spacespidey',
+    caption: 'One note. 2.5 billion years. Still going. #blackhole #space #shorts #SpaceSpidey',
     pinnedComment: 'Would you listen to it for one hour if it were audible? Yes or no. No middle answers.',
     factCheck: 'Perseus cluster black hole drives pressure waves at B-flat, ~57 octaves below middle C (NASA Chandra, 2003).',
     whyItWorks: 'Replaces the abstract word "hum" with "screaming", puts a timescale the viewer can compare to their own species in beat one, and ends on a present-tense fact that is still happening during the rewatch.',
@@ -138,7 +138,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'You Have Never Seen The Real Night Sky',
     description: 'Starlight takes years to millennia to arrive, so the sky you see is always a record of the past — including stars that no longer exist.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['night sky', 'stars', 'light years', 'time travel', 'space facts', 'astronomy', 'science shorts', 'universe', 'shorts', 'spacespidey'],
-    caption: 'You are watching ghosts every single night. #space #stars #shorts #spacespidey',
+    caption: 'You are watching ghosts every single night. #space #stars #shorts #SpaceSpidey',
     pinnedComment: 'Does that make you feel small or lucky? Pick one word and post it.',
     factCheck: 'Lookback time: starlight takes years to millennia to arrive; some visible stars have already died.',
     whyItWorks: 'The claim is an accusation, not a fact, so the viewer stays to disprove it. "Watching ghosts" is the quotable line and the caption, and the loop line assigns homework that ends in a rewatch.',
@@ -158,7 +158,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'Your Sun Is Invisible From Deep Space',
     description: 'The Sun is an ordinary G-type star. Move far enough away and it disappears into the crowd entirely.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['the sun', 'milky way', 'stars', 'space facts', 'astronomy', 'science shorts', 'universe', 'shorts', 'spacespidey'],
-    caption: 'Your sun is a dust speck from out here. #sun #space #shorts #spacespidey',
+    caption: 'Your sun is a dust speck from out here. #sun #space #shorts #SpaceSpidey',
     pinnedComment: 'Camouflage or prison? One word. I am counting the votes.',
     factCheck: 'The Sun is a G-type main sequence star, invisible to the unaided eye beyond roughly 60 light-years.',
     whyItWorks: 'The turn at 22 seconds flips a depressing fact into a survival instinct, which is what makes it shareable rather than just sad. The pinned comment is a two-option vote, the fastest kind of comment to leave.',
@@ -178,7 +178,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'One Hour In Space Can Cost You Seven Years',
     description: 'Gravitational time dilation is measured, not hypothetical: GPS satellite clocks are corrected by about 38 microseconds a day or navigation drifts kilometres off.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['time dilation', 'relativity', 'black hole', 'interstellar', 'gps', 'space facts', 'physics', 'science shorts', 'universe', 'shorts'],
-    caption: 'Lunch out here costs you seven years. #timedilation #space #shorts #spacespidey',
+    caption: 'Lunch out here costs you seven years. #timedilation #space #shorts #SpaceSpidey',
     pinnedComment: 'One hour with me, seven years gone at home. Do you get in the ship? Yes or no.',
     factCheck: 'Gravitational and kinematic time dilation; GPS satellite clocks are corrected by ~38 microseconds/day.',
     whyItWorks: 'The GPS beat is the credibility spike — it converts a movie idea into something in the viewer\'s pocket, which is what stops the "this is fake" comments that kill a video\'s like ratio.',
@@ -238,7 +238,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'One Spoon Of This Star Outweighs A Mountain',
     description: 'Neutron star matter reaches around 10^17 kg per cubic metre. Millisecond pulsars spin over 700 times a second while holding that density.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['neutron star', 'pulsar', 'space facts', 'astronomy', 'physics', 'science shorts', 'universe', 'stars', 'shorts', 'spacespidey'],
-    caption: 'One spoon = the mass of humanity. #neutronstar #space #shorts #spacespidey',
+    caption: 'One spoon = the mass of humanity. #neutronstar #space #shorts #SpaceSpidey',
     pinnedComment: 'Heaviest thing you can picture? Post it. The universe beats it every time.',
     factCheck: 'Neutron star density ~10^17 kg/m^3; fastest known pulsars spin 700+ times per second.',
     whyItWorks: 'Swaps "four billion tons" for "every human alive" — a number nobody feels, replaced by a picture everybody sees. The spin beat is the second climax, which stops the drop-off that usually follows the main reveal.',
@@ -258,7 +258,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'Space Smells Like Burnt Metal. Here Is Why.',
     description: 'Astronauts consistently report a seared, metallic, gunpowder odour clinging to suits and airlocks after a spacewalk — atomic oxygen reacting with suit surfaces.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['astronaut', 'iss', 'space smell', 'spacewalk', 'space facts', 'nasa', 'science shorts', 'universe', 'shorts', 'spacespidey'],
-    caption: 'Astronauts all say space smells the same. #astronaut #space #shorts #spacespidey',
+    caption: 'Astronauts all say space smells the same. #astronaut #space #shorts #SpaceSpidey',
     pinnedComment: 'What do you think a dead star smells like? I will tell you who got closest.',
     factCheck: 'Astronauts report a burnt/metallic odour on suits after EVAs, attributed to atomic oxygen reactions.',
     whyItWorks: 'Smell is the least-used sense in space content, so the premise itself is the pattern interrupt. The loop line converts a science fact into a horror cliffhanger at zero cost.',
@@ -380,7 +380,7 @@ export const TRANSMISSIONS = [
     videoTitle: '85% Of The Universe Is Invisible And Inside You',
     description: 'Dark matter makes up roughly 85% of the matter in the universe, inferred from galaxy rotation curves and gravitational lensing. It has never been directly detected.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['dark matter', 'galaxy rotation', 'cosmology', 'space mystery', 'physics', 'space facts', 'science shorts', 'universe', 'shorts', 'spacespidey'],
-    caption: 'It is going through your chest right now. #darkmatter #space #shorts #spacespidey',
+    caption: 'It is going through your chest right now. #darkmatter #space #shorts #SpaceSpidey',
     pinnedComment: 'If dark matter could think, what does it think of you? One line.',
     factCheck: 'Dark matter is ~85% of matter content; evidence from rotation curves, lensing and structure formation.',
     whyItWorks: 'Puts the phenomenon inside the viewer\'s body by beat four — invasion is more compelling than scale. The flattering final beat ("you are the rare kind") is what converts an unsettling fact into a like.',
@@ -400,7 +400,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'You Freeze Forever AND Fall In Seconds. Both Are True.',
     description: 'Two observers, two valid descriptions: extreme gravitational time dilation for the distant watcher, a short proper-time infall for the faller. Tidal stretching does the rest.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['black hole', 'relativity', 'event horizon', 'spaghettification', 'physics', 'space facts', 'science shorts', 'universe', 'shorts', 'spacespidey'],
-    caption: 'Two truths, one death. #blackhole #relativity #space #shorts #spacespidey',
+    caption: 'Two truths, one death. #blackhole #relativity #space #shorts #SpaceSpidey',
     pinnedComment: 'Frozen at the edge forever, or gone in ten seconds? Choose your death.',
     factCheck: 'Frame-dependent descriptions of infall; both are physically correct. Tidal spaghettification is the standard term.',
     whyItWorks: 'A genuine paradox invites argument, and argument is comment volume. The pinned comment forces a choice between two vivid deaths, which is the highest-response prompt format on this channel.',
@@ -462,7 +462,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'Am I Still Human? You Asked. Here Is The Answer.',
     description: 'Answering the most-asked question in the comments. Lore.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['spacespidey', 'lore', 'space horror', 'scifi', 'character', 'storytime', 'space', 'shorts', 'series', 'transmission'],
-    caption: 'You asked. Here is what is left under the mask. #spacespidey #lore #shorts',
+    caption: 'You asked. Here is what is left under the mask. #SpaceSpidey #lore #shorts',
     pinnedComment: 'Who was behind the door? First theory that fits becomes canon.',
     factCheck: 'fiction: lore',
     whyItWorks: 'Answer videos are the cheapest loyalty machine on the channel: the viewer sees their own question become content. The forgotten name is a deliberate gap the audience gets to fill, which is how a comment section becomes a co-author.',
@@ -482,7 +482,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'What You Actually Eat In Deep Space',
     description: 'The ISS recycles over 90% of its water, including urine and sweat. Algae and printed protein are both active space-food research lines.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['astronaut food', 'iss', 'space station', 'recycled water', 'space facts', 'nasa', 'science shorts', 'space', 'shorts', 'spacespidey'],
-    caption: 'Yesterday\u2019s coffee is tomorrow\u2019s coffee. #astronaut #space #shorts #spacespidey',
+    caption: 'Yesterday\u2019s coffee is tomorrow\u2019s coffee. #astronaut #space #shorts #SpaceSpidey',
     pinnedComment: 'One Earth meal worth four light-years. Name it. Most-named food becomes canon.',
     factCheck: 'ISS water recovery exceeds 90% including urine and sweat processing.',
     whyItWorks: 'Comedy is the release valve in a channel built on dread — it widens the audience and keeps the feed from typecasting the account as horror only. The pinned question asks for a food, which is the single easiest comment anyone can leave.',
@@ -522,7 +522,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'Why I Can Never Come Back To Earth',
     description: 'Lore. The reason there is no return trip.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['spacespidey', 'lore', 'space horror', 'scifi series', 'storytime', 'cliffhanger', 'space', 'shorts', 'character', 'transmission'],
-    caption: 'I stay lost so you stay found. #spacespidey #lore #space #shorts',
+    caption: 'I stay lost so you stay found. #SpaceSpidey #lore #space #shorts',
     pinnedComment: 'What kind of thing can read a ship\u2019s path? Theories. I am reading all of them.',
     factCheck: 'fiction: lore',
     whyItWorks: 'A refusal is more interesting than an explanation. The line "I stay lost so you stay found" is written to be screenshotted, which is how lore episodes recruit viewers who never watch the science ones.',
@@ -542,7 +542,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'The Scariest Thing In Space Is A Clean Spot',
     description: 'Lore, built on a real idea: everything in the universe leaves a signature. Cosmic voids exist, but they are never truly featureless.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['space horror', 'spacespidey', 'lore', 'cosmic void', 'creepy space', 'scifi series', 'storytime', 'space', 'shorts', 'cliffhanger'],
-    caption: 'It was not empty. It was cleaned. #spacehorror #spacespidey #shorts',
+    caption: 'It was not empty. It was cleaned. #spacehorror #SpaceSpidey #shorts',
     pinnedComment: 'What erases every trace of matter from a whole region? Wrong answers might be right.',
     factCheck: 'fiction: lore (real cosmic voids such as the Bo\u00f6tes Void exist but contain sparse galaxies)',
     whyItWorks: 'Absence is scarier than a monster, and it costs nothing to render. "It was cleaned" is a two-word turn that reliably produces reply-threads arguing about what did the cleaning.',
@@ -564,7 +564,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'Thirty-Nine Suits Went Dark. Mine Did Not.',
     description: 'LORE DROP 001 — the launch. Where the suit came from, and why there is only one of me.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['spacespidey', 'lore', 'origin story', 'space horror', 'scifi series', 'storytime', 'cliffhanger', 'space', 'shorts', 'character'],
-    caption: 'LORE 001 — thirty-nine went dark. #spacespidey #lore #origin #shorts',
+    caption: 'LORE 001 — thirty-nine went dark. #SpaceSpidey #lore #origin #shorts',
     pinnedComment: 'Why did the suit pick me? First theory that holds up gets woven into the story.',
     factCheck: 'fiction: lore',
     whyItWorks: 'Opens on the number, not the backstory — the mystery is the hook and the exposition arrives after the viewer is committed. "Count them" gives obsessive viewers a job, and jobs produce long comments.',
@@ -584,7 +584,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'What The Red Threads On The Suit Really Are',
     description: 'LORE DROP 002 — the Weave. The cosmic web of galaxy filaments is real large-scale structure. The rest is lore.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['cosmic web', 'spacespidey', 'lore', 'galaxy filaments', 'scifi series', 'space facts', 'storytime', 'space', 'shorts', 'character'],
-    caption: 'The cosmic web is real. Look it up. #cosmicweb #spacespidey #lore #shorts',
+    caption: 'The cosmic web is real. Look it up. #cosmicweb #SpaceSpidey #lore #shorts',
     pinnedComment: 'The web between galaxies is real, Earth. So what walks on a web?',
     factCheck: 'fiction: lore (the cosmic web of galaxy filaments is genuine large-scale structure)',
     whyItWorks: 'Welds the character to a real, searchable phenomenon — viewers who go and confirm the cosmic web come back trusting the channel. "What walks on a web" is the spider question the whole brand is built on.',
@@ -604,7 +604,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'The Thing That Has Been Following Me',
     description: 'LORE DROP 003 — the Follower. It moves through the places where nothing is left.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['space horror', 'spacespidey', 'lore', 'creepy space', 'scifi series', 'cliffhanger', 'storytime', 'space', 'shorts', 'character'],
-    caption: 'Do not look for me. Look up. #spacehorror #spacespidey #lore #shorts',
+    caption: 'Do not look for me. Look up. #spacehorror #SpaceSpidey #lore #shorts',
     pinnedComment: 'It erases everything it touches. Except me. Why me? Say it out loud.',
     factCheck: 'fiction: lore',
     whyItWorks: 'The retroactive reveal ("I left out one detail") rewards anyone who saw the earlier transmission and sends new viewers hunting for it, which is the only mechanic that turns Shorts views into channel views.',
@@ -624,7 +624,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'Suit Thirty-One Is Still Alive',
     description: 'LORE DROP 004 — Suit 31. Somebody else got off that launch pad.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['spacespidey', 'lore', 'space horror', 'scifi series', 'cliffhanger', 'storytime', 'mystery', 'space', 'shorts', 'character'],
-    caption: 'Someone else survived the launch. #spacespidey #lore #mystery #shorts',
+    caption: 'Someone else survived the launch. #SpaceSpidey #lore #mystery #shorts',
     pinnedComment: 'Do I trust Suit Thirty-One or not? The comments decide what I do next.',
     factCheck: 'fiction: lore',
     whyItWorks: 'Handing the decision to the audience is the strongest retention device a serialized channel has — the next episode becomes something they voted for, so they come back to see whether they won.',
@@ -645,7 +645,7 @@ export const TRANSMISSIONS = [
     videoTitle: 'POV: Your Last Thirty Seconds Of Signal',
     description: 'A format piece. One final transmission home, and what people actually spend it on.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['pov', 'space', 'emotional', 'storytime', 'scifi', 'spacespidey', 'shorts', 'sad', 'trend', 'transmission'],
-    caption: 'Thirty seconds. What do you say? #pov #space #shorts #spacespidey',
+    caption: 'Thirty seconds. What do you say? #pov #space #shorts #SpaceSpidey',
     pinnedComment: 'Write your thirty seconds below. I will read the best one on air, in full.',
     factCheck: 'fiction: format piece',
     whyItWorks: 'The comment section becomes the content, and "I will read the best one on air" is a genuine reward rather than an ask. The mundane detail (a cat, a window) is what makes people cry, and crying is what makes people share.',
@@ -741,7 +741,7 @@ export const LAUNCH_SEQUENCE = [
     videoTitle: 'You Are Moving Faster Than A Bullet Right Now',
     description: 'You have never been still. Earth spins, orbits at ~30 km/s, and the whole system moves at roughly 550 km/s relative to the cosmic microwave background.\n\nNew signal every 48 hours. Follow the signal.',
     tags: ['earth rotation', 'milky way', 'physics', 'space facts', 'astronomy', 'mind blowing facts', 'science shorts', 'universe', 'space', 'shorts'],
-    caption: 'You moved 10,000 km watching this. #space #physics #shorts #spacespidey',
+    caption: 'You moved 10,000 km watching this. #space #physics #shorts #SpaceSpidey',
     pinnedComment: 'You just travelled 10,000 km. Where do you wish it had taken you?',
     factCheck: 'Rifle bullet ~1 km/s; Earth orbital speed ~30 km/s; motion vs CMB ~550 km/s, giving ~11,000 km in 20 s.',
     postmortem: 'v1 buried the payoff in the fourth beat and used three abstract speeds. v2 puts the bullet in the first four words and keeps exactly one comparison running through the whole script.',
@@ -821,13 +821,15 @@ TRANSMISSIONS.unshift(...LAUNCH_SEQUENCE);
 /* Channel identity. Handles checked for spellability (say it once, type it
    right), search collision, and merch/series headroom. */
 export const CHANNEL_KIT = {
-  name: 'SPACESPIDEY',
-  handles: ['@spacespidey', '@spacespideyy', '@SpaceSpideyOfficial', '@FollowTheSignal', '@SpaceSpideyTransmits'],
+  name: 'SpaceSpidey',
+  displayName: 'SpaceSpidey',
+  handles: ['@SpaceSpidey', '@SpaceSpideyy', '@SpaceSpideyOfficial', '@SpaceSpideyTransmits', '@RealSpaceSpidey'],
+  nameRule: 'Always written SpaceSpidey — one word, both S capital. Never SPACESPIDEY, never Spacespidey, never Space Spidey.',
   tagline: 'Transmissions from somewhere past your sky.',
-  bio: 'I am SPACESPIDEY. My suit was woven from the web between galaxies. New transmission every 48 hours.',
+  bio: 'I am SpaceSpidey. My suit was woven from the web between galaxies. New transmission every 48 hours.',
   uploadCadence: 'One Short every 48 hours, same hour every time. Never miss a slot.',
   descriptionFooter: '\n\nNew signal every 48 hours. Follow the signal.',
-  hashtagCore: ['#spacespidey', '#space', '#shorts'],
+  hashtagCore: ['#SpaceSpidey', '#space', '#shorts'],
   pinnedCommentRule: 'Pin within 60 seconds of publishing, then reply to the first ten comments within the first hour.',
 };
 

@@ -791,7 +791,7 @@ export default function Studio() {
 
       {/* header */}
       <header className="flex items-center gap-4 px-4 py-2.5" style={{ borderBottom: '1px solid var(--cw-border)' }}>
-        <span className="mono font-bold text-sm tracking-widest" data-testid="header-brand">COSMIC WEAVER <span style={{ color: 'var(--cw-red)' }}>// SPACESPIDEY STUDIO</span></span>
+        <span className="mono font-bold text-sm tracking-widest" data-testid="header-brand">COSMIC WEAVER <span style={{ color: 'var(--cw-red)' }}>// SpaceSpidey STUDIO</span></span>
         <span className="mono text-[9px] hidden md:inline" style={{ color: 'var(--cw-muted)' }}>
           {booted === 'sim' ? 'SIM PERFORMER' : booted === 'live' ? 'LIVE TRACKING' : 'OFFLINE'}
         </span>
