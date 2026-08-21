@@ -42,7 +42,22 @@ import {
   MediaStreamAudioTrackSource,
   getFirstEncodableVideoCodec,
   getFirstEncodableAudioCodec,
+  Input,
+  BlobSource,
+  ALL_FORMATS,
+  Conversion,
 } from 'mediabunny';
+
+/* MEDIARECORDER RAMP TRIM — when a take rides the MediaRecorder fallback, its
+   first ~1s is unavoidably soft (WebRTC rate-control opens every session in a
+   heavily-quantized ramp; no MediaRecorder knob disables it). Those takes get
+   their opening second CUT after the stop: mediabunny re-muxes the sealed blob
+   with trim.start, re-encoding offline (no realtime budget, so the re-encode
+   itself has no ramp — uniform quality from the new frame zero). WebCodecs
+   takes are never trimmed: they're sharp from frame zero by construction. */
+const RAMP_TRIM_S = 1.05;      // slightly over 1s so no ramp tail survives the cut
+const RAMP_TRIM_MIN_DUR_S = 3; // never trim a micro-take into nothing
+const RAMP_TRIM_MAX_DUR_S = 240; // offline re-encode cost grows with length — cap it
 
 const MP4_FIRST = [
   { mime: 'video/mp4;codecs=avc1.640028,mp4a.40.2', ext: 'mp4' }, // H.264 High + AAC-LC (hardware on most machines)
@@ -620,6 +635,64 @@ export class Recorder {
     };
   }
 
+  /** cut the soft opening ramp off a MediaRecorder take. FAIL-OPEN by design:
+      any error, an unsupported decoder, or a suspiciously small result ships
+      the ORIGINAL take — a slightly soft first second beats a lost take. */
+  async _trimRamp(take) {
+    if (!take) return take;
+    if (take.duration < RAMP_TRIM_MIN_DUR_S || take.duration > RAMP_TRIM_MAX_DUR_S) return take;
+    if (typeof window === 'undefined' ||
+        typeof window.VideoDecoder !== 'function' ||
+        typeof window.VideoEncoder !== 'function') return take;
+    try {
+      const t0 = performance.now();
+      const input = new Input({ source: new BlobSource(take.blob), formats: ALL_FORMATS });
+      const target = new BufferTarget();
+      const output = new Output({
+        format: take.ext === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(),
+        target,
+      });
+      const tier = TIERS[take.tier] || TIERS.medium;
+      const conversion = await Conversion.init({
+        input,
+        output,
+        trim: { start: RAMP_TRIM_S },
+        video: { bitrate: tier.videoBps },
+        audio: { bitrate: tier.audioBps },
+        showWarnings: false,
+      });
+      if (!conversion.isValid) {
+        try { await conversion.cancel(); } catch (_) {}
+        console.warn('[recorder] ramp trim skipped — conversion invalid for this take, shipping untrimmed');
+        return take;
+      }
+      await conversion.execute();
+      const buffer = target.buffer;
+      const dur = Math.max(0.1, take.duration - RAMP_TRIM_S);
+      const minBytes = Math.min(50_000, Math.max(4_000, dur * 15_000));
+      if (!buffer || buffer.byteLength < minBytes) {
+        console.warn(`[recorder] ramp trim produced ${buffer ? buffer.byteLength : 0} bytes — shipping untrimmed`);
+        return take;
+      }
+      const mime = take.ext === 'mp4' ? 'video/mp4' : 'video/webm';
+      const blob = new Blob([buffer], { type: mime });
+      try { URL.revokeObjectURL(take.url); } catch (_) {}
+      console.log(`[recorder] opening ramp cut — first ${RAMP_TRIM_S}s removed in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+      return {
+        ...take,
+        blob,
+        url: URL.createObjectURL(blob),
+        duration: dur,
+        size: blob.size,
+        mime,
+        trimmed: RAMP_TRIM_S,
+      };
+    } catch (err) {
+      console.warn('[recorder] ramp trim failed — shipping untrimmed take', err);
+      return take;
+    }
+  }
+
   stop() {
     if (this.recording && this._wcSession) return this._stopWc();
     return new Promise((resolve) => {
@@ -650,7 +723,9 @@ export class Recorder {
           resolve(null);
           return;
         }
-        resolve({
+        /* MediaRecorder path only: cut the soft rate-control ramp off the top.
+           resolve() unwraps the promise — callers still just await stop(). */
+        resolve(this._trimRamp({
           blob,
           url: URL.createObjectURL(blob),
           duration: dur,
@@ -659,7 +734,7 @@ export class Recorder {
           ext: this.ext,
           tier: this.tier,
           createdAt: new Date().toISOString(),
-        });
+        }));
       };
       /* FLUSH THE TAIL: with 500ms timeslices the final <=500ms of audio+video
          rides only on the browser's implicit stop-flush — which Chromium has
