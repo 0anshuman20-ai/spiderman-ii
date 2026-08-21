@@ -112,6 +112,35 @@ export function createStage(canvas) {
   composer.addPass(grade);
   composer.addPass(new OutputPass());
 
+  /* ---- RENDER-COST CONTROL ----
+     The old capture path rendered the FULL 1080x1920 frame (4x MSAA + bloom +
+     the suit shader) and then downscaled it through a per-frame 2D drawImage
+     mirror — so a constrained machine paid the full render bill AND a copy on
+     top of the encode. When the render loop itself can't hold the tier's fps,
+     the picture, the burned-in captions and the line director all stall
+     together: exactly "video and caption freeze, lagging too".
+     Now the RENDER is downscaled instead: during a scaled take the composer +
+     renderer run at the capture resolution directly (no mirror, no copy) and
+     MSAA is dropped — the encoder captures the canvas natively. Restored to
+     full quality the moment the take ends. */
+  const BASE_SAMPLES = 4;
+  let renderScale = 1;
+  function setMsaa(samples) {
+    try {
+      [composerTarget, composer.renderTarget1, composer.renderTarget2].forEach((t) => {
+        if (t && 'samples' in t && t.samples !== samples) { t.samples = samples; t.dispose(); }
+      });
+    } catch (_) { /* MSAA control is an optimization, never a blocker */ }
+  }
+  function applyRenderScale(s, { msaaOff = false } = {}) {
+    renderScale = s;
+    const w = Math.max(2, Math.round((W * s) / 2) * 2);
+    const h = Math.max(2, Math.round((H * s) / 2) * 2);
+    setMsaa(msaaOff ? 0 : BASE_SAMPLES);
+    renderer.setSize(w, h, false); // CSS keeps the canvas at its layout size
+    composer.setSize(w, h);
+  }
+
   // ---- HUD burned into the recording (top of frame) ----
   const hudCanvas = document.createElement('canvas'); hudCanvas.width = 1024; hudCanvas.height = 96;
   const hudCtx = hudCanvas.getContext('2d');
@@ -369,6 +398,12 @@ export function createStage(canvas) {
 
   let punchT = -10, glitchT = 0, running = true, lastT = performance.now() / 1000;
   let fpsAcc = 0, fpsN = 0, fps = 0;
+  /* IN-TAKE AUTO-DEGRADE — seconds the render loop has spent under ~22fps
+     while a capture is live. A struggling take sheds quality instead of
+     freezing: first bloom (the priciest pass), then MSAA. Resolution is never
+     changed mid-take (an H.264 stream can't survive a resize); everything is
+     restored in releaseCapture. */
+  let recLowT = 0;
 
   /* ---- LOOP SURVIVAL LAYER ----
      The old loop was a bare rAF chain: ONE exception anywhere in the frame
@@ -460,6 +495,18 @@ export function createStage(canvas) {
       grade.uniforms.uTime.value = t;
       grade.uniforms.uGlitch.value = Math.max(0, Math.min(1, glitchT * 3));
 
+      /* shed render cost DURING a struggling take instead of freezing it */
+      if (pushFrame) {
+        if (fps > 0 && fps < 22) recLowT += dt; else recLowT = Math.max(0, recLowT - dt * 2);
+        if (recLowT > 1.2 && bloom.enabled) {
+          bloom.enabled = false;
+          console.warn('[stage] take running hot — bloom off for the rest of the take');
+        } else if (recLowT > 3.0) {
+          recLowT = 1.3; // MSAA is the last shed — don't re-trigger every frame
+          setMsaa(0);
+        }
+      }
+
       if (!contextLost) composer.render();
       // hand the freshly rendered frame straight to the encoder (see captureStream)
       if (pushFrame) pushFrame();
@@ -523,29 +570,16 @@ export function createStage(canvas) {
        fps so a fast render loop can't flood a slow encoder. Falls back to the
        classic fps-hint stream where requestFrame isn't supported.
 
-       DOWNSCALED CAPTURE MIRROR (scale < 1): realtime encode of the native
-       1080x1920 canvas is beyond most machines' budget — the classic silent
-       video-track stall. Medium/low tiers capture through a smaller 2D mirror
-       canvas instead (one drawImage per delivered frame), cutting encoder
-       pixel load 1.8-2.25x while the export stays vertical and upload-ready. */
+       TRUE RENDER DOWNSCALE (scale < 1): the old path rendered the full
+       1080x1920 frame and copied it through a per-frame 2D mirror — full
+       render bill PLUS a copy, on the machines that could afford neither.
+       Now the RENDERER itself runs at the capture resolution (MSAA off for
+       the take), and the encoder captures the canvas natively: render cost
+       drops ~44% at 0.75 / ~56% at 2/3, and the mirror copy is gone. */
     captureStream(fpsWanted = 60, scale = 1) {
-      let drawMirror = null;
-      let srcCanvas = canvas;
-      if (scale > 0 && scale < 0.999) {
-        const mw = Math.round((W * scale) / 2) * 2;
-        const mh = Math.round((H * scale) / 2) * 2;
-        const mirror = document.createElement('canvas');
-        mirror.width = mw; mirror.height = mh;
-        const mctx = mirror.getContext('2d', { alpha: false });
-        if (mctx) {
-          mctx.imageSmoothingEnabled = true;
-          mctx.imageSmoothingQuality = 'medium';
-          drawMirror = () => { mctx.drawImage(canvas, 0, 0, mw, mh); };
-          srcCanvas = mirror;
-        }
-      }
+      if (scale > 0 && scale < 0.999) applyRenderScale(scale, { msaaOff: true });
       try {
-        const s = srcCanvas.captureStream(0);
+        const s = canvas.captureStream(0);
         const track = s.getVideoTracks()[0];
         if (track && typeof track.requestFrame === 'function') {
           const minGap = 1 / Math.max(1, fpsWanted);
@@ -555,7 +589,6 @@ export function createStage(canvas) {
           const deliver = () => {
             if (track.readyState !== 'live') { pushFrame = null; forcePush = null; return; }
             try {
-              if (drawMirror) drawMirror();
               track.requestFrame();
               lastCaptureFrame = performance.now();
             } catch (_) { pushFrame = null; forcePush = null; }
@@ -571,13 +604,6 @@ export function createStage(canvas) {
           return s;
         }
       } catch (_) { /* fall through to the fps-hint capture */ }
-      /* fps-hint fallback: the mirror still needs a fresh draw per rendered
-         frame — the render loop's pushFrame becomes that draw call */
-      if (drawMirror) {
-        pushFrame = () => { drawMirror(); lastCaptureFrame = performance.now(); };
-        forcePush = pushFrame;
-        return srcCanvas.captureStream(fpsWanted);
-      }
       return canvas.captureStream(fpsWanted);
     },
     /* recorder watchdog surface: when was a frame last handed to the encoder,
@@ -585,12 +611,18 @@ export function createStage(canvas) {
     get lastCaptureFrameAt() { return lastCaptureFrame; },
     forceCaptureFrame() { if (forcePush) forcePush(); },
     /* LAG FIX: the recorder calls this when a take ends (stop/cancel/warmup).
-       Without it the capture closures — including the downscale mirror's
-       full-canvas drawImage — keep running on EVERY rendered frame forever,
-       and stack up one more copy per take/restart: permanent, compounding
+       Without it the capture closures keep running on EVERY rendered frame
+       forever, stacking one more per take/restart: permanent, compounding
        lag after the first recording. Releasing them returns the render loop
-       to its pre-take cost and lets the mirror canvas be garbage-collected. */
-    releaseCapture() { pushFrame = null; forcePush = null; },
+       to its pre-take cost, and full render quality (native res, MSAA,
+       bloom) comes back the moment the take is over. */
+    releaseCapture() {
+      pushFrame = null; forcePush = null;
+      recLowT = 0;
+      bloom.enabled = true;
+      if (renderScale !== 1) applyRenderScale(1);
+      else setMsaa(BASE_SAMPLES);
+    },
     dispose() {
       running = false;
       cancelAnimationFrame(rafId);
