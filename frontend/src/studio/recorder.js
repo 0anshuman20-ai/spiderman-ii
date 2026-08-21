@@ -13,9 +13,10 @@
    THE FREEZE-KILLER: realtime H.264/VP8 at native 1080x1920 (~2.1MP vertical)
    is beyond most machines' realtime budget — when the encoder saturates,
    Chromium silently stalls the VIDEO track mid-take (frozen picture, audio
-   continues). Medium/low tiers now capture through a downscaled 2D mirror
-   canvas, cutting encode pixel load 1.8-2.25x. Export stays vertical and
-   upload-ready.
+   continues). Medium/low tiers now DOWNSCALE THE RENDER ITSELF (the stage
+   renders + captures at 810x1440 / 720x1280 with MSAA off for the take),
+   cutting BOTH render and encode load 1.8-2.25x with zero per-frame copies.
+   Export stays vertical and upload-ready; full quality returns after the take.
 
    Codec ladder is HARDWARE-FIRST: honest MP4 (H.264/AAC — near-zero CPU on most
    machines when hardware encode is present), then video/webm;codecs=h264, then
@@ -46,9 +47,9 @@ const WEBM_FIRST = [
 /* Bitrates/fps are deliberately conservative: a realtime encoder that falls
    behind does not degrade gracefully — it silently stalls the video track
    mid-take (frozen picture, audio keeps going). Medium is trimmed to 6 Mbps
-   (generous at 810x1440), low to 3.5 Mbps: the downscale mirror removed the
-   pixel load that justified the old numbers. `scale` is the mirror factor
-   handed to stage.captureStream — 1 keeps the native canvas. */
+   (generous at 810x1440), low to 3.5 Mbps. `scale` is the RENDER factor
+   handed to stage.captureStream — the stage renders and captures at that
+   resolution for the take; 1 keeps the native canvas. */
 const TIERS = {
   high: { captureFps: 30, scale: 1, videoBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
   medium: { captureFps: 30, scale: 0.75, videoBps: 6_000_000, audioBps: 160_000, ladder: MP4_FIRST },       // 810x1440
