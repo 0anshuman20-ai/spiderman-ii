@@ -261,6 +261,11 @@ export function createStage(canvas) {
          isn't playing. Read EVERY frame so latency and render-loop stalls are
          corrected out instead of accumulating into drift. */
       clock: typeof opts.clock === 'function' ? opts.clock : null,
+      /* () => confirmed word index | null — live speech recognition. When it
+         reports, the karaoke highlight jumps to that EXACT word: no estimate,
+         no lap. Time-based pacing stays the automatic fallback. */
+      wordIndex: typeof opts.wordIndex === 'function' ? opts.wordIndex : null,
+      lastWIdx: -1,    // monotonic guard: recognition can never rewind the highlight
       hasAudio: false, // has the audio clock ever reported?
       lastAudio: 0,    // last authoritative audio-clock reading
       lastWall: 0,     // wall clock at that reading, for freewheeling past it
@@ -270,6 +275,14 @@ export function createStage(canvas) {
        silence the frame stays clean instead of showing stale words */
     capCtx.clearRect(0, 0, 1024, 220);
     capTex.needsUpdate = true;
+    /* DRAW IMMEDIATELY (live-mic lines): the performer is already speaking when
+       the line fires — waiting for playhead math left them captionless. The
+       first chunk renders NOW with word 0 hot; recognition/pacing take over
+       from the next frame. */
+    if (opts.immediate) {
+      capAnim.drawn = 0; // chunk 0, active word 0
+      drawCaptionChunk(words.slice(0, CAP_CHUNK), 0);
+    }
   }
 
   /* seconds of the line's audio elapsed, resolved against the AUDIO clock when
@@ -325,11 +338,28 @@ export function createStage(canvas) {
       return;
     }
     const n = capAnim.words.length;
-    // length-weighted lookup: the active word is the first whose END fraction
-    // is still ahead of the playhead — matches how the audio spends its time
-    const pc = Math.min(0.999, p);
-    let wIdx = n - 1;
-    for (let i = 0; i < n; i++) { if (pc < capAnim.cum[i]) { wIdx = i; break; } }
+    let wIdx = -1;
+    /* RECOGNITION FIRST — when the live recognizer confirms a word index, the
+       highlight sits on that exact word. Monotonic: a late/retracted interim
+       result can never rewind the karaoke. */
+    if (capAnim.wordIndex) {
+      try {
+        const wi = capAnim.wordIndex();
+        if (typeof wi === 'number' && isFinite(wi) && wi >= 0) {
+          wIdx = Math.min(n - 1, Math.max(Math.floor(wi), capAnim.lastWIdx));
+          capAnim.lastWIdx = wIdx;
+        }
+      } catch (_) { /* recognition is an enhancement, never a blocker */ }
+    }
+    if (wIdx < 0) {
+      // length-weighted lookup: the active word is the first whose END fraction
+      // is still ahead of the playhead — matches how the audio spends its time
+      const pc = Math.min(0.999, p);
+      wIdx = n - 1;
+      for (let i = 0; i < n; i++) { if (pc < capAnim.cum[i]) { wIdx = i; break; } }
+      // never fall behind what recognition already confirmed
+      if (capAnim.lastWIdx >= 0) wIdx = Math.max(wIdx, capAnim.lastWIdx);
+    }
     const chunk = Math.floor(wIdx / CAP_CHUNK);
     const key = chunk * 100 + (wIdx % CAP_CHUNK);
     if (key === capAnim.drawn) return;
@@ -356,7 +386,9 @@ export function createStage(canvas) {
   let rafId = 0, backupTimer = 0;
   let contextLost = false;
   let frameErrLogs = 0;
-  let pushFrame = null; // set when the recorder captures via requestFrame()
+  let pushFrame = null;       // set when the recorder captures via requestFrame()
+  let forcePush = null;       // unthrottled delivery — the recorder's watchdog heartbeat
+  let lastCaptureFrame = 0;   // performance.now() of the last frame handed to the encoder
 
   canvas.addEventListener('webglcontextlost', (e) => {
     try { e.preventDefault(); } catch (_) {}
@@ -489,31 +521,75 @@ export function createStage(canvas) {
        captureStream(0) + requestFrame() after every composer.render() hands
        each finished frame straight to the encoder — throttled to the tier's
        fps so a fast render loop can't flood a slow encoder. Falls back to the
-       classic fps-hint stream where requestFrame isn't supported. */
-    captureStream(fpsWanted = 60) {
+       classic fps-hint stream where requestFrame isn't supported.
+
+       DOWNSCALED CAPTURE MIRROR (scale < 1): realtime encode of the native
+       1080x1920 canvas is beyond most machines' budget — the classic silent
+       video-track stall. Medium/low tiers capture through a smaller 2D mirror
+       canvas instead (one drawImage per delivered frame), cutting encoder
+       pixel load 1.8-2.25x while the export stays vertical and upload-ready. */
+    captureStream(fpsWanted = 60, scale = 1) {
+      let drawMirror = null;
+      let srcCanvas = canvas;
+      if (scale > 0 && scale < 0.999) {
+        const mw = Math.round((W * scale) / 2) * 2;
+        const mh = Math.round((H * scale) / 2) * 2;
+        const mirror = document.createElement('canvas');
+        mirror.width = mw; mirror.height = mh;
+        const mctx = mirror.getContext('2d', { alpha: false });
+        if (mctx) {
+          mctx.imageSmoothingEnabled = true;
+          mctx.imageSmoothingQuality = 'medium';
+          drawMirror = () => { mctx.drawImage(canvas, 0, 0, mw, mh); };
+          srcCanvas = mirror;
+        }
+      }
       try {
-        const s = canvas.captureStream(0);
+        const s = srcCanvas.captureStream(0);
         const track = s.getVideoTracks()[0];
         if (track && typeof track.requestFrame === 'function') {
           const minGap = 1 / Math.max(1, fpsWanted);
           let lastPush = 0;
+          /* unthrottled delivery — used by the render loop (via the throttle
+             below) AND by the recorder's watchdog when the loop hiccups */
+          const deliver = () => {
+            if (track.readyState !== 'live') { pushFrame = null; forcePush = null; return; }
+            try {
+              if (drawMirror) drawMirror();
+              track.requestFrame();
+              lastCaptureFrame = performance.now();
+            } catch (_) { pushFrame = null; forcePush = null; }
+          };
           pushFrame = () => {
-            if (track.readyState !== 'live') { pushFrame = null; return; }
             const now = performance.now() / 1000;
             if (now - lastPush < minGap * 0.85) return;
             lastPush = now;
-            try { track.requestFrame(); } catch (_) { pushFrame = null; }
+            deliver();
           };
+          forcePush = deliver;
+          lastCaptureFrame = performance.now();
           return s;
         }
       } catch (_) { /* fall through to the fps-hint capture */ }
+      /* fps-hint fallback: the mirror still needs a fresh draw per rendered
+         frame — the render loop's pushFrame becomes that draw call */
+      if (drawMirror) {
+        pushFrame = () => { drawMirror(); lastCaptureFrame = performance.now(); };
+        forcePush = pushFrame;
+        return srcCanvas.captureStream(fpsWanted);
+      }
       return canvas.captureStream(fpsWanted);
     },
+    /* recorder watchdog surface: when was a frame last handed to the encoder,
+       and force one through NOW if the render loop is hiccuping */
+    get lastCaptureFrameAt() { return lastCaptureFrame; },
+    forceCaptureFrame() { if (forcePush) forcePush(); },
     dispose() {
       running = false;
       cancelAnimationFrame(rafId);
       clearTimeout(backupTimer);
       pushFrame = null;
+      forcePush = null;
       world.dispose(); if (suitLayer) suitLayer.dispose(); if (simActor) simActor.dispose(); renderer.dispose();
     },
   };

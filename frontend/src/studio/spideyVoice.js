@@ -342,6 +342,11 @@ export class SpideyVoice {
       const makeup = ctx.createGain(); makeup.gain.value = 1.55;
       const limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.06;
+      /* kept as refs: LIVE MIC takes run the final stage hotter (makeup 2.0,
+         limiter -1.0 dB) and restore these exact values when the mic drops —
+         the TTS/upload paths must never hear the mic-take loudness. */
+      this._makeup = makeup;
+      this._limiter = limiter;
 
     this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
     /* 256 samples is ~5ms at 48kHz. The old 1024-sample (~21ms) analysis
@@ -782,25 +787,49 @@ export class SpideyVoice {
     const ctx = this.ctx;
     this.micStream = stream;
     const src = ctx.createMediaStreamSource(stream);
-    /* earbud/laptop-mic repair BEFORE the broadcast chain: these capsules are
-       thin, boxy and harsh — fix the tone first so the compressors downstream
-       are working with a voice, not a problem */
+    /* MIC PRE-STAGE — earbud/laptop capsules arrive QUIET, thin, boxy and
+       noisy. Fix level and tone BEFORE the broadcast chain so the compressors
+       downstream work with a voice, not a problem:
+         boost (+6 dB) -> gate (downward expander) -> auto-leveler -> repair EQ
+       The boost recovers the ~6-10 dB these capsules sit under; the gate mutes
+       room hiss between phrases without clipping word onsets; the leveler
+       (driven per-frame from the VAD analyser) rides your distance/energy
+       swings +-9 dB so every take lands at the same loudness. */
+    const boost = ctx.createGain(); boost.gain.value = 2.0; // +6 dB input recovery
+    const gate = ctx.createGain(); gate.gain.value = 1;     // VAD-driven downward expander
+    const leveler = ctx.createGain(); leveler.gain.value = 1; // slow AGC, +-9 dB
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 82; hp.Q.value = 0.71;
-    const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 175; body.gain.value = 3;
+    const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 160; body.gain.value = 3;
     const box = ctx.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 300; box.Q.value = 1.1; box.gain.value = -2;
     const harsh = ctx.createBiquadFilter(); harsh.type = 'peaking'; harsh.frequency.value = 4200; harsh.Q.value = 1.4; harsh.gain.value = -2.5;
+    /* STRONGER intelligibility for tiny capsules: presence peak +5 dB @2.8kHz
+       and a +2.5 dB shelf from 3.4kHz — consonants cut through phone speakers */
+    const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2800; presence.Q.value = 0.9; presence.gain.value = 5;
+    const shelf = ctx.createBiquadFilter(); shelf.type = 'highshelf'; shelf.frequency.value = 3400; shelf.gain.value = 2.5;
     const trim = ctx.createGain(); trim.gain.value = 1.9; // make-up into the chain (~+5.6 dB)
-    src.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh); harsh.connect(trim);
+    src.connect(boost); boost.connect(gate); gate.connect(leveler);
+    leveler.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh);
+    harsh.connect(presence); presence.connect(shelf); shelf.connect(trim);
     trim.connect(this.voiceIn); // -> presence/clarity/de-ess/leveller/comp/limiter -> recorder
-    /* dedicated VAD analyser on the repaired-but-uncompressed signal: the
-       broadcast chain's compression would flatten the on/off contrast the
-       voice detector needs */
+    /* dedicated VAD analyser on the BOOSTED-but-ungated signal: the gate and
+       the broadcast chain's compression would flatten (or chicken-and-egg) the
+       on/off contrast the voice detector needs */
     this.micAnalyser = ctx.createAnalyser();
     this.micAnalyser.fftSize = 512;
     this.micAnalyser.smoothingTimeConstant = 0;
-    trim.connect(this.micAnalyser);
+    boost.connect(this.micAnalyser);
     this._micBuf = new Uint8Array(this.micAnalyser.fftSize);
-    this._micNodes = [src, hp, body, box, harsh, trim];
+    this._micNodes = [src, boost, gate, leveler, hp, body, box, harsh, presence, shelf, trim];
+    this._micGate = gate;
+    this._micLeveler = leveler;
+    this._agcRms = 0; // speech-RMS EMA driving the leveler
+    /* HOTTER FINAL LOUDNESS on mic takes only: the synthesized voice is already
+       normalized at the source; your real voice needs the extra push to land at
+       the same perceived level phone-speaker-loud. Restored in disableLiveMic. */
+    try {
+      this._makeup.gain.setTargetAtTime(2.0, ctx.currentTime, 0.05);
+      this._limiter.threshold.setTargetAtTime(-1.0, ctx.currentTime, 0.05);
+    } catch (_) {}
     this.micMode = true;
     this.uploaded = false;
     this._noiseFloor = 0.01;
@@ -820,7 +849,17 @@ export class SpideyVoice {
       this._micNodes.forEach((n) => { try { n.disconnect(); } catch (_) {} });
       this._micNodes = null;
     }
+    this._micGate = null;
+    this._micLeveler = null;
     this.micAnalyser = null;
+    /* restore the shared chain's stock loudness — TTS/upload takes must never
+       inherit the hotter mic-take makeup/limiter settings */
+    if (this.ready && this._makeup && this._limiter) {
+      try {
+        this._makeup.gain.setTargetAtTime(1.55, this.ctx.currentTime, 0.05);
+        this._limiter.threshold.setTargetAtTime(-1.5, this.ctx.currentTime, 0.05);
+      } catch (_) {}
+    }
     if (this.micMode) {
       this.micMode = false;
       this.playing = false; this.currentLine = -1;
