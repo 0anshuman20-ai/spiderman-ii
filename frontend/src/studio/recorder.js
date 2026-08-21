@@ -173,7 +173,12 @@ export class Recorder {
        undefined = not probed yet, null = unsupported (use MediaRecorder),
        { container, video, audio } = proven working — the real take uses it */
     this._wc = undefined;
-    this._wcSession = null; // live WebCodecs take: { output, target, videoSource, state }
+    this._wcSession = null; // live WebCodecs take: { output, target, videoSource, state, stopAudio }
+    /* dedicated 48k AudioContext + capture worklet for the WebCodecs audio path
+       (see public/worklets/capture-processor.js for WHY):
+       undefined = not preloaded, null = preload failed (fall back to
+       MediaStreamAudioTrackSource), AudioContext = ready for lossless capture */
+    this._capCtx = undefined;
   }
 
   /* pause/resume were removed on purpose: MediaRecorder.pause()/resume() on a
@@ -214,6 +219,28 @@ export class Recorder {
       name = this._forcedTier;
     }
     return name;
+  }
+
+  /** preload the lossless PCM capture context for the WebCodecs audio path.
+      MUST be ready before the roll: _startWc is synchronous by contract, so
+      the async addModule() has to happen here, during the countdown. Cached
+      for the session; null means the worklet path is unavailable and the take
+      falls back to MediaStreamAudioTrackSource. */
+  async _preloadCapture() {
+    if (this._capCtx !== undefined) return this._capCtx;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      /* 48k to match the voice engine's context — a cross-context
+         MediaStreamSource resamples silently otherwise */
+      const ctx = new Ctx({ sampleRate: 48000, latencyHint: 'playback' });
+      await ctx.audioWorklet.addModule('/worklets/capture-processor.js');
+      this._capCtx = ctx;
+      console.log('[recorder] capture worklet ready — lossless PCM audio path armed');
+    } catch (err) {
+      console.warn('[recorder] capture worklet preload failed — falling back to track-source audio', err);
+      this._capCtx = null;
+    }
+    return this._capCtx;
   }
 
   /** WEBCODECS TRIAL ENCODE — resolve which codec/container this machine can
@@ -268,6 +295,9 @@ export class Recorder {
       ]);
       if (!ok) { try { await output.cancel(); } catch (_) {} }
       this._wc = ok ? verdict : null;
+      /* arm the lossless audio path while the countdown is still running —
+         _startWc needs the worklet module already loaded */
+      if (ok) await this._preloadCapture();
       if (ok) console.log(`[recorder] WebCodecs proven — ${verdict.container} (${verdict.video}/${verdict.audio}), sharp from frame zero`);
       else console.warn('[recorder] WebCodecs trial encode failed — MediaRecorder ladder stays primary');
       return this._wc;
@@ -397,12 +427,80 @@ export class Recorder {
       });
       output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
 
+      /* AUDIO — WORKLET PCM CAPTURE (primary). MediaStreamAudioTrackSource
+         rides MediaStreamTrackProcessor, which delivers AudioData on the MAIN
+         thread through a tiny ReadableStream queue: with the render/capture
+         loop jamming the main thread during a take, Chromium overflowed that
+         queue and silently DROPPED ~97% of the audio (takes came out as ~3ms
+         slivers every ~125ms — a machine-gun buzz). The capture worklet runs
+         on the realtime audio thread and its MessagePort queue is unbounded:
+         under main-thread jank the PCM batches arrive LATE, never dropped.
+         Timestamps come from the cumulative sample count — not arrival time —
+         so late delivery can't skew A/V sync. */
       const audioTrack = voiceStream && voiceStream.getAudioTracks()[0];
       if (audioTrack) {
-        const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
-        output.addAudioTrack(audioSource);
-        /* errorPromise never resolves — only rejects on capture failure */
-        try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
+        let wired = false;
+        const capCtx = this._capCtx || null;
+        if (capCtx) {
+          try {
+            const tap = capCtx.createMediaStreamSource(new MediaStream([audioTrack]));
+            const node = new AudioWorkletNode(capCtx, 'capture');
+            tap.connect(node);
+            /* the worklet writes no output (silence) — this connection only
+               guarantees the graph keeps pulling it every render quantum */
+            node.connect(capCtx.destination);
+            if (capCtx.state !== 'running') { try { capCtx.resume(); } catch (_) {} }
+            const audioSource = new AudioSampleSource({ codec: wc.audio, bitrate: tier.audioBps });
+            output.addAudioTrack(audioSource);
+            let written = 0; // cumulative frames encoded — the timestamp clock
+            let chain = Promise.resolve(); // serializes add() for encoder backpressure
+            let stopped = false;
+            node.port.onmessage = (e) => {
+              /* batches before output.start() resolves are countdown tail, not
+                 take content — dropping them anchors audio t=0 at roll start,
+                 matching the video's first-encoded-frame anchor */
+              if (stopped || !state.ready || state.failed) return;
+              const planes = e.data;
+              const frames = planes && planes[0] ? planes[0].length : 0;
+              if (!frames) return;
+              const nCh = planes.length;
+              const data = new Float32Array(frames * nCh);
+              for (let c = 0; c < nCh; c++) data.set(planes[c], c * frames);
+              const sample = new AudioSample({
+                data,
+                format: 'f32-planar',
+                numberOfChannels: nCh,
+                sampleRate: capCtx.sampleRate,
+                timestamp: written / capCtx.sampleRate,
+              });
+              written += frames;
+              chain = chain.then(() => audioSource.add(sample)).catch((err) => {
+                if (!state.failed) console.error('[recorder] WebCodecs audio encode failed', err);
+              });
+            };
+            session.stopAudio = async () => {
+              try { node.port.postMessage('stop'); } catch (_) {} // seal + flush the partial batch
+              await new Promise((r) => setTimeout(r, 60));        // let the final flush cross the port
+              stopped = true;
+              try { tap.disconnect(); } catch (_) {}
+              try { node.disconnect(); } catch (_) {}
+              try { await chain; } catch (_) {}                   // drain every queued add()
+              try { audioSource.close(); } catch (_) {}           // no more samples — lets finalize seal cleanly
+            };
+            wired = true;
+          } catch (err) {
+            console.warn('[recorder] worklet audio capture failed to wire — falling back to track source', err);
+            session.stopAudio = null;
+          }
+        }
+        if (!wired) {
+          /* fallback: still drop-prone under main-thread jank, but a take with
+             imperfect audio beats a take with none */
+          const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
+          output.addAudioTrack(audioSource);
+          /* errorPromise never resolves — only rejects on capture failure */
+          try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
+        }
       }
 
       output.start().then(() => { state.ready = true; }).catch((err) => {
@@ -561,6 +659,9 @@ export class Recorder {
       const session = this._wcSession;
       this._wcSession = null;
       this.stalled = false;
+      /* disconnect the worklet tap so the capture context stops pulling the
+         voice stream; queued adds reject against the cancelled output — fine */
+      if (session.stopAudio) { try { session.stopAudio().catch(() => {}); } catch (_) {} }
       try { session.output.cancel().catch(() => {}); } catch (_) {}
       try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
       return true;
@@ -599,6 +700,11 @@ export class Recorder {
       const t0 = performance.now();
       while (session.state.pending && performance.now() - t0 < 1500) {
         await new Promise((r) => setTimeout(r, 30));
+      }
+      /* worklet audio path: flush the sealed partial batch, drain every queued
+         PCM add() (late-but-never-dropped batches land HERE), close the source */
+      if (session.stopAudio) {
+        try { await session.stopAudio(); } catch (_) { /* drain is best-effort */ }
       }
       /* finalize stops the audio capture, flushes both encoders and seals the
          container — everything spoken up to this moment is inside */
