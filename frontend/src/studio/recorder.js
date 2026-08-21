@@ -48,23 +48,24 @@ import {
   Conversion,
 } from 'mediabunny';
 
-/* OPENING CUT — two strategies, one per encode path:
+/* OPENING CUT — MediaRecorder path only.
 
-   WEBCODECS (primary): cut AT THE SOURCE. The muxer's start() AND the mic
-   audio source's construction are both delayed by REC_LEAD_S after REC —
-   video frames are dropped until the output is live (existing behavior), and
-   the mic capture doesn't exist until the same deferred instant, so audio and
-   video begin together at the cut point with timestamps anchored at zero. No
-   post-processing, no audio re-encode (pristine live-mic voice), stop/save
-   stays instant, and burned-in captions can't drift because nothing is ever
-   shifted or re-timed. (Constructing the audio source at REC while start()
-   waited was the garbled-voice bug: it buffered against a late clock.)
+   WEBCODECS (primary): NO cut, by design. WebCodecs encodes at full bitrate
+   from the very first frame (no WebRTC rate-control ramp), so there is
+   nothing soft to remove. Audio source construction and output.start() both
+   happen synchronously at REC: mic capture and video begin at the same
+   wall-clock instant with timestamps anchored at zero — perfect A/V sync,
+   pristine live-mic voice, captions can't drift, stop/save stays instant.
+   (A source-side start delay was tried and reverted: holding start() while
+   the audio source already existed buffered mistimed audio against a late
+   clock, and deferring the audio source's construction alongside start()
+   still produced garbled voice — mediabunny's MediaStream sources are only
+   reliable when capture begins with the muxer. Simple and working wins.)
 
    MEDIARECORDER (fallback): the WebRTC rate-control ramp lives INSIDE the
-   encoded stream, so a source-side delay can't remove it — those takes still
-   get the offline mediabunny re-mux with trim.start. Fail-open: any trim
+   encoded stream, so a source-side delay can't remove it — those takes get
+   the offline mediabunny re-mux with trim.start. Fail-open: any trim
    failure ships the original take. */
-const REC_LEAD_S = 1.3;        // WebCodecs: encode begins this long after REC
 const RAMP_TRIM_S = 1.3;       // MediaRecorder: post-stop cut (covers the ramp + settle)
 const RAMP_TRIM_MIN_DUR_S = 3; // never trim a micro-take into nothing
 const RAMP_TRIM_MAX_DUR_S = 240; // offline re-encode cost grows with length — cap it
@@ -407,36 +408,29 @@ export class Recorder {
       });
       output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
 
-      /* SOURCE-SIDE OPENING CUT: hold the muxer's start for REC_LEAD_S. Video
-         frames arriving before state.ready are dropped (existing contract).
-         CRITICAL: the mic audio source must ALSO be constructed inside this
-         deferred block — MediaStreamAudioTrackSource begins capturing the
-         moment it exists, so attaching it at REC while start() waits 1.3s
-         buffered mistimed audio against a late clock (garbled voice, captions
-         off). Built here, mic capture and video both begin at the exact same
-         wall-clock instant with timestamps anchored at zero — perfect sync,
-         pristine voice, no post-stop re-encode. */
+      /* AUDIO + START, TOGETHER AT REC — the proven-working shape. The mic
+         audio source is constructed and the muxer started at the same instant:
+         MediaStreamAudioTrackSource begins capturing the moment it exists, and
+         with start() firing immediately its timestamps anchor cleanly at zero
+         alongside the first video frame. Any delay between the two (either
+         order) was the garbled-voice bug — never reintroduce one. */
       const audioTrack = voiceStream && voiceStream.getAudioTracks()[0];
-      session.leadS = REC_LEAD_S;
-      setTimeout(() => {
-        if (this._wcSession !== session) return; // canceled before the lead ended
-        try {
-          if (audioTrack && audioTrack.readyState === 'live') {
-            const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
-            output.addAudioTrack(audioSource);
-            /* errorPromise never resolves — only rejects on capture failure */
-            try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
-          }
-        } catch (err) {
-          /* a silent take beats a dead one — video still records */
-          console.error('[recorder] WebCodecs audio track attach failed', err);
+      try {
+        if (audioTrack && audioTrack.readyState === 'live') {
+          const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
+          output.addAudioTrack(audioSource);
+          /* errorPromise never resolves — only rejects on capture failure */
+          try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
         }
-        output.start().then(() => { state.ready = true; }).catch((err) => {
-          state.failed = true;
-          this.stalled = true;
-          console.error('[recorder] WebCodecs output failed to start', err);
-        });
-      }, REC_LEAD_S * 1000);
+      } catch (err) {
+        /* a silent take beats a dead one — video still records */
+        console.error('[recorder] WebCodecs audio track attach failed', err);
+      }
+      output.start().then(() => { state.ready = true; }).catch((err) => {
+        state.failed = true;
+        this.stalled = true;
+        console.error('[recorder] WebCodecs output failed to start', err);
+      });
 
       this._wcSession = session;
       this.mime = wc.container === 'mp4' ? 'video/mp4' : 'video/webm';
@@ -614,17 +608,16 @@ export class Recorder {
   async _stopWc() {
     const session = this._wcSession;
     this._wcSession = null;
-    /* the file's real duration excludes the source-side opening cut */
-    const lead = session.leadS || 0;
-    const dur = Math.max(0, this.elapsed - lead);
+    /* encode starts at REC, so wall-clock elapsed IS the file's duration */
+    const dur = this.elapsed;
     this._stopWatchdog();
     this.recording = false;
     const cleanup = () => {
       try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
       this._releaseWakeLock();
     };
-    /* stopped before the lead window even ended: the muxer never started —
-       there is no take, and that's not the encoder's fault. No penalty. */
+    /* stopped before the muxer's async start() even resolved: there is no
+       take, and that's not the encoder's fault. No penalty. */
     if (!session.state.ready && dur < 0.25) {
       try { session.output.cancel().catch(() => {}); } catch (_) {}
       cleanup();
@@ -730,10 +723,10 @@ export class Recorder {
   }
 
   stop() {
-    /* WebCodecs takes already had their opening cut AT THE SOURCE (the muxer
-       started REC_LEAD_S late) — the sealed file needs NO post-processing:
-       no re-encode, no audio damage, no wait on stop/save. Only MediaRecorder
-       takes go through the offline ramp trim below. */
+    /* WebCodecs takes are sharp from frame zero (no rate-control ramp), so
+       the sealed file needs NO post-processing: no re-encode, no audio
+       damage, no wait on stop/save. Only MediaRecorder takes go through the
+       offline ramp trim below. */
     if (this.recording && this._wcSession) return this._stopWc();
     return new Promise((resolve) => {
       if (!this.recording) { resolve(null); return; }
