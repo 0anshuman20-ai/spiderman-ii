@@ -125,7 +125,9 @@ export function createStage(canvas) {
      full quality the moment the take ends. */
   const BASE_SAMPLES = 4;
   let renderScale = 1;
+  let curSamples = BASE_SAMPLES;
   function setMsaa(samples) {
+    curSamples = samples;
     try {
       [composerTarget, composer.renderTarget1, composer.renderTarget2].forEach((t) => {
         if (t && 'samples' in t && t.samples !== samples) { t.samples = samples; t.dispose(); }
@@ -133,10 +135,16 @@ export function createStage(canvas) {
     } catch (_) { /* MSAA control is an optimization, never a blocker */ }
   }
   function applyRenderScale(s, { msaaOff = false } = {}) {
+    const samples = msaaOff ? 0 : BASE_SAMPLES;
+    /* EARLY-OUT: a resize + MSAA target rebuild is a multi-hundred-ms hitch
+       (target dispose + realloc + shader re-link). When the stage is already
+       at this exact scale/MSAA — the warmup sized it during the countdown —
+       the real take's captureStream must cost ZERO frames. */
+    if (renderScale === s && curSamples === samples) return;
     renderScale = s;
     const w = Math.max(2, Math.round((W * s) / 2) * 2);
     const h = Math.max(2, Math.round((H * s) / 2) * 2);
-    setMsaa(msaaOff ? 0 : BASE_SAMPLES);
+    setMsaa(samples);
     renderer.setSize(w, h, false); // CSS keeps the canvas at its layout size
     composer.setSize(w, h);
   }
