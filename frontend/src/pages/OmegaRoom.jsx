@@ -22,6 +22,18 @@ import { SourcePanel, RigPanel, OmegaWorldPanel, StuntPanel, MotionBankPanel, Ep
 
 const STILL_DUR = 4;
 
+/* download an object URL RELIABLY: the anchor must live in the document —
+   several browsers silently ignore .click() on a detached anchor */
+function downloadUrl(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { try { a.remove(); } catch (_) {} }, 1000);
+}
+
 const STUNT_BY_KEY = STUNT_PRESETS.reduce((m, s) => { m[s.key] = s; return m; }, {});
 const FORGE_BEATS = [
   ['settle', 'turn', 'reach', 'cast', 'recoil', 'settle'],
@@ -247,10 +259,7 @@ export default function OmegaRoom() {
   const exportVeyl = useCallback((perf) => {
     const blob = exportPerf(perf);
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(perf.name || 'performance').replace(/[^a-z0-9-_]+/gi, '-')}.veyl`;
-    a.click();
+    downloadUrl(url, `${(perf.name || 'performance').replace(/[^a-z0-9-_]+/gi, '-')}.veyl`);
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   }, []);
 
@@ -351,10 +360,7 @@ export default function OmegaRoom() {
         setEpRendering(false);
         epRunRef.current = null;
         if (take) {
-          const a = document.createElement('a');
-          a.href = take.url;
-          a.download = `${episode.name}.${take.ext || 'webm'}`;
-          a.click();
+          downloadUrl(take.url, `${episode.name}.${take.ext || 'webm'}`);
         }
         loadShot();
       },
@@ -379,10 +385,7 @@ export default function OmegaRoom() {
         const take = await rec.stop();
         setExporting(false);
         if (take) {
-          const a = document.createElement('a');
-          a.href = take.url;
-          a.download = `omega-${stunt ? stunt : 'shot'}-${rig}.${take.ext || 'webm'}`;
-          a.click();
+          downloadUrl(take.url, `omega-${stunt ? stunt : 'shot'}-${rig}.${take.ext || 'webm'}`);
         }
       },
     });

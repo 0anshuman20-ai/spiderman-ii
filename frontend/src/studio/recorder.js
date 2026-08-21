@@ -222,6 +222,9 @@ export class Recorder {
       return false;
     } finally {
       tracks.forEach((t) => { try { t.stop(); } catch (_) {} });
+      /* the probe's captureStream installed its own pushFrame closures — release
+         them; the real roll installs fresh ones. Guard: never touch a live take. */
+      try { if (!this.recording && stage && stage.releaseCapture) stage.releaseCapture(); } catch (_) {}
     }
   }
 
@@ -268,9 +271,15 @@ export class Recorder {
     this.recording = true;
     this.startTs = performance.now();
     this._lastChunkAt = this.startTs;
-    this.mime = built.codec.mime;
-    this.ext = built.codec.ext;
+    /* TRUTH IN LABELING: name the file by what the browser ACTUALLY encodes
+       (rec.mimeType), not by what we asked for. When the two drift apart the
+       download gets an extension that doesn't match its container — a file
+       the OS can't identify or play ("downloading idk what"). */
+    const actualMime = (this.rec.mimeType && this.rec.mimeType.length) ? this.rec.mimeType : built.codec.mime;
+    this.mime = actualMime;
+    this.ext = /mp4/i.test(actualMime) ? 'mp4' : 'webm';
     this.tier = tierName;
+    this._stage = stage;
     this._canvasTracks = canvasStream.getVideoTracks();
     this._acquireWakeLock();
 
@@ -330,6 +339,8 @@ export class Recorder {
     }
     this._canvasTracks.forEach((t) => { try { t.stop(); } catch (_) {} });
     this._canvasTracks = [];
+    // hand the render loop back its pre-take cost — see stage.releaseCapture
+    try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
     return true;
   }
 
@@ -343,12 +354,25 @@ export class Recorder {
         // to the voice engine's MediaStreamDestination and must survive the take
         this._canvasTracks.forEach((t) => { try { t.stop(); } catch (_) {} });
         this._canvasTracks = [];
+        try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
         this._releaseWakeLock();
       };
       this.rec.onstop = () => {
         const blob = new Blob(this.chunks, { type: this.mime.split(';')[0] });
         this.recording = false;
         cleanup();
+        /* NEVER download garbage: a stalled/dead encoder can seal a near-empty
+           blob — an unplayable file that looks like a broken download. Below
+           ~50KB there is no take inside; report failure instead of shipping it,
+           and prime the next roll to a safer tier + webm-first ladder. */
+        const minBytes = Math.min(50_000, Math.max(4_000, dur * 15_000)); // duration-aware: never eats a legit micro-take
+        if (!blob.size || blob.size < minBytes) {
+          console.error(`[recorder] take discarded — encoder produced ${blob.size} bytes for a ${dur.toFixed(1)}s take`);
+          this._forcedTier = 'low';
+          this._preferWebm = true;
+          resolve(null);
+          return;
+        }
         resolve({
           blob,
           url: URL.createObjectURL(blob),
