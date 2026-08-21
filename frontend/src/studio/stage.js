@@ -602,8 +602,21 @@ export function createStage(canvas) {
        drops ~44% at 0.75 / ~56% at 2/3, and the mirror copy is gone. */
     captureStream(fpsWanted = 60, scale = 1) {
       if (scale > 0 && scale < 0.999) applyRenderScale(scale, { msaaOff: true });
+      /* FIRST-SECOND SHARPNESS — MediaRecorder rides Chromium's WebRTC encoder
+         stack, whose quality scaler opens every session in "balanced" mode: while
+         rate control ramps (the first ~1s) it is allowed to DOWNSCALE the frames
+         it encodes, then adapts back up — soft, low-res opening second, perfect
+         after. contentHint='detail' flips the track to maintain-resolution: the
+         encoder may drop a frame under pressure but must encode every frame it
+         takes at the track's full resolution, from frame zero. */
+      const pinDetail = (mediaStream) => {
+        try {
+          mediaStream.getVideoTracks().forEach((t) => { t.contentHint = 'detail'; });
+        } catch (_) { /* hint is an optimization, never a blocker */ }
+        return mediaStream;
+      };
       try {
-        const s = canvas.captureStream(0);
+        const s = pinDetail(canvas.captureStream(0));
         const track = s.getVideoTracks()[0];
         if (track && typeof track.requestFrame === 'function') {
           const minGap = 1 / Math.max(1, fpsWanted);
@@ -628,7 +641,7 @@ export function createStage(canvas) {
           return s;
         }
       } catch (_) { /* fall through to the fps-hint capture */ }
-      return canvas.captureStream(fpsWanted);
+      return pinDetail(canvas.captureStream(fpsWanted));
     },
     /* recorder watchdog surface: when was a frame last handed to the encoder,
        and force one through NOW if the render loop is hiccuping */
