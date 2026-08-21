@@ -70,10 +70,19 @@ const WEBM_FIRST = [
    (generous at 810x1440), low to 3.5 Mbps. `scale` is the RENDER factor
    handed to stage.captureStream — the stage renders and captures at that
    resolution for the take; 1 keeps the native canvas. */
+/* wcScale/wcBps are the WEBCODECS-PATH overrides. The render downscale exists
+   to stop MediaRecorder's silent mid-take video stall — but the WebCodecs path
+   can't stall that way: its backpressure DROPS a frame when the encoder is
+   busy (state.pending), so overload costs fps, never a frozen track. That
+   makes native 1080x1920 safe on medium machines via WebCodecs, which is the
+   single biggest visual upgrade a take can get — and the live preview stays
+   sharp during the roll instead of visibly dropping resolution. Low tier
+   (software GL / 2 cores) still downscales: there the RENDER itself is the
+   bottleneck, not just the encoder. */
 const TIERS = {
-  high: { captureFps: 30, scale: 1, videoBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
-  medium: { captureFps: 30, scale: 0.75, videoBps: 6_000_000, audioBps: 160_000, ladder: MP4_FIRST },       // 810x1440
-  low: { captureFps: 24, scale: 2 / 3, videoBps: 3_500_000, audioBps: 128_000, ladder: WEBM_FIRST },        // 720x1280
+  high: { captureFps: 30, scale: 1, videoBps: 12_000_000, wcScale: 1, wcBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
+  medium: { captureFps: 30, scale: 0.75, videoBps: 6_000_000, wcScale: 1, wcBps: 10_000_000, audioBps: 160_000, ladder: MP4_FIRST },  // MR: 810x1440, WC: native
+  low: { captureFps: 24, scale: 2 / 3, videoBps: 3_500_000, wcScale: 0.75, wcBps: 5_000_000, audioBps: 128_000, ladder: WEBM_FIRST }, // MR: 720x1280, WC: 810x1440
 };
 
 const TIER_ORDER = ['high', 'medium', 'low'];
