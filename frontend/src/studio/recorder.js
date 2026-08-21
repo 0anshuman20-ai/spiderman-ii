@@ -40,6 +40,8 @@ import {
   BufferTarget,
   CanvasSource,
   MediaStreamAudioTrackSource,
+  AudioSampleSource,
+  AudioSample,
   getFirstEncodableVideoCodec,
   getFirstEncodableAudioCodec,
 } from 'mediabunny';
