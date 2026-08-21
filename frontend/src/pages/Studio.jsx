@@ -502,9 +502,15 @@ export default function Studio() {
           perf.name = entry.name;
           vault.put(PERFORMANCES, perf).catch(() => {});
         }
-        // auto-download
+        /* auto-download — the anchor MUST be in the document: several browsers
+           silently ignore .click() on a detached anchor, and the extension now
+           always matches the container the encoder actually produced */
         const a = document.createElement('a');
-        a.href = take.url; a.download = `${entry.name}.${take.ext || 'webm'}`; a.click();
+        a.href = take.url; a.download = `${entry.name}.${take.ext || 'webm'}`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { try { a.remove(); } catch (_) {} }, 1000);
         axios.post(`${API}/takes`, {
           name: entry.name, transmission: script ? script.number : null,
           world: stage.worldKey, duration: take.duration, size: take.size, mime: take.mime,
@@ -513,6 +519,11 @@ export default function Studio() {
           axios.post(`${API}/progress/${script.number}`, { recorded: true }).catch(() => {});
           setProgress((p) => ({ ...p, [script.number]: true }));
         }
+      } else {
+        /* the encoder shipped nothing usable — say so instead of silently
+           downloading a broken file; the recorder has already dropped to a
+           safer tier + codec ladder for the next roll */
+        stage.setHud('COSMIC WEAVER ── TAKE FAILED, ENCODER DROPPED TO SAFE MODE — ROLL AGAIN');
       }
     }
   }, [startRecording]);

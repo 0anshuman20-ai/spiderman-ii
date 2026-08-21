@@ -584,6 +584,13 @@ export function createStage(canvas) {
        and force one through NOW if the render loop is hiccuping */
     get lastCaptureFrameAt() { return lastCaptureFrame; },
     forceCaptureFrame() { if (forcePush) forcePush(); },
+    /* LAG FIX: the recorder calls this when a take ends (stop/cancel/warmup).
+       Without it the capture closures — including the downscale mirror's
+       full-canvas drawImage — keep running on EVERY rendered frame forever,
+       and stack up one more copy per take/restart: permanent, compounding
+       lag after the first recording. Releasing them returns the render loop
+       to its pre-take cost and lets the mirror canvas be garbage-collected. */
+    releaseCapture() { pushFrame = null; forcePush = null; },
     dispose() {
       running = false;
       cancelAnimationFrame(rafId);
