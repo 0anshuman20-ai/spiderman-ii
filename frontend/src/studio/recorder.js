@@ -48,14 +48,22 @@ import {
   Conversion,
 } from 'mediabunny';
 
-/* OPENING-SECOND TRIM — every sealed take gets its first ~1s CUT after the
-   stop, regardless of encode path. MediaRecorder takes open soft (WebRTC
-   rate-control ramps every session; no knob disables it), and even the
-   WebCodecs path can open soft under realtime latency mode. mediabunny
-   re-muxes the sealed blob with trim.start, re-encoding offline (no realtime
-   budget, so the re-encode itself has no ramp — uniform quality from the new
-   frame zero). Fail-open: any trim failure ships the original take. */
-const RAMP_TRIM_S = 1.05;      // slightly over 1s so no ramp tail survives the cut
+/* OPENING CUT — two strategies, one per encode path:
+
+   WEBCODECS (primary): cut AT THE SOURCE. The muxer's start() is simply
+   delayed by REC_LEAD_S after REC — video frames are dropped until the output
+   is live (existing behavior), and MediaStreamAudioTrackSource only begins
+   pulling audio once the output starts, so audio and video both begin exactly
+   at the cut point with timestamps anchored at zero. No post-processing, no
+   audio re-encode (bit-identical voice), stop/save stays instant, and burned-
+   in captions are untouched because nothing is ever shifted or re-timed.
+
+   MEDIARECORDER (fallback): the WebRTC rate-control ramp lives INSIDE the
+   encoded stream, so a source-side delay can't remove it — those takes still
+   get the offline mediabunny re-mux with trim.start. Fail-open: any trim
+   failure ships the original take. */
+const REC_LEAD_S = 1.3;        // WebCodecs: encode begins this long after REC
+const RAMP_TRIM_S = 1.3;       // MediaRecorder: post-stop cut (covers the ramp + settle)
 const RAMP_TRIM_MIN_DUR_S = 3; // never trim a micro-take into nothing
 const RAMP_TRIM_MAX_DUR_S = 240; // offline re-encode cost grows with length — cap it
 
@@ -405,11 +413,20 @@ export class Recorder {
         try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
       }
 
-      output.start().then(() => { state.ready = true; }).catch((err) => {
-        state.failed = true;
-        this.stalled = true;
-        console.error('[recorder] WebCodecs output failed to start', err);
-      });
+      /* SOURCE-SIDE OPENING CUT: hold the muxer's start for REC_LEAD_S. Video
+         frames arriving before state.ready are dropped (existing contract) and
+         audio capture only begins once the output is live — so the take's
+         first encoded second is the performer already settled, with A/V in
+         perfect sync from frame zero and no post-stop re-encode ever needed. */
+      session.leadS = REC_LEAD_S;
+      setTimeout(() => {
+        if (this._wcSession !== session) return; // canceled before the lead ended
+        output.start().then(() => { state.ready = true; }).catch((err) => {
+          state.failed = true;
+          this.stalled = true;
+          console.error('[recorder] WebCodecs output failed to start', err);
+        });
+      }, REC_LEAD_S * 1000);
 
       this._wcSession = session;
       this.mime = wc.container === 'mp4' ? 'video/mp4' : 'video/webm';
@@ -587,13 +604,22 @@ export class Recorder {
   async _stopWc() {
     const session = this._wcSession;
     this._wcSession = null;
-    const dur = this.elapsed;
+    /* the file's real duration excludes the source-side opening cut */
+    const lead = session.leadS || 0;
+    const dur = Math.max(0, this.elapsed - lead);
     this._stopWatchdog();
     this.recording = false;
     const cleanup = () => {
       try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
       this._releaseWakeLock();
     };
+    /* stopped before the lead window even ended: the muxer never started —
+       there is no take, and that's not the encoder's fault. No penalty. */
+    if (!session.state.ready && dur < 0.25) {
+      try { session.output.cancel().catch(() => {}); } catch (_) {}
+      cleanup();
+      return null;
+    }
     try {
       /* let the last in-flight add() land — the final frame belongs in the file */
       const t0 = performance.now();
@@ -694,13 +720,11 @@ export class Recorder {
   }
 
   stop() {
-    /* EVERY take gets its opening second cut — WebCodecs included. Even with
-       our own encoder, realtime-latency rate control can open soft, and the
-       performer's first beat is settling into position anyway. _trimRamp is
-       fail-open: if the offline re-encode can't run, the untrimmed take ships. */
-    if (this.recording && this._wcSession) {
-      return this._stopWc().then((take) => this._trimRamp(take));
-    }
+    /* WebCodecs takes already had their opening cut AT THE SOURCE (the muxer
+       started REC_LEAD_S late) — the sealed file needs NO post-processing:
+       no re-encode, no audio damage, no wait on stop/save. Only MediaRecorder
+       takes go through the offline ramp trim below. */
+    if (this.recording && this._wcSession) return this._stopWc();
     return new Promise((resolve) => {
       if (!this.recording) { resolve(null); return; }
       const dur = this.elapsed;
