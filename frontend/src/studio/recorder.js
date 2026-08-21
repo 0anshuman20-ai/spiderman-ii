@@ -50,13 +50,15 @@ import {
 
 /* OPENING CUT — two strategies, one per encode path:
 
-   WEBCODECS (primary): cut AT THE SOURCE. The muxer's start() is simply
-   delayed by REC_LEAD_S after REC — video frames are dropped until the output
-   is live (existing behavior), and MediaStreamAudioTrackSource only begins
-   pulling audio once the output starts, so audio and video both begin exactly
-   at the cut point with timestamps anchored at zero. No post-processing, no
-   audio re-encode (bit-identical voice), stop/save stays instant, and burned-
-   in captions are untouched because nothing is ever shifted or re-timed.
+   WEBCODECS (primary): cut AT THE SOURCE. The muxer's start() AND the mic
+   audio source's construction are both delayed by REC_LEAD_S after REC —
+   video frames are dropped until the output is live (existing behavior), and
+   the mic capture doesn't exist until the same deferred instant, so audio and
+   video begin together at the cut point with timestamps anchored at zero. No
+   post-processing, no audio re-encode (pristine live-mic voice), stop/save
+   stays instant, and burned-in captions can't drift because nothing is ever
+   shifted or re-timed. (Constructing the audio source at REC while start()
+   waited was the garbled-voice bug: it buffered against a late clock.)
 
    MEDIARECORDER (fallback): the WebRTC rate-control ramp lives INSIDE the
    encoded stream, so a source-side delay can't remove it — those takes still
@@ -405,22 +407,30 @@ export class Recorder {
       });
       output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
 
-      const audioTrack = voiceStream && voiceStream.getAudioTracks()[0];
-      if (audioTrack) {
-        const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
-        output.addAudioTrack(audioSource);
-        /* errorPromise never resolves — only rejects on capture failure */
-        try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
-      }
-
       /* SOURCE-SIDE OPENING CUT: hold the muxer's start for REC_LEAD_S. Video
-         frames arriving before state.ready are dropped (existing contract) and
-         audio capture only begins once the output is live — so the take's
-         first encoded second is the performer already settled, with A/V in
-         perfect sync from frame zero and no post-stop re-encode ever needed. */
+         frames arriving before state.ready are dropped (existing contract).
+         CRITICAL: the mic audio source must ALSO be constructed inside this
+         deferred block — MediaStreamAudioTrackSource begins capturing the
+         moment it exists, so attaching it at REC while start() waits 1.3s
+         buffered mistimed audio against a late clock (garbled voice, captions
+         off). Built here, mic capture and video both begin at the exact same
+         wall-clock instant with timestamps anchored at zero — perfect sync,
+         pristine voice, no post-stop re-encode. */
+      const audioTrack = voiceStream && voiceStream.getAudioTracks()[0];
       session.leadS = REC_LEAD_S;
       setTimeout(() => {
         if (this._wcSession !== session) return; // canceled before the lead ended
+        try {
+          if (audioTrack && audioTrack.readyState === 'live') {
+            const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
+            output.addAudioTrack(audioSource);
+            /* errorPromise never resolves — only rejects on capture failure */
+            try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
+          }
+        } catch (err) {
+          /* a silent take beats a dead one — video still records */
+          console.error('[recorder] WebCodecs audio track attach failed', err);
+        }
         output.start().then(() => { state.ready = true; }).catch((err) => {
           state.failed = true;
           this.stalled = true;
