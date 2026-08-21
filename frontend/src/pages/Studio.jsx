@@ -843,6 +843,13 @@ export default function Studio() {
           </span>
         )}
         {recording && <span className="mono text-sm" style={{ color: cutting ? 'var(--cw-muted)' : 'var(--cw-red)' }} data-testid="rec-timer">● {fmtClock(elapsed)}</span>}
+        {/* RESTART — scrap the rolling take, keep nothing, re-roll instantly (hotkey: X) */}
+        {recording && (
+          <button className="cw-chip mono text-[10px]" style={{ padding: '8px 14px', color: 'var(--cw-amber)' }}
+            data-testid="restart-btn" onClick={restartTake} title="Scrap this take and re-roll instantly (X)">
+            <span>↺ RESTART</span>
+          </button>
+        )}
         <button className={`cw-rec ${recording ? 'live' : ''}`} disabled={!booted} data-testid="record-btn" onClick={toggleRec}>
           {recording ? '■ STOP & SAVE' : micOk && !voiceRollable ? '● SCRIPT → REC' : '● REC'}
         </button>
