@@ -224,8 +224,14 @@ export class Recorder {
     } finally {
       tracks.forEach((t) => { try { t.stop(); } catch (_) {} });
       /* the probe's captureStream installed its own pushFrame closures — release
-         them; the real roll installs fresh ones. Guard: never touch a live take. */
-      try { if (!this.recording && stage && stage.releaseCapture) stage.releaseCapture(); } catch (_) {}
+         them; the real roll installs fresh ones. Guard: never touch a live take.
+         keepScale: the take is seconds away at the SAME scale — restoring full
+         resolution here just to re-downscale at REC disposed and reallocated
+         every render target twice, and that churn janked (and visibly softened/
+         froze) the first seconds of every recording. The pipeline now stays at
+         the take's resolution through the handoff; quality restores at take end
+         (or on countdown cancel, which releases without keepScale). */
+      try { if (!this.recording && stage && stage.releaseCapture) stage.releaseCapture({ keepScale: true }); } catch (_) {}
     }
   }
 
@@ -247,6 +253,7 @@ export class Recorder {
     if (!built) {
       console.error('[recorder] MediaRecorder could not be constructed at any tier');
       canvasStream.getVideoTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+      try { if (stage.releaseCapture) stage.releaseCapture(); } catch (_) {} // never leave the preview downscaled
       return false;
     }
     console.log(`[recorder] rolling — tier ${tierName}, codec ${built.codec.mime}`);
@@ -266,6 +273,7 @@ export class Recorder {
     try { this.rec.start(500); } catch (err) {
       console.error('[recorder] MediaRecorder.start failed', err);
       canvasStream.getVideoTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+      try { if (stage.releaseCapture) stage.releaseCapture(); } catch (_) {} // never leave the preview downscaled
       this.rec = null;
       return false;
     }
