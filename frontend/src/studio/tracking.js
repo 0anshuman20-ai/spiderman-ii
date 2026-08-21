@@ -12,7 +12,10 @@ export function makeRig() {
     headRoll: 0, headYaw: 0, headPitch: 0,
     // performer position in frame (drives background parallax)
     root: { x: 0, y: 0, z: 0 },
-    level: 0, expression: 'calm', glitch: 0,
+    /* exprSnap: when true, the suit layer SNAPS its eased expression state to the
+       target instantly on the next frame (then clears the flag). Set at record
+       start so frame one never carries a leftover high-glow expression. */
+    level: 0, expression: 'calm', exprSnap: false, glitch: 0,
     tracking: { face: false, pose: false, hands: false, fps: 0, mode: 'off' },
   };
 }

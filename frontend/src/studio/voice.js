@@ -15,7 +15,14 @@ export const VOICE_PRESETS = {
   clean: { pitch: 0, sub: 0, reverb: 0, static: 0, drive: 0, label: 'CLEAN MIC' },
 };
 
-function makeImpulse(ctx, seconds = 3.4, decay = 2.6) {
+/* IMPULSE LENGTH IS A CPU BUDGET, NOT A TASTE KNOB. A ConvolverNode costs
+   roughly O(impulse length) on the audio render thread, and this graph runs
+   alongside a 12 Mbps video encode. The old 3.4s stereo tail was ~163k
+   samples/channel — the most expensive node in the chain by a wide margin, and
+   the prime suspect for the periodic "jt-jt-jt" thread-starvation buzz in
+   recordings. Presets use wet mixes of 0.05-0.34; at those levels a 0.6s tail
+   is indistinguishable from 3.4s but ~6x cheaper. */
+function makeImpulse(ctx, seconds = 0.6, decay = 2.6) {
   const len = Math.floor(ctx.sampleRate * seconds);
   const buf = ctx.createBuffer(2, len, ctx.sampleRate);
   for (let ch = 0; ch < 2; ch++) {
@@ -148,6 +155,18 @@ export class VoiceEngine {
       this.dest = ctx.createMediaStreamDestination();
       this.monitorGain = ctx.createGain(); this.monitorGain.gain.value = 0;
 
+      /* DIRECT (SAFE) PATH — earbud EQ straight into the dynamics stage,
+         bypassing all four AudioWorklets, both pitch shifters and the
+         convolver. setDirect(true) physically disconnects the expensive
+         branch instead of just muting it, so the audio render thread stops
+         doing the work entirely. This is the guaranteed-clean capture route
+         when the DSP graph is starving under encode load. */
+      this._directGain = ctx.createGain();
+      this._directGain.gain.value = 2.2; // matches inTrim so levels don't jump
+      this._harsh = harsh;
+      this._leveller = leveller;
+      this._direct = false;
+
       // mic -> earbud repair EQ -> gate (natural level) -> trim -> voice layers
       src.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh);
       harsh.connect(this.gateNode); this.gateNode.connect(inTrim);
@@ -184,6 +203,38 @@ export class VoiceEngine {
   }
 
   get stream() { return this.ready ? this.dest.stream : null; }
+
+  get direct() { return !!this._direct; }
+
+  /** Route the mic around the entire effect graph (worklets + convolver) and
+      into the dynamics stage only. Nodes are really disconnected, not muted,
+      so the audio thread reclaims the CPU — this is what stops the periodic
+      "jt-jt-jt" starvation buzz on machines that can't run the full chain
+      while encoding video. Reversible mid-session; safe to call when not ready. */
+  setDirect(on) {
+    on = !!on;
+    if (!this.ready || on === this._direct) return this._direct;
+    try {
+      if (on) {
+        try { this._harsh.disconnect(this.gateNode); } catch (_) {}
+        try { this.fxNode.disconnect(this.convolver); } catch (_) {}
+        this._harsh.connect(this._directGain);
+        this._directGain.connect(this._leveller);
+      } else {
+        try { this._directGain.disconnect(this._leveller); } catch (_) {}
+        try { this._harsh.disconnect(this._directGain); } catch (_) {}
+        this._harsh.connect(this.gateNode);
+        this.fxNode.connect(this.convolver);
+      }
+      this._direct = on;
+      if (this.onStatus) {
+        this.onStatus({ level: 'ok', message: on ? 'voice: DIRECT (fx bypassed)' : 'voice: full chain' });
+      }
+    } catch (err) {
+      if (this.onStatus) this.onStatus({ level: 'error', message: `route switch failed: ${err.message}` });
+    }
+    return this._direct;
+  }
 
   _ramp(param, v) { try { param.setTargetAtTime(v, this.ctx.currentTime, 0.02); } catch (_) {} }
 
