@@ -48,13 +48,13 @@ import {
   Conversion,
 } from 'mediabunny';
 
-/* MEDIARECORDER RAMP TRIM — when a take rides the MediaRecorder fallback, its
-   first ~1s is unavoidably soft (WebRTC rate-control opens every session in a
-   heavily-quantized ramp; no MediaRecorder knob disables it). Those takes get
-   their opening second CUT after the stop: mediabunny re-muxes the sealed blob
-   with trim.start, re-encoding offline (no realtime budget, so the re-encode
-   itself has no ramp — uniform quality from the new frame zero). WebCodecs
-   takes are never trimmed: they're sharp from frame zero by construction. */
+/* OPENING-SECOND TRIM — every sealed take gets its first ~1s CUT after the
+   stop, regardless of encode path. MediaRecorder takes open soft (WebRTC
+   rate-control ramps every session; no knob disables it), and even the
+   WebCodecs path can open soft under realtime latency mode. mediabunny
+   re-muxes the sealed blob with trim.start, re-encoding offline (no realtime
+   budget, so the re-encode itself has no ramp — uniform quality from the new
+   frame zero). Fail-open: any trim failure ships the original take. */
 const RAMP_TRIM_S = 1.05;      // slightly over 1s so no ramp tail survives the cut
 const RAMP_TRIM_MIN_DUR_S = 3; // never trim a micro-take into nothing
 const RAMP_TRIM_MAX_DUR_S = 240; // offline re-encode cost grows with length — cap it
@@ -694,7 +694,13 @@ export class Recorder {
   }
 
   stop() {
-    if (this.recording && this._wcSession) return this._stopWc();
+    /* EVERY take gets its opening second cut — WebCodecs included. Even with
+       our own encoder, realtime-latency rate control can open soft, and the
+       performer's first beat is settling into position anyway. _trimRamp is
+       fail-open: if the offline re-encode can't run, the untrimmed take ships. */
+    if (this.recording && this._wcSession) {
+      return this._stopWc().then((take) => this._trimRamp(take));
+    }
     return new Promise((resolve) => {
       if (!this.recording) { resolve(null); return; }
       const dur = this.elapsed;
@@ -723,7 +729,7 @@ export class Recorder {
           resolve(null);
           return;
         }
-        /* MediaRecorder path only: cut the soft rate-control ramp off the top.
+        /* cut the soft rate-control ramp off the top.
            resolve() unwraps the promise — callers still just await stop(). */
         resolve(this._trimRamp({
           blob,
