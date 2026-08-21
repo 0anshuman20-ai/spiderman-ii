@@ -227,8 +227,10 @@ export class Recorder {
         this._wc = null;
         return null;
       }
-      const w = Math.max(2, Math.round((1080 * tier.scale) / 2) * 2);
-      const h = Math.max(2, Math.round((1920 * tier.scale) / 2) * 2);
+      const wcScale = tier.wcScale ?? tier.scale;
+      const wcBps = tier.wcBps ?? tier.videoBps;
+      const w = Math.max(2, Math.round((1080 * wcScale) / 2) * 2);
+      const h = Math.max(2, Math.round((1920 * wcScale) / 2) * 2);
       const [avc, aac, vpx, opus] = await Promise.all([
         getFirstEncodableVideoCodec(['avc'], { width: w, height: h }),
         getFirstEncodableAudioCodec(['aac'], { numberOfChannels: 2, sampleRate: 48000 }),
@@ -243,13 +245,13 @@ export class Recorder {
       /* trial encode: two real frames off the live canvas (already at the
          take's render scale), sealed into a real container. Time-boxed so a
          hung encoder can't eat the countdown. */
-      const canvas = stage.captureFrames(tier.captureFps, tier.scale, null);
+      const canvas = stage.captureFrames(tier.captureFps, wcScale, null);
       const target = new BufferTarget();
       const output = new Output({
         format: verdict.container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(),
         target,
       });
-      const src = new CanvasSource(canvas, { codec: verdict.video, bitrate: tier.videoBps, keyFrameInterval: 2 });
+      const src = new CanvasSource(canvas, { codec: verdict.video, bitrate: wcBps, keyFrameInterval: 2 });
       output.addVideoTrack(src, { frameRate: tier.captureFps });
       const trial = (async () => {
         await output.start();
@@ -363,7 +365,9 @@ export class Recorder {
       /* the sink runs right after every composer.render(): timestamp off the
          wall clock anchored at the first encoded frame; backpressure by
          dropping (a live source can't be slowed down) */
-      const canvas = stage.captureFrames(tier.captureFps, tier.scale, () => {
+      const wcScale = tier.wcScale ?? tier.scale;
+      const wcBps = tier.wcBps ?? tier.videoBps;
+      const canvas = stage.captureFrames(tier.captureFps, wcScale, () => {
         if (!this.recording || !state.ready || state.pending || state.failed) return;
         const now = performance.now();
         if (!state.t0) state.t0 = now;
@@ -386,7 +390,7 @@ export class Recorder {
 
       session.videoSource = new CanvasSource(canvas, {
         codec: wc.video,
-        bitrate: tier.videoBps,
+        bitrate: wcBps,
         keyFrameInterval: 2,
       });
       output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
