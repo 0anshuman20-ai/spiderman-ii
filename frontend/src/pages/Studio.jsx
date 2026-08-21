@@ -380,16 +380,6 @@ export default function Studio() {
     const script = scriptRef.current;
     stage.setHud(script ? `COSMIC WEAVER ── TRANSMISSION #${String(script.number).padStart(2, '0')}` : 'COSMIC WEAVER ── LIVE');
     beatRef.current = 0; setBeatIdx(0);
-    /* OPENING EXPRESSION — the beat loop only fires when the index CHANGES, so
-       beat 0 never applied and the take opened on whatever expression was left
-       on the rig (a leftover fury/shock kept the lens glow > 1.15 for ~1s,
-       which reads as a blurry first second in the file). Set beat 0's emote
-       explicitly (calm for freestyle) and snap the eased glow to it instantly,
-       so frame one is already at its final, crisp value. */
-    const rig = rigRef.current;
-    rig.expression = (script && script.beats[0] && EMOTE_TO_EXPR[script.beats[0].emote]) || 'calm';
-    rig.exprSnap = true;
-    setExprState(rig.expression);
     recStartRef.current = performance.now();
     perfRecRef.current.start({
       name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'spacespidey-freestyle',

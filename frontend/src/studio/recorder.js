@@ -42,33 +42,7 @@ import {
   MediaStreamAudioTrackSource,
   getFirstEncodableVideoCodec,
   getFirstEncodableAudioCodec,
-  Input,
-  BlobSource,
-  ALL_FORMATS,
-  Conversion,
 } from 'mediabunny';
-
-/* OPENING CUT — MediaRecorder path only.
-
-   WEBCODECS (primary): NO cut, by design. WebCodecs encodes at full bitrate
-   from the very first frame (no WebRTC rate-control ramp), so there is
-   nothing soft to remove. Audio source construction and output.start() both
-   happen synchronously at REC: mic capture and video begin at the same
-   wall-clock instant with timestamps anchored at zero — perfect A/V sync,
-   pristine live-mic voice, captions can't drift, stop/save stays instant.
-   (A source-side start delay was tried and reverted: holding start() while
-   the audio source already existed buffered mistimed audio against a late
-   clock, and deferring the audio source's construction alongside start()
-   still produced garbled voice — mediabunny's MediaStream sources are only
-   reliable when capture begins with the muxer. Simple and working wins.)
-
-   MEDIARECORDER (fallback): the WebRTC rate-control ramp lives INSIDE the
-   encoded stream, so a source-side delay can't remove it — those takes get
-   the offline mediabunny re-mux with trim.start. Fail-open: any trim
-   failure ships the original take. */
-const RAMP_TRIM_S = 1.3;       // MediaRecorder: post-stop cut (covers the ramp + settle)
-const RAMP_TRIM_MIN_DUR_S = 3; // never trim a micro-take into nothing
-const RAMP_TRIM_MAX_DUR_S = 240; // offline re-encode cost grows with length — cap it
 
 const MP4_FIRST = [
   { mime: 'video/mp4;codecs=avc1.640028,mp4a.40.2', ext: 'mp4' }, // H.264 High + AAC-LC (hardware on most machines)
@@ -408,24 +382,14 @@ export class Recorder {
       });
       output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
 
-      /* AUDIO + START, TOGETHER AT REC — the proven-working shape. The mic
-         audio source is constructed and the muxer started at the same instant:
-         MediaStreamAudioTrackSource begins capturing the moment it exists, and
-         with start() firing immediately its timestamps anchor cleanly at zero
-         alongside the first video frame. Any delay between the two (either
-         order) was the garbled-voice bug — never reintroduce one. */
       const audioTrack = voiceStream && voiceStream.getAudioTracks()[0];
-      try {
-        if (audioTrack && audioTrack.readyState === 'live') {
-          const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
-          output.addAudioTrack(audioSource);
-          /* errorPromise never resolves — only rejects on capture failure */
-          try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
-        }
-      } catch (err) {
-        /* a silent take beats a dead one — video still records */
-        console.error('[recorder] WebCodecs audio track attach failed', err);
+      if (audioTrack) {
+        const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
+        output.addAudioTrack(audioSource);
+        /* errorPromise never resolves — only rejects on capture failure */
+        try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
       }
+
       output.start().then(() => { state.ready = true; }).catch((err) => {
         state.failed = true;
         this.stalled = true;
@@ -608,7 +572,6 @@ export class Recorder {
   async _stopWc() {
     const session = this._wcSession;
     this._wcSession = null;
-    /* encode starts at REC, so wall-clock elapsed IS the file's duration */
     const dur = this.elapsed;
     this._stopWatchdog();
     this.recording = false;
@@ -616,13 +579,6 @@ export class Recorder {
       try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
       this._releaseWakeLock();
     };
-    /* stopped before the muxer's async start() even resolved: there is no
-       take, and that's not the encoder's fault. No penalty. */
-    if (!session.state.ready && dur < 0.25) {
-      try { session.output.cancel().catch(() => {}); } catch (_) {}
-      cleanup();
-      return null;
-    }
     try {
       /* let the last in-flight add() land — the final frame belongs in the file */
       const t0 = performance.now();
@@ -664,69 +620,7 @@ export class Recorder {
     };
   }
 
-  /** cut the soft opening ramp off a MediaRecorder take. FAIL-OPEN by design:
-      any error, an unsupported decoder, or a suspiciously small result ships
-      the ORIGINAL take — a slightly soft first second beats a lost take. */
-  async _trimRamp(take) {
-    if (!take) return take;
-    if (take.duration < RAMP_TRIM_MIN_DUR_S || take.duration > RAMP_TRIM_MAX_DUR_S) return take;
-    if (typeof window === 'undefined' ||
-        typeof window.VideoDecoder !== 'function' ||
-        typeof window.VideoEncoder !== 'function') return take;
-    try {
-      const t0 = performance.now();
-      const input = new Input({ source: new BlobSource(take.blob), formats: ALL_FORMATS });
-      const target = new BufferTarget();
-      const output = new Output({
-        format: take.ext === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(),
-        target,
-      });
-      const tier = TIERS[take.tier] || TIERS.medium;
-      const conversion = await Conversion.init({
-        input,
-        output,
-        trim: { start: RAMP_TRIM_S },
-        video: { bitrate: tier.videoBps },
-        audio: { bitrate: tier.audioBps },
-        showWarnings: false,
-      });
-      if (!conversion.isValid) {
-        try { await conversion.cancel(); } catch (_) {}
-        console.warn('[recorder] ramp trim skipped — conversion invalid for this take, shipping untrimmed');
-        return take;
-      }
-      await conversion.execute();
-      const buffer = target.buffer;
-      const dur = Math.max(0.1, take.duration - RAMP_TRIM_S);
-      const minBytes = Math.min(50_000, Math.max(4_000, dur * 15_000));
-      if (!buffer || buffer.byteLength < minBytes) {
-        console.warn(`[recorder] ramp trim produced ${buffer ? buffer.byteLength : 0} bytes — shipping untrimmed`);
-        return take;
-      }
-      const mime = take.ext === 'mp4' ? 'video/mp4' : 'video/webm';
-      const blob = new Blob([buffer], { type: mime });
-      try { URL.revokeObjectURL(take.url); } catch (_) {}
-      console.log(`[recorder] opening ramp cut — first ${RAMP_TRIM_S}s removed in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
-      return {
-        ...take,
-        blob,
-        url: URL.createObjectURL(blob),
-        duration: dur,
-        size: blob.size,
-        mime,
-        trimmed: RAMP_TRIM_S,
-      };
-    } catch (err) {
-      console.warn('[recorder] ramp trim failed — shipping untrimmed take', err);
-      return take;
-    }
-  }
-
   stop() {
-    /* WebCodecs takes are sharp from frame zero (no rate-control ramp), so
-       the sealed file needs NO post-processing: no re-encode, no audio
-       damage, no wait on stop/save. Only MediaRecorder takes go through the
-       offline ramp trim below. */
     if (this.recording && this._wcSession) return this._stopWc();
     return new Promise((resolve) => {
       if (!this.recording) { resolve(null); return; }
@@ -756,9 +650,7 @@ export class Recorder {
           resolve(null);
           return;
         }
-        /* cut the soft rate-control ramp off the top.
-           resolve() unwraps the promise — callers still just await stop(). */
-        resolve(this._trimRamp({
+        resolve({
           blob,
           url: URL.createObjectURL(blob),
           duration: dur,
@@ -767,7 +659,7 @@ export class Recorder {
           ext: this.ext,
           tier: this.tier,
           createdAt: new Date().toISOString(),
-        }));
+        });
       };
       /* FLUSH THE TAIL: with 500ms timeslices the final <=500ms of audio+video
          rides only on the browser's implicit stop-flush — which Chromium has
