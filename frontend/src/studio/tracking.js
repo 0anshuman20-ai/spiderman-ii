@@ -83,6 +83,22 @@ export class Tracker {
         });
       };
       try { await mk('GPU')(); } catch (_) { await mk('CPU')(); }
+      /* FIRST-INFERENCE WARMUP — each model's first detect call compiles its
+         GPU kernels (hundreds of ms EACH). On the old path those four stalls
+         landed inside the first LIVE frames: the opening seconds froze and
+         stuttered. Paying them here, behind the boot screen, means frame one
+         of the live preview already runs at steady-state speed. */
+      try {
+        this.drawCrop();
+        const now = performance.now();
+        this.face.detectForVideo(this.canvas, now);
+        this.pose.detectForVideo(this.canvas, now);
+        this.hand.detectForVideo(this.canvas, now + 1);
+        this.segCtx.drawImage(this.canvas, 0, 0, SEG_W, SEG_H);
+        const res = this.seg.segmentForVideo(this.segCanvas, now);
+        const mask = res && res.confidenceMasks && res.confidenceMasks[0];
+        if (mask && mask.close) mask.close();
+      } catch (_) { /* warmup is best-effort — live tick warms whatever it missed */ }
       this.running = true;
       this.rig.tracking.mode = 'live';
       return true;

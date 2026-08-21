@@ -125,7 +125,10 @@ export function createStage(canvas) {
      full quality the moment the take ends. */
   const BASE_SAMPLES = 4;
   let renderScale = 1;
+  let currentMsaa = BASE_SAMPLES;
   function setMsaa(samples) {
+    if (currentMsaa === samples) return; // already there — never churn targets for nothing
+    currentMsaa = samples;
     try {
       [composerTarget, composer.renderTarget1, composer.renderTarget2].forEach((t) => {
         if (t && 'samples' in t && t.samples !== samples) { t.samples = samples; t.dispose(); }
@@ -133,10 +136,16 @@ export function createStage(canvas) {
     } catch (_) { /* MSAA control is an optimization, never a blocker */ }
   }
   function applyRenderScale(s, { msaaOff = false } = {}) {
+    const samples = msaaOff ? 0 : BASE_SAMPLES;
+    /* NO-OP GUARD — re-applying the scale the pipeline is already at used to
+       dispose + reallocate every render target anyway (renderer, composer,
+       bloom). The warmup probe and the take request the same scale seconds
+       apart; without this guard that handoff janked the first recorded frames. */
+    if (s === renderScale && samples === currentMsaa) return;
     renderScale = s;
     const w = Math.max(2, Math.round((W * s) / 2) * 2);
     const h = Math.max(2, Math.round((H * s) / 2) * 2);
-    setMsaa(msaaOff ? 0 : BASE_SAMPLES);
+    setMsaa(samples);
     renderer.setSize(w, h, false); // CSS keeps the canvas at its layout size
     composer.setSize(w, h);
   }
@@ -535,6 +544,21 @@ export function createStage(canvas) {
         simActor.setRim(rimFor(worldKey).getHex());
         simRoot.add(simActor.group);
       }
+      /* SHADER PREWARM — three.js compiles every material the first time it is
+         rendered; on the old path those compiles (world + suit compositor +
+         bloom + grade, easily 1-2s combined on an integrated GPU) landed inside
+         the first LIVE frames: the preview opened frozen and soft. Compiling
+         and rendering two full frames HERE — while the boot screen still covers
+         the canvas — means the first visible frame already runs at full speed. */
+      try {
+        const t0 = performance.now() / 1000;
+        if (suitLayer) suitLayer.update(t0, 1 / 60);
+        world.update(t0, 1 / 60);
+        renderer.compile(scene, camera);
+        composer.render();
+        composer.render();
+      } catch (err) { console.warn('[stage] shader prewarm skipped', err); }
+      lastT = performance.now() / 1000; // the compile stall must not become a giant first dt
       loop(onFrame);
     },
     setWorld(k, params) {
@@ -616,10 +640,15 @@ export function createStage(canvas) {
        lag after the first recording. Releasing them returns the render loop
        to its pre-take cost, and full render quality (native res, MSAA,
        bloom) comes back the moment the take is over. */
-    releaseCapture() {
+    releaseCapture({ keepScale = false } = {}) {
       pushFrame = null; forcePush = null;
       recLowT = 0;
       bloom.enabled = true;
+      /* keepScale: the countdown warmup probe hands off to the real take —
+         leave the take's render scale in place so REC starts on an already
+         warm, already allocated pipeline (zero realloc, zero resolution snap
+         in the first recorded frames). Full quality restores at take end. */
+      if (keepScale) return;
       if (renderScale !== 1) applyRenderScale(1);
       else setMsaa(BASE_SAMPLES);
     },

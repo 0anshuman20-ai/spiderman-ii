@@ -451,6 +451,18 @@ export default function Studio() {
       clearInterval(countdownRef.current);
       countdownRef.current = null;
       setCountdown(null);
+      /* the countdown's warmup probe holds the take's render scale through the
+         handoff (so REC starts on a warm pipeline) — a CANCELLED countdown must
+         give the preview its full quality back. The delayed pass covers a probe
+         still in flight at cancel time; both are guarded so they can never touch
+         a take that started in the meantime. */
+      if (stage.releaseCapture) stage.releaseCapture();
+      setTimeout(() => {
+        const r = recorderRef.current;
+        if (!countdownRef.current && r && !r.recording && stageRef.current && stageRef.current.releaseCapture) {
+          stageRef.current.releaseCapture();
+        }
+      }, 1600);
       return;
     }
     if (!rec.recording) {
