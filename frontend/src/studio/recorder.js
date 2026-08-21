@@ -48,7 +48,7 @@ import {
   Conversion,
 } from 'mediabunny';
 
-/* MEDIARECORDER RAMP TRIM — when a take rides the MediaRecorder fallback, its
+/* OPENING RAMP TRIM — applied to EVERY take (WebCodecs and MediaRecorder): its
    first ~1s is unavoidably soft (WebRTC rate-control opens every session in a
    heavily-quantized ramp; no MediaRecorder knob disables it). Those takes get
    their opening second CUT after the stop: mediabunny re-muxes the sealed blob
@@ -623,7 +623,11 @@ export class Recorder {
       return null;
     }
     const blob = new Blob([buffer], { type: this.mime });
-    return {
+    /* EVERY path gets the opening cut now — the first second still reads soft
+       on some machines even on WebCodecs (encoder rate-control settling), so
+       the take ships with the first ~1s removed regardless of capture path.
+       _trimRamp is fail-open: if the re-encode can't run, the original ships. */
+    return this._trimRamp({
       blob,
       url: URL.createObjectURL(blob),
       duration: dur,
@@ -632,7 +636,7 @@ export class Recorder {
       ext: this.ext,
       tier: this.tier,
       createdAt: new Date().toISOString(),
-    };
+    });
   }
 
   /** cut the soft opening ramp off a MediaRecorder take. FAIL-OPEN by design:
