@@ -926,16 +926,9 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       maskTex.needsUpdate = true;
     }
 
-    // expression preset eases in — unless the rig asked for an instant snap
-    // (record start sets exprSnap so frame one of a take never carries a
-    // leftover high glow easing down: no first-second lens blur in the file)
+    // expression preset eases in
     const target = EXPR[rig.expression] || EXPR.calm;
-    if (rig.exprSnap) {
-      ['lens', 'asym', 'glow'].forEach((key) => { exprState[key] = target[key]; });
-      rig.exprSnap = false;
-    } else {
-      ['lens', 'asym', 'glow'].forEach((key) => { exprState[key] += (target[key] - exprState[key]) * k; });
-    }
+    ['lens', 'asym', 'glow'].forEach((key) => { exprState[key] += (target[key] - exprState[key]) * k; });
 
     drawOverlay(t, dt);
   }
