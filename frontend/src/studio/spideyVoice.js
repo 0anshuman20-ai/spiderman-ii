@@ -204,6 +204,11 @@ export class SpideyVoice {
     this._recogOn = false;
     this._recogWords = 0;
     this._wordsAtLineStart = 0;
+    /* recognizer word count at the moment the PREVIOUS line ended — any words
+       past this while idle belong to the NEXT line, and their arrival fires it
+       (the recognition half of the dual trigger) */
+    this._wordsAtIdle = 0;
+    this._recogStartedForTake = false;
   }
 
   /** seconds of the CURRENT line present on the recorder's AudioContext
@@ -568,6 +573,13 @@ export class SpideyVoice {
     this._lastLiveElapsed = 0;
     this._recogWords = 0;
     this._wordsAtLineStart = 0;
+    this._wordsAtIdle = 0;
+    /* FULL RECOGNITION RESET — an aborted/restarted take used to leave
+       _recogStartedForTake latched true, so the recognizer never re-armed on
+       the next roll and the karaoke fell back to pure time estimates. Kill any
+       stale session too: _updateLiveMic starts a fresh one on the new take. */
+    this._recogStartedForTake = false;
+    if (this._recogOn || this._recog) this._stopRecognition();
   }
 
   /** the whole script has been spoken and nothing is playing — the outro window */
@@ -907,6 +919,19 @@ export class SpideyVoice {
     }
   }
 
+  /** WORD-INDEX KARAOKE — the confirmed word of the CURRENT live-mic line, or
+      null when recognition hasn't reported for it yet. The stage slaves the
+      highlight to this exact index: no estimate, no lapping your real words. */
+  recogWordIndex() {
+    if (!this.micMode || !this._recogOn || this.currentLine < 0) return null;
+    const l = this.lines[this.currentLine];
+    if (!l) return null;
+    const total = l.text.split(/\s+/).filter(Boolean).length || 1;
+    const heard = this._recogWords - this._wordsAtLineStart;
+    if (heard <= 0) return null;
+    return Math.min(total - 1, heard - 1);
+  }
+
   _startLiveLine() {
     const i = this.idx;
     this.playing = true;
@@ -920,7 +945,10 @@ export class SpideyVoice {
        the caption clock starts at the true first voiced instant */
     this.lineStartedAt = performance.now() - this._voicedT * 1000;
     this.lineStartedCtx = this.ctx.currentTime - this._voicedT;
-    this._wordsAtLineStart = this._recogWords;
+    /* the line's word baseline is where the PREVIOUS line ended, not "now":
+       when recognition itself fired this line, the words that fired it must
+       count toward it — snapshotting _recogWords here would swallow them */
+    this._wordsAtLineStart = Math.min(this._recogWords, this._wordsAtIdle);
     this._voicedT = 0;
   }
 
@@ -939,6 +967,9 @@ export class SpideyVoice {
     this._quietT = 0.2;
     this._voicedT = 0;
     this._sinceEnd = 0;
+    // words confirmed so far belong to the finished line; anything past this
+    // count while idle is the NEXT line speaking — the recognition trigger
+    this._wordsAtIdle = this._recogWords;
     // the line really ended when the silence STARTED, not when we confirmed it
     this.lastEndedAt = performance.now() - (sil || 0) * 1000;
   }
@@ -957,7 +988,10 @@ export class SpideyVoice {
     if (rms < this._noiseFloor) this._noiseFloor += (rms - this._noiseFloor) * Math.min(1, dt * 5);
     else this._noiseFloor += (rms - this._noiseFloor) * Math.min(1, dt * 0.04);
     this._noiseFloor = Math.min(this._noiseFloor, 0.25);
-    const voiced = rms > Math.max(0.02, this._noiseFloor * 3 + 0.012);
+    /* lowered floor (0.015 / x2.6): browser noiseSuppression leaves a quiet
+       earbud hovering under the old max(0.02, floor*3+0.012) — the onset never
+       confirmed and NO caption ever fired. Recognition below is the backstop. */
+    const voiced = rms > Math.max(0.015, this._noiseFloor * 2.6 + 0.009);
     this.level = { rms, gateOpen: voiced };
 
     // the recognizer rides the take: on when rolling, off when cut
@@ -994,9 +1028,14 @@ export class SpideyVoice {
     }
     if (this.idx >= this.lines.length) return;
     if (voiced) this._voicedT += dt; else { this._voicedT = 0; this._quietT += dt; }
-    /* onset: ~70ms of sustained voice fires the next line; the anchors are
-       back-dated by that confirmation window so nothing is ever late */
-    if (this._voicedT >= 0.07) this._startLiveLine();
+    /* DUAL TRIGGER — whichever detector hears you first fires the line:
+       1. VAD onset: ~70ms of sustained voice (back-dated anchors, zero lag);
+       2. RECOGNITION: new words past the previous line's count. A too-quiet
+          mic that never clears the VAD floor still fires the line the moment
+          the recognizer confirms you are speaking — captions can no longer
+          go missing on a soft capsule. */
+    const recogHeard = this._recogOn && this._recogWords > this._wordsAtIdle;
+    if (this._voicedT >= 0.07 || recogHeard) this._startLiveLine();
   }
 
   stopPlayback() {

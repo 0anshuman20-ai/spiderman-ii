@@ -280,6 +280,14 @@ export default function Studio() {
             /* the karaoke re-reads the real audio playhead every frame; guarded
                by line identity so a stale closure can't pace the wrong line */
             clock: () => (voice.currentLine === myLine ? voice.lineElapsed() : null),
+            /* LIVE MIC: the performer is ALREADY speaking when the line fires —
+               draw word 1 hot this frame instead of waiting on playhead math,
+               and slave the highlight to the recognizer's confirmed word index
+               so it rides your real words, never a timing estimate */
+            immediate: !!voice.micMode,
+            wordIndex: voice.micMode
+              ? () => (voice.currentLine === myLine ? voice.recogWordIndex() : null)
+              : null,
           });
         }
       }
@@ -412,7 +420,10 @@ export default function Studio() {
       music && music.resume ? music.resume() : Promise.resolve(),
     ]);
     const audioStream = (voice && voice.ready && voice.stream) || (music && music.stream) || null;
-    const rolled = rec.start(stage, audioStream);
+    /* MIC-AWARE TIER: a live getUserMedia graph + a parallel recognition
+       session add real encode-adjacent load — tell the recorder so it steps
+       the capture tier down one level on mic takes */
+    const rolled = rec.start(stage, audioStream, { micLive: !!(voice && voice.ready && voice.micMode) });
     if (!rolled) {
       // encoder refused at every tier — undo the roll cleanly instead of faking it
       perfRecRef.current.stop();
@@ -450,6 +461,12 @@ export default function Studio() {
         setScriptOpen(true);
         return;
       }
+      /* COUNTDOWN WARMUP SELF-TEST — the 3 seconds of the countdown run a
+         throwaway recorder probe on the real stream/codec. If the encoder
+         can't actually produce data at the picked tier, the recorder forces a
+         lower tier + webm-first ladder BEFORE the take rolls — the performer
+         never burns a take discovering the machine can't keep up. */
+      rec.warmup(stage, { micLive: !!(voice && voice.ready && voice.micMode) }).catch(() => {});
       // 3-2-1 before the roll; ticks are synth blips (silent if audio never came up)
       let n = 3;
       setCountdown(n);
@@ -502,6 +519,25 @@ export default function Studio() {
 
   // the telemetry poll cuts the take through this ref — always the latest closure
   useEffect(() => { toggleRecRef.current = toggleRec; }, [toggleRec]);
+
+  /* RESTART — scrap the rolling take and re-roll INSTANTLY. cancel() keeps
+     nothing (no chunks, no upload, no takes-list entry) and the fresh roll
+     re-arms the voice/captions from line 1. No countdown: the performer is
+     already framed and warm — the 3-2-1 is for cold starts, not retakes. */
+  const restartTake = useCallback(() => {
+    const rec = recorderRef.current;
+    const stage = stageRef.current;
+    if (!stage || !rec || !rec.recording) return;
+    rec.cancel();               // discard every byte of the bad take
+    perfRecRef.current.stop();  // and its rig timeline
+    if (voiceRef.current) voiceRef.current.stopPlayback();
+    if (musicRef.current) musicRef.current.stopScore();
+    stage.setCaption(null);
+    setRecording(false); setElapsed(0); setCutting(false);
+    doneTRef.current = 0;
+    outroFiredRef.current = false;
+    startRecording();
+  }, [startRecording]);
 
   const pickScript = useCallback((s) => {
     scriptRef.current = s;
@@ -586,11 +622,12 @@ export default function Studio() {
       if (worldKeys[k]) setWorld(worldKeys[k]);
       else if (exprKeys[k]) setExpr(exprKeys[k]);
       else if (k === 'g') doGlitch();
+      else if (k === 'x') restartTake(); // scrap the take, re-roll instantly (no-op unless rolling)
       else if (k === ' ') { ev.preventDefault(); toggleRec(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [booted, scriptOpen, setWorld, setExpr, doGlitch, toggleRec]);
+  }, [booted, scriptOpen, setWorld, setExpr, doGlitch, toggleRec, restartTake]);
 
   /* SCRIPT & VOICE sheet — hand over the script, pre-voice every line */
   const openScript = useCallback(() => {
