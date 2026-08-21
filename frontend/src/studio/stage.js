@@ -643,6 +643,37 @@ export function createStage(canvas) {
       } catch (_) { /* fall through to the fps-hint capture */ }
       return pinDetail(canvas.captureStream(fpsWanted));
     },
+    /* DIRECT FRAME SINK — the WebCodecs recording path. Instead of a
+       MediaStream (whose WebRTC encoder stack owns rate control and opens
+       every session soft — the blurry first second), the recorder registers a
+       sink callback here and encodes the canvas itself via VideoEncoder.
+       The render loop invokes the sink right after composer.render() —
+       throttled to the tier's fps — so every encoded frame is a finished,
+       full-resolution frame from frame zero. Same render-downscale and
+       watchdog semantics as captureStream; returns the live canvas so the
+       recorder can build its CanvasSource on it. */
+    captureFrames(fpsWanted = 30, scale = 1, sink = null) {
+      if (scale > 0 && scale < 0.999) applyRenderScale(scale, { msaaOff: true });
+      if (typeof sink === 'function') {
+        const minGap = 1 / Math.max(1, fpsWanted);
+        let lastPush = 0;
+        const deliver = () => {
+          try {
+            sink();
+            lastCaptureFrame = performance.now();
+          } catch (_) { pushFrame = null; forcePush = null; }
+        };
+        pushFrame = () => {
+          const now = performance.now() / 1000;
+          if (now - lastPush < minGap * 0.85) return;
+          lastPush = now;
+          deliver();
+        };
+        forcePush = deliver;
+        lastCaptureFrame = performance.now();
+      }
+      return canvas;
+    },
     /* recorder watchdog surface: when was a frame last handed to the encoder,
        and force one through NOW if the render loop is hiccuping */
     get lastCaptureFrameAt() { return lastCaptureFrame; },

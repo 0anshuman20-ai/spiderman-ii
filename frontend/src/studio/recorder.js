@@ -24,6 +24,26 @@
    options -> mime only -> bare recorder, stepping down the ladder, so a picky
    encoder yields a softer file, never a dead take. */
 
+/* WEBCODECS PATH (primary when available): MediaRecorder rides Chromium's
+   WebRTC encoder stack, whose rate control opens every session in a ramp —
+   the first ~1s GOP is heavily quantized (soft/blurry), then sharpens. No
+   MediaRecorder knob can fix that. Encoding ourselves via WebCodecs +
+   mediabunny gives full-bitrate encode from FRAME ZERO: mediabunny wraps
+   VideoEncoder (no WebRTC scaler, no ramp), muxes an upload-ready MP4
+   (H.264/AAC) or WebM (VP9/Opus) client-side, and the countdown warmup
+   trial-encodes real frames so an unsupported machine falls back to the
+   battle-tested MediaRecorder ladder BEFORE a take is ever burned. */
+import {
+  Output,
+  Mp4OutputFormat,
+  WebMOutputFormat,
+  BufferTarget,
+  CanvasSource,
+  MediaStreamAudioTrackSource,
+  getFirstEncodableVideoCodec,
+  getFirstEncodableAudioCodec,
+} from 'mediabunny';
+
 const MP4_FIRST = [
   { mime: 'video/mp4;codecs=avc1.640028,mp4a.40.2', ext: 'mp4' }, // H.264 High + AAC-LC (hardware on most machines)
   { mime: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', ext: 'mp4' }, // H.264 Baseline fallback
@@ -138,6 +158,11 @@ export class Recorder {
        the countdown probe once will fail it again */
     this._forcedTier = null;
     this._preferWebm = false;
+    /* WebCodecs verdict from the countdown trial encode:
+       undefined = not probed yet, null = unsupported (use MediaRecorder),
+       { container, video, audio } = proven working — the real take uses it */
+    this._wc = undefined;
+    this._wcSession = null; // live WebCodecs take: { output, target, videoSource, state }
   }
 
   /* pause/resume were removed on purpose: MediaRecorder.pause()/resume() on a
@@ -180,6 +205,66 @@ export class Recorder {
     return name;
   }
 
+  /** WEBCODECS TRIAL ENCODE — resolve which codec/container this machine can
+      encode with WebCodecs at the tier's real resolution, then PROVE it by
+      encoding two actual frames off the live canvas into a throwaway muxer.
+      Support flags lie under pressure; produced bytes don't. The verdict is
+      cached: a machine doesn't change mid-session. */
+  async _probeWebCodecs(stage, tier) {
+    if (this._wc !== undefined) return this._wc;
+    try {
+      if (typeof window === 'undefined' || typeof window.VideoEncoder !== 'function' ||
+          typeof stage.captureFrames !== 'function') {
+        this._wc = null;
+        return null;
+      }
+      const w = Math.max(2, Math.round((1080 * tier.scale) / 2) * 2);
+      const h = Math.max(2, Math.round((1920 * tier.scale) / 2) * 2);
+      const [avc, aac, vpx, opus] = await Promise.all([
+        getFirstEncodableVideoCodec(['avc'], { width: w, height: h }),
+        getFirstEncodableAudioCodec(['aac'], { numberOfChannels: 2, sampleRate: 48000 }),
+        getFirstEncodableVideoCodec(['vp9', 'vp8'], { width: w, height: h }),
+        getFirstEncodableAudioCodec(['opus'], { numberOfChannels: 2, sampleRate: 48000 }),
+      ]);
+      let verdict = null;
+      if (avc && aac) verdict = { container: 'mp4', video: 'avc', audio: 'aac' };
+      else if (vpx && opus) verdict = { container: 'webm', video: vpx, audio: 'opus' };
+      if (!verdict) { this._wc = null; return null; }
+
+      /* trial encode: two real frames off the live canvas (already at the
+         take's render scale), sealed into a real container. Time-boxed so a
+         hung encoder can't eat the countdown. */
+      const canvas = stage.captureFrames(tier.captureFps, tier.scale, null);
+      const target = new BufferTarget();
+      const output = new Output({
+        format: verdict.container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(),
+        target,
+      });
+      const src = new CanvasSource(canvas, { codec: verdict.video, bitrate: tier.videoBps, keyFrameInterval: 2 });
+      output.addVideoTrack(src, { frameRate: tier.captureFps });
+      const trial = (async () => {
+        await output.start();
+        await src.add(0, 1 / tier.captureFps);
+        await src.add(1 / tier.captureFps, 1 / tier.captureFps);
+        await output.finalize();
+        return !!(target.buffer && target.buffer.byteLength > 0);
+      })();
+      const ok = await Promise.race([
+        trial.catch(() => false),
+        new Promise((r) => setTimeout(() => r(false), 1800)),
+      ]);
+      if (!ok) { try { await output.cancel(); } catch (_) {} }
+      this._wc = ok ? verdict : null;
+      if (ok) console.log(`[recorder] WebCodecs proven — ${verdict.container} (${verdict.video}/${verdict.audio}), sharp from frame zero`);
+      else console.warn('[recorder] WebCodecs trial encode failed — MediaRecorder ladder stays primary');
+      return this._wc;
+    } catch (err) {
+      console.warn('[recorder] WebCodecs probe errored — MediaRecorder ladder stays primary', err);
+      this._wc = null;
+      return null;
+    }
+  }
+
   /** COUNTDOWN WARMUP SELF-TEST — run a ~700ms throwaway MediaRecorder on the
       same stream/codec and confirm a chunk actually arrives. If it doesn't,
       drop one tier + fall back a codec BEFORE the real take starts — the
@@ -188,6 +273,18 @@ export class Recorder {
     if (this.recording) return true;
     const tierName = this._resolveTier(stage, micLive);
     const tier = TIERS[tierName];
+    /* WEBCODECS FIRST — if the trial encode proves the machine can encode at
+       this tier via WebCodecs, the take will use that path (no WebRTC rate-
+       control ramp, sharp from frame zero) and the MediaRecorder probe is
+       unnecessary. The render scale is already applied by the probe's
+       captureFrames call; keepScale holds it warm through the handoff to REC. */
+    try {
+      const wc = await this._probeWebCodecs(stage, tier);
+      if (wc) {
+        try { if (!this.recording && stage.releaseCapture) stage.releaseCapture({ keepScale: true }); } catch (_) {}
+        return true;
+      }
+    } catch (_) { /* fall through to the MediaRecorder probe */ }
     let tracks = [];
     try {
       const s = stage.captureStream(tier.captureFps, tier.scale);
@@ -235,10 +332,118 @@ export class Recorder {
     }
   }
 
+  /** WEBCODECS ROLL — encode the canvas ourselves. Synchronous by contract
+      (Studio expects an immediate boolean): the Output's async start() runs in
+      the background; frames delivered before it resolves are dropped (a few
+      ms of countdown tail, never take content — timestamps anchor at the
+      FIRST ENCODED frame, so the file always starts at 0). Returns false on
+      any construction failure so start() falls through to MediaRecorder. */
+  _startWc(stage, voiceStream, tierName) {
+    const wc = this._wc;
+    const tier = TIERS[tierName];
+    if (!wc || typeof stage.captureFrames !== 'function') return false;
+    try {
+      const target = new BufferTarget();
+      const output = new Output({
+        format: wc.container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(),
+        target,
+      });
+      const state = { ready: false, pending: false, t0: 0, failed: false };
+      const session = { output, target, videoSource: null, state };
+
+      /* the sink runs right after every composer.render(): timestamp off the
+         wall clock anchored at the first encoded frame; backpressure by
+         dropping (a live source can't be slowed down) */
+      const canvas = stage.captureFrames(tier.captureFps, tier.scale, () => {
+        if (!this.recording || !state.ready || state.pending || state.failed) return;
+        const now = performance.now();
+        if (!state.t0) state.t0 = now;
+        state.pending = true;
+        session.videoSource
+          .add((now - state.t0) / 1000, 1 / tier.captureFps)
+          .then(() => {
+            this._lastChunkAt = performance.now(); // encoder health heartbeat
+            this.stalled = false;
+          })
+          .catch((err) => {
+            if (!state.failed) {
+              state.failed = true;
+              this.stalled = true;
+              console.error('[recorder] WebCodecs encode failed mid-take', err);
+            }
+          })
+          .finally(() => { state.pending = false; });
+      });
+
+      session.videoSource = new CanvasSource(canvas, {
+        codec: wc.video,
+        bitrate: tier.videoBps,
+        keyFrameInterval: 2,
+      });
+      output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
+
+      const audioTrack = voiceStream && voiceStream.getAudioTracks()[0];
+      if (audioTrack) {
+        const audioSource = new MediaStreamAudioTrackSource(audioTrack, { codec: wc.audio, bitrate: tier.audioBps });
+        output.addAudioTrack(audioSource);
+        /* errorPromise never resolves — only rejects on capture failure */
+        try { audioSource.errorPromise.catch((err) => console.error('[recorder] WebCodecs audio capture error', err)); } catch (_) {}
+      }
+
+      output.start().then(() => { state.ready = true; }).catch((err) => {
+        state.failed = true;
+        this.stalled = true;
+        console.error('[recorder] WebCodecs output failed to start', err);
+      });
+
+      this._wcSession = session;
+      this.mime = wc.container === 'mp4' ? 'video/mp4' : 'video/webm';
+      this.ext = wc.container;
+      console.log(`[recorder] rolling (WebCodecs) — tier ${tierName}, ${wc.container} ${wc.video}/${wc.audio}`);
+      return true;
+    } catch (err) {
+      console.warn('[recorder] WebCodecs start failed — falling back to MediaRecorder', err);
+      this._wc = null; // proven unreliable: don't try again this session
+      this._wcSession = null;
+      try { if (stage.releaseCapture) stage.releaseCapture({ keepScale: true }); } catch (_) {}
+      return false;
+    }
+  }
+
   start(stage, voiceStream, { micLive = false } = {}) {
     if (this.recording) return false;
     const tierName = this._resolveTier(stage, micLive);
     const tier = TIERS[tierName];
+
+    /* WEBCODECS PRIMARY — proven by the countdown trial encode. Full-bitrate
+       H.264/VP9 from the very first frame: no WebRTC rate-control ramp, no
+       soft opening second. Falls through to the MediaRecorder ladder if
+       construction fails for any reason. */
+    if (this._wc && this._startWc(stage, voiceStream, tierName)) {
+      this.recording = true;
+      this.startTs = performance.now();
+      this._lastChunkAt = this.startTs;
+      this.stalled = false;
+      this.tier = tierName;
+      this._stage = stage;
+      this._canvasTracks = [];
+      this._acquireWakeLock();
+      const periodMs = 1000 / tier.captureFps;
+      this._watchdog = setInterval(() => {
+        if (!this.recording) return;
+        try {
+          const last = typeof stage.lastCaptureFrameAt === 'number' ? stage.lastCaptureFrameAt : 0;
+          if (performance.now() - last > periodMs * 1.5 && typeof stage.forceCaptureFrame === 'function') {
+            stage.forceCaptureFrame();
+          }
+        } catch (_) { /* heartbeat must never kill the take */ }
+        if (this._lastChunkAt && performance.now() - this._lastChunkAt > 2000 && !this.stalled) {
+          this.stalled = true;
+          console.error('[recorder] encoder stalled — no data for >2s while recording');
+        }
+      }, Math.max(8, Math.floor(periodMs)));
+      return true;
+    }
 
     let canvasStream;
     try { canvasStream = stage.captureStream(tier.captureFps, tier.scale); } catch (err) {
@@ -336,6 +541,15 @@ export class Recorder {
     this.recording = false;
     this._stopWatchdog();
     this._releaseWakeLock();
+    /* WebCodecs take: cancel the muxer (releases encoders, drops all bytes) */
+    if (this._wcSession) {
+      const session = this._wcSession;
+      this._wcSession = null;
+      this.stalled = false;
+      try { session.output.cancel().catch(() => {}); } catch (_) {}
+      try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
+      return true;
+    }
     const rec = this.rec;
     this.rec = null;
     this.chunks = [];
@@ -353,7 +567,61 @@ export class Recorder {
     return true;
   }
 
+  /** seal a WebCodecs take: wait out the in-flight frame, finalize the muxer,
+      hand back the same take object shape the MediaRecorder path produces */
+  async _stopWc() {
+    const session = this._wcSession;
+    this._wcSession = null;
+    const dur = this.elapsed;
+    this._stopWatchdog();
+    this.recording = false;
+    const cleanup = () => {
+      try { if (this._stage && this._stage.releaseCapture) this._stage.releaseCapture(); } catch (_) {}
+      this._releaseWakeLock();
+    };
+    try {
+      /* let the last in-flight add() land — the final frame belongs in the file */
+      const t0 = performance.now();
+      while (session.state.pending && performance.now() - t0 < 1500) {
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      /* finalize stops the audio capture, flushes both encoders and seals the
+         container — everything spoken up to this moment is inside */
+      await session.output.finalize();
+    } catch (err) {
+      console.error('[recorder] WebCodecs finalize failed', err);
+      try { session.output.cancel().catch(() => {}); } catch (_) {}
+      cleanup();
+      this._wc = null; // don't trust this path again this session
+      this._preferWebm = true;
+      return null;
+    }
+    cleanup();
+    const buffer = session.target.buffer;
+    const size = buffer ? buffer.byteLength : 0;
+    const minBytes = Math.min(50_000, Math.max(4_000, dur * 15_000));
+    if (!size || size < minBytes) {
+      console.error(`[recorder] take discarded — WebCodecs produced ${size} bytes for a ${dur.toFixed(1)}s take`);
+      this._wc = null;
+      this._forcedTier = 'low';
+      this._preferWebm = true;
+      return null;
+    }
+    const blob = new Blob([buffer], { type: this.mime });
+    return {
+      blob,
+      url: URL.createObjectURL(blob),
+      duration: dur,
+      size: blob.size,
+      mime: this.mime,
+      ext: this.ext,
+      tier: this.tier,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
   stop() {
+    if (this.recording && this._wcSession) return this._stopWc();
     return new Promise((resolve) => {
       if (!this.recording) { resolve(null); return; }
       const dur = this.elapsed;
