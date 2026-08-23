@@ -135,6 +135,21 @@ export function createStage(canvas) {
       });
     } catch (_) { /* MSAA control is an optimization, never a blocker */ }
   }
+  /* CONSISTENT FIRST SECOND — the in-take auto-degrade sheds bloom after the
+     loop has spent 1.2s under 22fps. On a machine that ALREADY renders under
+     22fps that shed fires ~1.2s into EVERY take: the opening second glows and
+     hazes (half-res bloom over a downscaled render), then visibly "snaps
+     sharp" when bloom drops. A look change mid-take reads as a defect; the
+     same look 1.2s early reads as the style. So any capture that starts on a
+     constrained tier (downscaled render OR measured fps already under the
+     degrade threshold) sheds bloom BEFORE its first frame — frame zero and
+     frame forty are identical. releaseCapture restores bloom for the live
+     preview between takes. */
+  function applyCaptureQuality(scale) {
+    if (scale > 0 && scale < 0.999) applyRenderScale(scale, { msaaOff: true });
+    if ((scale > 0 && scale < 0.999) || (fps > 0 && fps < 22)) bloom.enabled = false;
+  }
+
   function applyRenderScale(s, { msaaOff = false } = {}) {
     const samples = msaaOff ? 0 : BASE_SAMPLES;
     /* NO-OP GUARD — re-applying the scale the pipeline is already at used to
@@ -601,7 +616,7 @@ export function createStage(canvas) {
        the take), and the encoder captures the canvas natively: render cost
        drops ~44% at 0.75 / ~56% at 2/3, and the mirror copy is gone. */
     captureStream(fpsWanted = 60, scale = 1) {
-      if (scale > 0 && scale < 0.999) applyRenderScale(scale, { msaaOff: true });
+      applyCaptureQuality(scale);
       /* FIRST-SECOND SHARPNESS — MediaRecorder rides Chromium's WebRTC encoder
          stack, whose quality scaler opens every session in "balanced" mode: while
          rate control ramps (the first ~1s) it is allowed to DOWNSCALE the frames
@@ -653,7 +668,7 @@ export function createStage(canvas) {
        watchdog semantics as captureStream; returns the live canvas so the
        recorder can build its CanvasSource on it. */
     captureFrames(fpsWanted = 30, scale = 1, sink = null) {
-      if (scale > 0 && scale < 0.999) applyRenderScale(scale, { msaaOff: true });
+      applyCaptureQuality(scale);
       if (typeof sink === 'function') {
         const minGap = 1 / Math.max(1, fpsWanted);
         let lastPush = 0;
@@ -687,12 +702,13 @@ export function createStage(canvas) {
     releaseCapture({ keepScale = false } = {}) {
       pushFrame = null; forcePush = null;
       recLowT = 0;
-      bloom.enabled = true;
       /* keepScale: the countdown warmup probe hands off to the real take —
-         leave the take's render scale in place so REC starts on an already
-         warm, already allocated pipeline (zero realloc, zero resolution snap
-         in the first recorded frames). Full quality restores at take end. */
+         leave the take's render scale (AND its bloom shed) in place so REC
+         starts on an already warm, already allocated pipeline: zero realloc,
+         zero resolution snap, zero look change in the first recorded frames.
+         Full quality restores at take end. */
       if (keepScale) return;
+      bloom.enabled = true;
       if (renderScale !== 1) applyRenderScale(1);
       else setMsaa(BASE_SAMPLES);
     },
