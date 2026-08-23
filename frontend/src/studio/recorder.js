@@ -332,6 +332,9 @@ export class Recorder {
     try {
       const s = stage.captureStream(tier.captureFps, tier.scale);
       tracks = s.getVideoTracks();
+      /* same contentHint as the real roll — the warmup verdict must reflect
+         the exact encoder configuration the take will use */
+      tracks.forEach((t) => { try { t.contentHint = 'detail'; } catch (_) {} });
       const built = buildRecorder(new MediaStream(tracks), tier, this._preferWebm ? WEBM_FIRST : null);
       if (!built) {
         this._forcedTier = 'low';
@@ -391,8 +394,17 @@ export class Recorder {
         format: wc.container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(),
         target,
       });
-      const state = { ready: false, pending: false, t0: 0, failed: false };
+      const state = { ready: false, pending: false, t0: 0, failed: false, refresh: 0 };
       const session = { output, target, videoSource: null, state };
+
+      /* EARLY KEYFRAME REFRESHES — kill the soft opening second. The encoder's
+         rate control starts conservative (worst on software VP8/VP9), so the
+         FIRST keyframe is blurry and the GOP built on it inherits the blur
+         until the next keyframe at keyFrameInterval (2s). Rate control
+         converges within a handful of frames, so forcing fresh keyframes at
+         ~0.5s and ~1.2s replaces the blurry opening GOP with converged-quality
+         ones — the visible blur window shrinks from ~2s to a few hundred ms. */
+      const REFRESH_AT = [0.5, 1.2];
 
       /* the sink runs right after every composer.render(): timestamp off the
          wall clock anchored at the first encoded frame; backpressure by
@@ -403,9 +415,15 @@ export class Recorder {
         if (!this.recording || !state.ready || state.pending || state.failed) return;
         const now = performance.now();
         if (!state.t0) state.t0 = now;
+        const ts = (now - state.t0) / 1000;
+        let encodeOpts;
+        if (state.refresh < REFRESH_AT.length && ts >= REFRESH_AT[state.refresh]) {
+          encodeOpts = { keyFrame: true };
+          state.refresh++;
+        }
         state.pending = true;
         session.videoSource
-          .add((now - state.t0) / 1000, 1 / tier.captureFps)
+          .add(ts, 1 / tier.captureFps, encodeOpts)
           .then(() => {
             this._lastChunkAt = performance.now(); // encoder health heartbeat
             this.stalled = false;
@@ -424,6 +442,13 @@ export class Recorder {
         codec: wc.video,
         bitrate: wcBps,
         keyFrameInterval: 2,
+        /* 'quality' explicitly — never let the encoder pick realtime mode,
+           which trades opening sharpness for latency we don't need (frames are
+           timestamped at capture, so encode latency is invisible) */
+        latencyMode: 'quality',
+        /* talking-head content: bias the encoder toward spatial detail over
+           motion smoothness */
+        contentHint: 'detail',
       });
       output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
 
@@ -564,6 +589,10 @@ export class Recorder {
       return false;
     }
     const tracks = [...canvasStream.getVideoTracks()];
+    /* 'detail' biases Chromium's WebRTC encoder toward spatial sharpness and
+       maintain-resolution degradation — softens the rate-control ramp that
+       blurs the opening second of MediaRecorder takes */
+    tracks.forEach((t) => { try { t.contentHint = 'detail'; } catch (_) {} });
     if (voiceStream) tracks.push(...voiceStream.getAudioTracks());
     const stream = new MediaStream(tracks);
 
