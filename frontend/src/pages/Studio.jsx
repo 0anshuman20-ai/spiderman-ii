@@ -395,13 +395,15 @@ export default function Studio() {
       name: script ? `transmission-${String(script.number).padStart(2, '0')}` : 'spacespidey-freestyle',
       world: stage.worldKey,
     });
-    /* FIRST-FRAME HOOK — the opening frame IS the thumbnail. Never a fade-in:
-       hit frame one with a clean punch-in and the hook text already burned on
-       screen, so the 0.5s a swiper gives you is spent mid-action. (The old
-       glitch burst on frame one read as a broken encode, not a style choice —
-       the take now opens crisp; scripted beats can still call the glitch FX.) */
+    /* FIRST-FRAME HOOK — the opening frame IS the thumbnail. Never a fade-in.
+       (Two effects have been removed from frame one, both for the same reason:
+       the old glitch burst read as a broken encode, and the old punch-in read
+       as a blurry opening second — the FOV zoom magnified the take's reduced
+       capture resolution AND blew the half-res bloom out over the eye lenses,
+       so the picture only "snapped sharp" ~1.2s in when the punch decayed.
+       The take now opens at final framing, final sharpness, from frame zero;
+       scripted beats can still call the punch/glitch FX mid-take.) */
     capLineRef.current = -1;
-    stage.punch();
     // audio for the file: the synthesized spider voice (mic never used); else the
     // music engine's own MediaStreamDestination so a video-only session still ships with score
     const voice = voiceRef.current;
