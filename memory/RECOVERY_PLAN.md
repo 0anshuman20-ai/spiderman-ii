@@ -1,4 +1,4 @@
-# SIGNAL RECOVERY PLAN — v3 (research-verified, execution-ordered)
+# SIGNAL RECOVERY PLAN — v4 (research-verified, execution-ordered)
 
 > Written after the first real audience contact (7 Shorts, Aug 13–23).
 > v2: corrected against 2026 external research on Shorts distribution,
@@ -6,8 +6,30 @@
 > v3: corrected against deeper 2026 research on hook mechanics (first-word
 > timing), loop-seam engineering, engagement-bait downranking, and IP risk —
 > and against the actual code (the door data existed but nothing enforced it).
+> v4: code audit against the merged branches — **Phase A is DONE.** The six-
+> move door engine, overlay planes, VO-over-mystery choreography, loop seam,
+> seam dHash check, and pre-publish checklist are all in the codebase. The
+> last code gap is closed. Everything that remains is HUMAN work, so v4 adds
+> §8: operator runbooks — exact procedures for Phases 0, B, C, and D, written
+> so they can be executed on a bad day without judgment calls.
 > This document outranks taste. It is derived from measured data, and it is
 > falsifiable: every phase ends in a number that either confirms or kills it.
+
+---
+
+## v4 CODE AUDIT (what landed since v3, verified against source)
+
+| v3 item | Verified in code | Evidence |
+| --- | --- | --- |
+| A1 script data (`doorMove`, `doorSec`, CTA rewrite) | YES | 46 scripts tagged in `studio/scripts.js`; command-phrased CTAs rewritten to curiosity |
+| A2 six-move door engine | YES | `studio/door.js` — all six moves (`COLD_WORLD`…`DIM_WORLD`), `arm/update/resolve/abort` |
+| A3 overlay planes + actor visibility | YES | `stage.js`: `burn()`, `flashCta()`, `insert()`, `setActorVisible()` on isolated planes |
+| A4 Studio choreography | YES | `Studio.jsx`: door arm at record start, per-frame `door.update`, reveal at `doorSec`, seam ramp over final 0.8s, `closeDoor()` on ALL exit paths (stop, restart, offline, countdown cancel) |
+| A5 gate upgrades | YES | `gate.js`: `seamReport()` (SEAM_MAX_DIST=16), cross-upload `worldKey`+`doorMove` pre-flag, `PRE_PUBLISH_CHECKLIST` persisted |
+| A6 acceptance | PARTIAL | Code merged; the sim-mode walkthrough (§A6 #1–4) must be re-run once before Phase B frame export — 10 minutes, listed in the §8 runbook |
+
+**Consequence: the plan's frontier moves from code to humans.** No further
+code is authorized before Phase D reads its numbers (§5 still stands).
 
 ---
 
@@ -291,13 +313,16 @@ seam working.
 - The Ω roadmap (unchanged)
 - Any second code project before Phase D reads its numbers
 
-## 6 — ORDER OF WORK (v3)
+## 6 — ORDER OF WORK (v4)
 
-1. Phase 0 — IP survival checklist (labels, disclosure, suit originality)
-2. Phase A — the take engine (A1–A6); the last code gap
-3. Phase B — human freeze-frame gate on new-engine frames — HARD GATE
-4. Phase C — one upload: re-doored Sun Signal + enforced checklist
-5. Phase D — 72h, two numbers, tripwire table. Nothing else.
+1. ~~Phase A — the take engine (A1–A5)~~ — **DONE** (v4 code audit)
+2. A6 sim-mode acceptance walkthrough (§8.B step 0) — 10 minutes, by hand
+3. Phase 0 — IP survival checklist (§8.0: labels, disclosure, suit originality)
+4. Phase B — human freeze-frame gate on new-engine frames (§8.B) — HARD GATE
+5. Phase C — one upload: re-doored Sun Signal + enforced checklist (§8.C)
+6. Phase D — 72h, two numbers, tripwire table (§8.D). Nothing else.
+
+Items 2–4 can run in the same sitting. Item 5 must not start until 4 passes.
 
 ## 7 — IMPLEMENTATION STATUS
 
@@ -308,11 +333,118 @@ seam working.
 | 1.2 #5 archival hybrid + #6 horror grade | Archival source + grade uniforms | `studio/archival.js`, `studio/stage.js` | DONE |
 | 1.3 + 2 #6 the gates | Freeze-frame tester + dHash fingerprint | `/gate` | DONE (tool) / NOT RUN (human test) |
 | 2 the door — data | `frameZero`/`likeCta`/`hiddenFrame` on all 46 scripts | `studio/scripts.js` | DONE (data) |
-| 2 the door — ENGINE | Six-move door, overlay burns, VO-over-mystery, voice/beat choreography, loop seam, hiddenFrame inserts | `studio/door.js` (new), `studio/stage.js`, `pages/Studio.jsx` | **TODO — Phase A** |
-| 2 #3 loop seam + A5 gate checks | Return-to-open composition + seam dHash + pre-publish checklist | `Studio.jsx`, `/gate` | **TODO — Phase A** |
-| Phase 0 IP survival | Labels, disclosure, originality audit | upload process (human) | **TODO** |
+| 2 the door — ENGINE | Six-move door, overlay burns, VO-over-mystery, voice/beat choreography, loop seam, hiddenFrame inserts | `studio/door.js` (new), `studio/stage.js`, `pages/Studio.jsx` | DONE (v4 audit) |
+| 2 #3 loop seam + A5 gate checks | Return-to-open composition + seam dHash + pre-publish checklist | `Studio.jsx`, `/gate` | DONE (v4 audit) |
+| A6 sim-mode acceptance walkthrough | §A6 items 1–4, by hand in sim mode | human, ~10 min | **NOT RUN — §8.B step 0** |
+| Phase 0 IP survival | Labels, disclosure, originality audit | upload process (human) | **TODO — §8.0** |
 | 3 + 4 re-test + tripwires | Upload ledger, 72h seal, rolling median, geo tripwires | `/retest` | DONE (tool) / NOT RUN |
 
 The numbers themselves (stayed-to-watch, AVD, swipe-away, geography) are
 entered by hand from YouTube Studio — the ledger never pretends to have
 API access it doesn't. Same numbers in, same decision out, forever.
+
+---
+
+## 8 — OPERATOR RUNBOOKS (v4; every remaining step is human)
+
+The code can no longer fail this plan. Only execution can. Each runbook
+below is written to be followed literally, in order, with no decisions
+left to mood. If a step fails, the runbook says what to do — never improvise.
+
+### 8.0 — Phase 0 runbook: IP survival (~30 min, once)
+
+1. **Description template.** Write the fan-made block ONCE and save it where
+   uploads happen (a pinned note, not memory):
+   > "Fan-made parody. Not affiliated with, endorsed by, or connected to
+   > Sony Pictures or Marvel. Contains AI-generated imagery."
+   Every upload description starts with this block. No exceptions, no edits.
+2. **Disclosure flag.** In YouTube Studio upload flow → "Altered content" →
+   answer YES. Do this on EVERY upload. It cannot be set retroactively
+   without re-triggering review, so never skip it to fix later.
+3. **Suit originality audit.** Open the rendered suit next to official suit
+   reference images. Check: lens shape, emblem, web/circuit pattern, color
+   split. The current suit (black/crimson, glowing circuit lines, teardrop
+   lenses) must not trace ANY official design element 1:1. If any element
+   matches, change it in `studio/suit.js` — that is the single permitted
+   code exception to §5.
+4. **Naming sweep.** Grep planned titles/descriptions/tags for the trademark
+   name. The character is "a masked figure" / "VEYL" everywhere public.
+5. **Audio sweep.** Confirm every music/sfx source is the in-house synth
+   (`studio/music.js`, `studio/synth.js`) — it is — and stays that way.
+
+Done = all five checked in one sitting. Record the date at the bottom of
+this file under §9.
+
+### 8.B — Phase B runbook: the human gate (one sitting, ~1 hour)
+
+**Step 0 — A6 sim-mode acceptance (10 min, prerequisite).**
+Run the four checks from §A6 by hand in sim mode (no camera needed):
+1. Sun Signal take: burned text at 0.0s, impact at t=0, VO by 0.5s,
+   reveal+groove+punch ~1.5s, CTA flash, auto-cut, last≈first frame.
+2. Scrub the file at the `hiddenFrame` second → glyph present.
+3. Freestyle take: character visible frame one, score at t=0, no burns.
+4. Abort mid-door (Space, then countdown-cancel on a second try) →
+   preview recovers, zero stray text.
+Any failure = a bug; fix it before continuing (this is the one path back
+into code). All pass = the engine is sealed.
+
+**Step 1 — Export the 5 frames.** Record short sim takes of the 5 planned
+signals (Sun, Night Sky, Wow, Space Smell, Bullet Speed — five DIFFERENT
+`doorMove`s per the tripwire table). Screenshot frame zero of each at
+1080×1920. These are the ONLY frames that count — old-engine frames test
+the wrong thing (§1.3).
+
+**Step 2 — Assemble the deck.** Mix with 5 real NASA/SDO stills at the same
+resolution and aspect. Shuffle. Number them 1–10. Keep the answer key
+separate.
+
+**Step 3 — Run 3 subjects.** Instructions verbatim, nothing more:
+> "I'll show you 10 images for one second each. After each one say
+> 'real' or 'fake'. Go with your gut."
+One second per image, enforced (use a timer or slideshow auto-advance).
+No second looks. No discussion until all three subjects are done.
+
+**Step 4 — Score.** A render "passes" if ≥2 of 3 subjects called it real.
+- **≥2 of 5 renders pass → GATE OPEN.** Proceed to §8.C.
+- **<2 pass → GATE CLOSED.** Fix worlds (not scripts, not doors), re-export
+  the failed frames, re-run with fresh subjects. Repeat until pass. The
+  gate cannot be argued with, tired past, or "close enough"-ed.
+
+**Step 5 — Fingerprint check.** Load the 5 first-frames into `/gate`.
+All consecutive dHash distances must clear threshold; no consecutive pair
+may share `worldKey`+`doorMove` (the tool pre-flags this).
+
+### 8.C — Phase C runbook: the one upload (recording day)
+
+1. Record the Sun Signal ("IT MIGHT BE GONE", `MASK_SNAP`). Minimum 3 full
+   takes. Pick by eye — best door, best seam, best mid-take energy.
+2. Run the chosen file through `/gate`: seam check (last≈first frame) must
+   read OK; work the pre-publish checklist in the panel to completion —
+   every box, in the tool, not from memory.
+3. Upload: fan-made block first line of description (§8.0.1), AI disclosure
+   YES (§8.0.2), title ≠ hook text verbatim, no trademark in title/tags.
+4. Publish, note the exact publish time in `/retest`, and **stop**.
+5. **72-hour seal.** No uploads, no title edits, no thumbnail changes, no
+   deleting. Checking analytics is allowed; acting on them is not. Every
+   action inside the window contaminates the one-variable test.
+
+### 8.D — Phase D runbook: the read (at publish + 72h, not before)
+
+1. Open YouTube Studio → the upload → Reach + Engagement.
+2. Enter exactly two numbers into `/retest`: **stayed-to-watch %** and
+   **average view duration**. Nothing else.
+3. Read the verdict against §4's tripwire table. The pre-committed action
+   fires — the table decides, not the mood of the day.
+4. Whatever fires, update §9 below with the numbers and the action taken.
+   That entry is the seed of v5 — this document only ever grows from
+   measured contact, never from theory.
+
+## 9 — EXECUTION LOG (append-only; dates + numbers only, no narrative)
+
+| Date | Phase | Result |
+| --- | --- | --- |
+| — | 0 | not yet run |
+| — | B step 0 (A6 sim) | not yet run |
+| — | B gate | not yet run |
+| — | C upload | not yet published |
+| — | D read | awaiting C + 72h |
