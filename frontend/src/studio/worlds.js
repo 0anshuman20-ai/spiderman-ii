@@ -153,6 +153,10 @@ function starDome(count = 8200, radius = 90) {
 
 /* ------------------------------------------------------------------ */
 /* raymarched volumetric nebula — inverted dome, true 3D FBM volume    */
+/* RETAINED (recording-fix Phase 4): no world calls this anymore — every sky
+   is a real exposure now — but the raymarcher stays for the WORLD EDITOR's
+   future custom-world path. */
+// eslint-disable-next-line no-unused-vars
 function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, transparent: true,
@@ -457,14 +461,20 @@ function atmosphereShell(planetR, shellR, sunDir, intensity = 1.0) {
     },
     vertexShader: `
       varying vec3 vLocal;
+      varying vec3 vCamLocal;
       void main(){
         vLocal = position;                      // object space: planet centre = origin
+        /* modelMatrix is a VERTEX-only built-in in three.js — compute the
+           camera's planet-local position here and hand it down as a varying
+           (constant across the mesh, so interpolation is a no-op) */
+        vCamLocal = cameraPosition - (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: `
       uniform vec3 uSunDir; uniform float uPlanetR, uShellR, uInt;
       uniform vec3 uRayleigh, uMie;
       varying vec3 vLocal;
+      varying vec3 vCamLocal;
       /* sphere intersection: returns (near, far) distances along ro+rd*t, or (-1,-1) */
       vec2 raySphere(vec3 ro, vec3 rd, float r){
         float b = dot(ro, rd);
@@ -475,8 +485,9 @@ function atmosphereShell(planetR, shellR, sunDir, intensity = 1.0) {
         return vec2(-b - h, -b + h);
       }
       void main(){
-        /* camera relative to the planet centre (shell has no rotation/scale) */
-        vec3 camLocal = cameraPosition - (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        /* camera relative to the planet centre (from the vertex stage —
+           fragment shaders have no modelMatrix built-in) */
+        vec3 camLocal = vCamLocal;
         vec3 rd = normalize(vLocal - camLocal);
         vec2 shell = raySphere(camLocal, rd, uShellR);
         if (shell.y < 0.0) discard;
@@ -686,6 +697,10 @@ export function buildWorld(scene, key, params) {
   } else if (key === 'red-planet') {
     scene.background = new THREE.Color(0x180602);
     fogColor = 0x2a0d05; fogDensity = 0.02;
+    /* recording-fix Phase 4 — photo sky only: the real Milky Way pushed warm
+       and dim, as it reads through Mars's dusty night haze. The fog owns the
+       horizon; the photo owns the zenith. */
+    addSky({ tint: 0xffc9a6, exposure: 0.5 });
     // real displaced martian terrain with real Mars albedo
     const ground = terrain(90, 90, 96, 1.6, tex('/textures/mars_2k.jpg'));
     ground.position.y = -1.55; group.add(ground);
@@ -708,9 +723,16 @@ export function buildWorld(scene, key, params) {
   } else if (key === 'derelict-station') {
     scene.background = new THREE.Color(0x020306);
     fogColor = 0x050810;
-    // cold thin nebula behind the wreck (volumetric, not a sprite)
-    const neb = nebulaVolume(0x1a5a9a, 0x0d2f55, 0x66ccee, 0.55);
-    group.add(addTimeMat(neb));
+    /* recording-fix Phase 4 — the procedural FBM nebula is GONE: the real
+       Milky Way (cooled into the wreck's palette) carries the sky, and
+       Hubble's Eagle "Spire" exposure hangs behind the station as a curved
+       distant backdrop — cold pillar structure no raymarch can fake. */
+    addSky({ tint: 0xaac4ee, exposure: 0.78 });
+    const spire = photoBackdrop('/textures/real/eagle_spire_2k.jpg', {
+      tint: 0x9fc4ff, intensity: 1.05, yaw: 0.55, pitch: -0.06, phi: 1.7, theta: 1.25,
+    });
+    group.add(spire);
+    updaters.push((t) => { spire.rotation.y = 0.55 + t * 0.0018; });
     // wrecked truss cage — real geometry
     const beamMat = new THREE.MeshStandardMaterial({ color: 0x2a3448, roughness: 0.5, metalness: 0.85 });
     for (let i = -2; i <= 2; i++) {
@@ -752,6 +774,9 @@ export function buildWorld(scene, key, params) {
   } else if (key === 'asteroid-earth') {
     scene.background = new THREE.Color(0x010208);
     fogColor = 0x030512; fogDensity = 0.008;
+    /* recording-fix Phase 4 — photo sky only: orbital footage's backdrop IS
+       the raw Milky Way, near-neutral, at full exposure. */
+    addSky({ tint: 0xc8d4f2, exposure: 0.92 });
     // REAL Earth: NASA albedo + normal + specular, separate rotating cloud sphere,
     // fresnel atmosphere shell. All true 3D.
     const earth = new THREE.Mesh(new THREE.SphereGeometry(5.2, 64, 64), new THREE.MeshPhongMaterial({
@@ -793,6 +818,16 @@ export function buildWorld(scene, key, params) {
   } else { // dying-star
     scene.background = new THREE.Color(0x0d0302);
     fogColor = 0x1a0503;
+    /* recording-fix Phase 4 — the Milky Way scorched into embers behind the
+       giant, with Hubble's visible-light Carina exposure as a distant curved
+       backdrop opposite the star: the shockwave structure of a real dying
+       stellar neighborhood. */
+    addSky({ tint: 0xffb896, exposure: 0.6 });
+    const carinaHst = photoBackdrop('/textures/real/carina_hst_2k.jpg', {
+      tint: 0xffb27a, intensity: 1.1, yaw: -2.2, pitch: 0.05, phi: 1.9, theta: 1.3,
+    });
+    group.add(carinaHst);
+    updaters.push((t) => { carinaHst.rotation.y = -2.2 + t * 0.0016; });
     // the star itself: black-body red giant (3400K — deep M-class) + two corona shells
     const star = addTimeMat(plasmaStar(7, 3400, 3.6));
     star.position.set(6, 6, -36); group.add(star);
