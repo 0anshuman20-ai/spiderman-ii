@@ -35,6 +35,7 @@ export function makeEpisode({ name = 'episode-01' } = {}) {
 
 /** derive the honest source badge for a shot from its data — never from a claim */
 export function shotSource(shot, perf) {
+  if (shot.footage) return 'archival';   // Ω.6 — real frames, labelled real
   if (shot.still) return 'still';
   if (shot.stunt) return 'stunt';
   if (!perf) return 'synthetic';
