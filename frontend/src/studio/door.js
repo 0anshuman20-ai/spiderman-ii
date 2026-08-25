@@ -30,9 +30,12 @@ export const DEFAULT_DOOR_SEC = 1.5;
 
 export const DOOR_MOVES = ['COLD_WORLD', 'MASK_SNAP', 'WHIP_PAN', 'GLITCH_CUT', 'PROP_REVEAL', 'DIM_WORLD'];
 
-const NEUTRAL = { dolly: 0, yaw: 0, pitch: 0, fov: 0, exposure: 1 };
+const NEUTRAL = { dolly: 0, yaw: 0, pitch: 0, roll: 0, fov: 0, exposure: 1 };
 
 const ease = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3); // cubic out
+/* quintic out — the "hard snap" easing: near-instant attack, soft settle.
+   MASK_SNAP's eyes-up needed a violent read; cubic was too polite. */
+const easeHard = (x) => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 5);
 const lerp = (a, b, u) => a + (b - a) * u;
 
 /* pose(move, t, d) → camera/exposure offsets t seconds into a d-second door.
@@ -46,10 +49,22 @@ function pose(move, t, d) {
       /* character hidden, anomaly-only, slow push toward the world */
       return { dolly: 0.06 + ease(u) * 0.22, yaw: 0, pitch: 0.02, fov: 1.5, exposure: 1 };
     case 'MASK_SNAP': {
-      /* extreme close framing; eyes-up snap at ~0.4s — camera pitched down at
-         the mask, snapping level in ~0.12s */
-      const snap = ease((t - 0.4) / 0.12);
-      return { dolly: 1.05, yaw: 0, pitch: lerp(0.11, 0, snap), fov: -7, exposure: 1 };
+      /* extreme close framing, PUSHING — the dolly deepens 1.05→1.12 across
+         the whole door (a zoom with intent, not a static crop), the frame
+         opens dutched −2.5° and rights itself with the eyes-up snap at ~0.4s.
+         The snap itself is quintic — violent attack, soft settle — so it
+         reads as choreography instead of a subtle drift. update() fires a
+         single-frame exposure glitch ON the snap. Still a pure function of
+         t/d: the seam replays pose(move, 0, d) exactly. */
+      const snap = easeHard((t - 0.4) / 0.12);
+      return {
+        dolly: lerp(1.05, 1.12, ease(u)),
+        yaw: 0,
+        pitch: lerp(0.11, 0, snap),
+        roll: lerp(-0.0436, 0, snap), // −2.5° dutch righting itself on the snap
+        fov: -7,
+        exposure: 1,
+      };
     }
     case 'WHIP_PAN': {
       /* 0.3s camera whip landing on the subject; the glitch on landing is
@@ -83,20 +98,21 @@ export function createDoor() {
   let move = null;
   let doorSec = DEFAULT_DOOR_SEC;
   let whipLanded = false;    // WHIP_PAN's landing glitch fires exactly once
+  let snapFired = false;     // MASK_SNAP's single-frame glitch fires exactly once
   let lastGlitchAt = -1;     // GLITCH_CUT's pulse train, keyed on take time
   let armed = false;
 
   function apply(p) {
     if (!stage || !stage.doorCam) return;
     const c = stage.doorCam;
-    c.dolly = p.dolly; c.yaw = p.yaw; c.pitch = p.pitch; c.fov = p.fov; c.exposure = p.exposure;
+    c.dolly = p.dolly; c.yaw = p.yaw; c.pitch = p.pitch; c.roll = p.roll || 0; c.fov = p.fov; c.exposure = p.exposure;
     c.active = true;
   }
 
   function neutral() {
     if (!stage || !stage.doorCam) return;
     const c = stage.doorCam;
-    c.dolly = 0; c.yaw = 0; c.pitch = 0; c.fov = 0; c.exposure = 1;
+    c.dolly = 0; c.yaw = 0; c.pitch = 0; c.roll = 0; c.fov = 0; c.exposure = 1;
     c.active = false;
   }
 
@@ -112,6 +128,7 @@ export function createDoor() {
       move = (script && DOOR_MOVES.includes(script.doorMove)) ? script.doorMove : 'MASK_SNAP';
       doorSec = (script && Number(script.doorSec) > 0) ? Number(script.doorSec) : DEFAULT_DOOR_SEC;
       whipLanded = false;
+      snapFired = false;
       lastGlitchAt = -1;
       armed = true;
       /* COLD_WORLD withholds the character entirely; every other move keeps
@@ -131,6 +148,10 @@ export function createDoor() {
       if (move === 'WHIP_PAN' && !whipLanded && el >= 0.3) {
         whipLanded = true;
         if (stage.glitch) stage.glitch(0.18); // the whip lands with a glitch
+      }
+      if (move === 'MASK_SNAP' && !snapFired && el >= 0.4) {
+        snapFired = true;
+        if (stage.glitch) stage.glitch(0.07); // single-frame pop ON the eyes-up snap
       }
       if (move === 'GLITCH_CUT') {
         /* 2-frame hard glitches every ~0.5s, resuming mid-motion between */
@@ -164,6 +185,7 @@ export function createDoor() {
         dolly: open.dolly * e,
         yaw: open.yaw * e,
         pitch: open.pitch * e,
+        roll: (open.roll || 0) * e,
         fov: open.fov * e,
         exposure: lerp(1, open.exposure, e),
       });

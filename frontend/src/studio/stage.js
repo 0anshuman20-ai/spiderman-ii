@@ -85,7 +85,7 @@ export function createStage(canvas) {
      solve, so the humanization noise survives the door pose. exposure rides
      the tone mapper (DIM_WORLD animates the world's light through the door). */
   const BASE_EXPOSURE = 1.18;
-  const doorCam = { active: false, dolly: 0, yaw: 0, pitch: 0, fov: 0, exposure: 1 };
+  const doorCam = { active: false, dolly: 0, yaw: 0, pitch: 0, roll: 0, fov: 0, exposure: 1 };
 
   /* ACTOR VISIBILITY — stored flag, applied at layer CREATION inside start()
      (layers are lazy: an early-armed door must not leak the character into
@@ -693,10 +693,11 @@ export function createStage(canvas) {
          the shot, the handheld keeps it human. exposure always applies (1
          when no door/seam is active), so DIM_WORLD can animate the light. */
       if (doorCam.active) {
-        camera.translateZ(-doorCam.dolly);
-        camera.rotation.y += doorCam.yaw;
-        camera.rotation.x += doorCam.pitch;
-        camera.fov += doorCam.fov;
+      camera.translateZ(-doorCam.dolly);
+      camera.rotation.y += doorCam.yaw;
+      camera.rotation.x += doorCam.pitch;
+      camera.rotation.z += doorCam.roll;
+      camera.fov += doorCam.fov;
         camera.updateProjectionMatrix();
       }
       renderer.toneMappingExposure = BASE_EXPOSURE * (doorCam.active ? doorCam.exposure : 1);
