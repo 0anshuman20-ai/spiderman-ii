@@ -9,6 +9,7 @@ import { SpideyVoice } from '../studio/spideyVoice';
 import { Recorder } from '../studio/recorder';
 import { MusicEngine } from '../studio/music';
 import { EMOTE_TO_EXPR } from '../studio/scripts';
+import { createDoor, parseHiddenFrame } from '../studio/door';
 import { DEFAULT_WORLD_PARAMS } from '../studio/worlds';
 import { readActiveParams, writeActiveParams, readPresets, savePreset, deletePreset, isDefaultParams } from '../studio/worldPresets';
 import { ScenePanel, ExpressionPanel, VoicePanel, StatusPanel, MusicPanel, WorldEditorPanel } from '../components/studio/Panels';
@@ -22,6 +23,15 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
    actually clear (stage.captionRemaining()), so raising this extends the take
    instead of getting truncated by the cut. */
 const CLOSER_HOLD = 1.6;
+
+/* THE AUTO-CUT window base (seconds past the real end of speech) — shared by
+   the poll's cut decision AND the door's loop seam, so the seam can compute
+   the exact same cut time the poll will act on. */
+const OUTRO_BASE = 1.0;
+/* LOOP SEAM (RECOVERY v3 corr. 2) — the final SEAM_SEC seconds lerp the
+   camera/world back to the door's opening composition: last frame ≈ first
+   frame, restart invisible. */
+const SEAM_SEC = 0.8;
 
 const FX_MAP = {
   glitch: (stage, voice, music) => { stage.glitch(0.45); voice.triggerGlitch(250); if (music) music.glitchZap(); },
@@ -55,6 +65,10 @@ export default function Studio() {
   const toggleRecRef = useRef(null);   // latest toggleRec, callable from the poll
   const doneTRef = useRef(0);          // seconds since the script finished
   const outroFiredRef = useRef(false); // the closing sting fires exactly once
+  /* THE DOOR (RECOVERY v3 §2 / Phase A4) — armed per take when the script
+     carries frameZero; null on freestyle takes, so nothing changes for them. */
+  const doorRef = useRef(createDoor());
+  const doorStateRef = useRef(null);   // { doorSec, resolved, ctaAt, ctaText, ctaFired, insertAt, insertSpec, insertFired }
 
   const [booted, setBooted] = useState(null); // null | 'live' | 'sim'
   const [booting, setBooting] = useState(false);
@@ -113,6 +127,7 @@ export default function Studio() {
     if (personalRecorderRef.current && personalRecorderRef.current.state === 'recording') {
       try { personalRecorderRef.current.stop(); } catch (_) {}
     }
+    try { doorRef.current.abort(); } catch (_) {} // unmount: never strand door-closed
     if (stageRef.current) { try { stageRef.current.dispose(); } catch (_) {} }
   }, []);
 
@@ -232,11 +247,61 @@ export default function Studio() {
         const k = voiceLevel >= rig.level ? 1 : 1 - Math.exp(-dt * 28);
         rig.level += (voiceLevel - rig.level) * k;
       }
-      // auto-perform teleprompter cues while recording — on RECORDED time, so
-      // beat cues stay glued to the exported file even across jump-cuts
+      /* THE DOOR (RECOVERY v3 §2 / Phase A4) — driven on the RECORDER's clock,
+         drift-proof. VO-over-mystery: the voice engine runs from frame zero
+         (line 1 fires on the first jaw move); the door only owns the PICTURE
+         until the reveal lands on the line-2 trigger at doorSec. */
       const script = scriptRef.current;
-      if (script && rec.recording) {
+      const ds = doorStateRef.current;
+      if (ds && rec.recording) {
         const el = rec.elapsed;
+        if (el < ds.doorSec) {
+          doorRef.current.update(el);
+        } else if (!ds.resolved) {
+          /* THE REVEAL — clearBurn → resolve → punch + glitch + impact +
+             score entry + beat-0 emote with expression snap: the measured
+             rewind magnet, now arriving WITH the groove. */
+          ds.resolved = true;
+          stage.clearBurn();
+          doorRef.current.resolve();
+          stage.punch();
+          stage.glitch(0.22);
+          const m = musicRef.current;
+          if (m && m.ready) { m.impact(); m.startScore(); }
+          if (script && script.beats[0]) {
+            rig.expression = EMOTE_TO_EXPR[script.beats[0].emote] || 'calm';
+            rig.exprSnap = true;
+          }
+        }
+        /* SOFT CTA — own overlay plane, self-clearing, fires exactly once at
+           doorSec + likeCta.atSec; can never delay the auto-cut. */
+        if (!ds.ctaFired && ds.ctaAt != null && el >= ds.ctaAt) {
+          ds.ctaFired = true;
+          stage.flashCta(ds.ctaText);
+        }
+        /* HIDDEN FRAME — unsolicited lore: 2-3 frame glyph insert at the
+           script's stated second (script time, shifted by doorSec). */
+        if (!ds.insertFired && ds.insertAt != null && el >= ds.insertAt) {
+          ds.insertFired = true;
+          stage.insert(ds.insertSpec);
+        }
+        /* LOOP SEAM (v3 corr. 2) — once the last line has landed, compute the
+           SAME remaining-time the poll's cut decision uses (whichever finishes
+           last: audio drain or closer caption) and lerp the camera back to the
+           opening composition across the final SEAM_SEC seconds, so
+           frame-last ≈ frame-zero and the restart is invisible. */
+        if (ds.resolved && voice.ready && voice.canRoll() && voice.lines.length > 0 && voice.done) {
+          const capLeft = stage.captionRemaining ? stage.captionRemaining() : 0;
+          const remaining = Math.max(OUTRO_BASE + voice.tailSeconds() - voice.secondsSinceDone(), capLeft);
+          if (remaining < SEAM_SEC) doorRef.current.seam(1 - Math.max(0, remaining) / SEAM_SEC);
+        }
+      }
+      // auto-perform teleprompter cues while recording — on RECORDED time, so
+      // beat cues stay glued to the exported file even across jump-cuts.
+      // On a door take the beat clock is offset by doorSec (rec.elapsed −
+      // doorSec): all 46 scripts' beat timings shift untouched.
+      if (script && rec.recording) {
+        const el = rec.elapsed - (ds ? ds.doorSec : 0);
         let idx = 0;
         for (let i = 0; i < script.beats.length; i++) if (el >= script.beats[i].t) idx = i;
         if (idx !== beatRef.current) {
@@ -346,7 +411,7 @@ export default function Studio() {
              plus the physical drain (context latency + compressor release) is
              exactly enough for the outro sting and the closer caption to land
              inside the file with no dead air after the final word. */
-          const outroWindow = 1.0 + v.tailSeconds();
+          const outroWindow = OUTRO_BASE + v.tailSeconds();
           /* THE CUT WAITS FOR WHICHEVER FINISHES LAST — the audio drain or the
              closing caption. Previously these were two independently hand-tuned
              numbers: the window was 1.0s + drain while the final caption held
@@ -371,6 +436,16 @@ export default function Studio() {
     return () => clearInterval(id);
   }, [booted]);
 
+  /* closeDoor — EVERY exit path (stop, restart, recorder-offline fallback,
+     countdown cancel, unmount) runs through here, so the preview can
+     structurally never strand door-closed, actor-hidden or text-burned. */
+  const closeDoor = useCallback(() => {
+    doorStateRef.current = null;
+    doorRef.current.abort();
+    const stage = stageRef.current;
+    if (stage && stage.clearOverlays) stage.clearOverlays();
+  }, []);
+
   /* the actual roll — everything timing-sensitive lives HERE, after the countdown,
      so recStartRef / perfRec.start keep beat timing exactly as before */
   const startRecording = useCallback(async () => {
@@ -387,7 +462,10 @@ export default function Studio() {
        explicitly (calm for freestyle) and snap the eased glow to it instantly,
        so frame one is already at its final, crisp value. */
     const rig = rigRef.current;
-    rig.expression = (script && script.beats[0] && EMOTE_TO_EXPR[script.beats[0].emote]) || 'calm';
+    /* on a DOOR take the beat-0 emote lands at the reveal (with the punch and
+       the score entry), not at frame zero — the door opens on a neutral mask */
+    const doorTake = !!(script && script.frameZero);
+    rig.expression = (!doorTake && script && script.beats[0] && EMOTE_TO_EXPR[script.beats[0].emote]) || 'calm';
     rig.exprSnap = true;
     setExprState(rig.expression);
     recStartRef.current = performance.now();
@@ -432,6 +510,27 @@ export default function Studio() {
       music && music.resume ? music.resume() : Promise.resolve(),
     ]);
     const audioStream = (voice && voice.ready && voice.stream) || (music && music.stream) || null;
+    /* ARM THE DOOR (RECOVERY v3 §2 / Phase A4) — BEFORE the recorder rolls, so
+       frame zero of the FILE already carries the door pose, the burned hook
+       text and the per-move actor visibility. Freestyle takes: nothing. */
+    if (doorTake) {
+      const doorSec = doorRef.current.arm(script, stage);
+      const cta = script.likeCta;
+      const ins = parseHiddenFrame(script.hiddenFrame);
+      doorStateRef.current = {
+        doorSec,
+        resolved: false,
+        ctaAt: cta && Number(cta.atSec) > 0 ? doorSec + Number(cta.atSec) : null,
+        ctaText: cta ? cta.text : '',
+        ctaFired: false,
+        insertAt: ins ? doorSec + ins.atSec : null,
+        insertSpec: ins,
+        insertFired: false,
+      };
+      stage.burn(script.frameZero); // the frame-zero hook, burned at 0.0s
+    } else {
+      doorStateRef.current = null;
+    }
     /* MIC-AWARE TIER: a live getUserMedia graph + a parallel recognition
        session add real encode-adjacent load — tell the recorder so it steps
        the capture tier down one level on mic takes */
@@ -439,15 +538,23 @@ export default function Studio() {
     if (!rolled) {
       // encoder refused at every tier — undo the roll cleanly instead of faking it
       perfRecRef.current.stop();
+      closeDoor(); // recorder-offline: never strand door-closed
       stage.setHud('COSMIC WEAVER ── RECORDER OFFLINE');
       stage.setCaption(null);
       return;
     }
-    /* THE HERO SCORE — frame one opens on an impact and the driving groove is
-       already running, so the take never has a cold, silent opening. */
+    /* THE HERO SCORE — frame one opens on an impact so the take never has a
+       cold, silent opening. On a DOOR take the groove itself is DEFERRED to
+       the reveal: an impact at 0.0s, a riser climbing through the door, and
+       the score entering WITH the punch at doorSec (v3 correction 1 — the
+       reveal arrives with the groove). Freestyle: impact + score at 0.0s. */
     if (music && music.ready) {
-      music.startScore();
       music.impact();
+      if (doorTake && doorStateRef.current) {
+        music.riser(doorStateRef.current.doorSec * 1000);
+      } else {
+        music.startScore();
+      }
     }
     doneTRef.current = 0;
     outroFiredRef.current = false;
@@ -463,6 +570,7 @@ export default function Studio() {
       clearInterval(countdownRef.current);
       countdownRef.current = null;
       setCountdown(null);
+      closeDoor(); // countdown cancel: a door can never stay half-armed
       /* the countdown's warmup probe holds the take's render scale through the
          handoff (so REC starts on a warm pipeline) — a CANCELLED countdown must
          give the preview its full quality back. The delayed pass covers a probe
@@ -511,6 +619,7 @@ export default function Studio() {
     } else {
       const take = await rec.stop();
       const perf = perfRecRef.current.stop();
+      closeDoor(); // stop: restore actor/camera/overlays no matter where the door was
       if (voiceRef.current) voiceRef.current.stopPlayback(); // cut any mid-line audio with the take
       if (musicRef.current) musicRef.current.stopScore();    // groove out, ambient bed back
       setRecording(false); setElapsed(0);
@@ -565,6 +674,7 @@ export default function Studio() {
     if (!stage || !rec || !rec.recording) return;
     rec.cancel();               // discard every byte of the bad take
     perfRecRef.current.stop();  // and its rig timeline
+    closeDoor();                // restart: fresh roll re-arms the door itself
     if (voiceRef.current) voiceRef.current.stopPlayback();
     if (musicRef.current) musicRef.current.stopScore();
     stage.setCaption(null);
