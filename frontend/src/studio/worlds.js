@@ -139,6 +139,33 @@ function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
         for (int i = 0; i < 5; i++){ v += a * noise(p); p = p * 2.03 + vec3(1.7); a *= 0.5; }
         return v;
       }
+      /* RECOVERY v2 #4 — gradient math in OKLab, not sRGB/linear-RGB.
+         RGB interpolation between saturated hues passes through gray mud;
+         OKLab keeps perceived lightness and chroma steady across the blend,
+         which is why real emission nebulas never look muddy mid-gradient. */
+      vec3 rgb2oklab(vec3 c){
+        float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+        float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+        float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+        l = pow(max(l, 0.0), 1.0 / 3.0); m = pow(max(m, 0.0), 1.0 / 3.0); s = pow(max(s, 0.0), 1.0 / 3.0);
+        return vec3(
+          0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+          1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+          0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s);
+      }
+      vec3 oklab2rgb(vec3 c){
+        float l = c.x + 0.3963377774 * c.y + 0.2158037573 * c.z;
+        float m = c.x - 0.1055613458 * c.y - 0.0638541728 * c.z;
+        float s = c.x - 0.0894841775 * c.y - 1.2914855480 * c.z;
+        l = l * l * l; m = m * m * m; s = s * s * s;
+        return vec3(
+          4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+          -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+          -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
+      }
+      vec3 mixOklab(vec3 a, vec3 b, float t){
+        return max(vec3(0.0), oklab2rgb(mix(rgb2oklab(a), rgb2oklab(b), t)));
+      }
       void main(){
         vec3 rd = normalize(vWorld - cameraPosition);
         // march through a virtual volume along the view ray
@@ -153,8 +180,8 @@ function nebulaVolume(cA, cB, cC, density = 1.0, radius = 70) {
           d = smoothstep(0.42, 0.75, d) * uDensity;
           if (d > 0.001) {
             float hue = fbm(q * 0.5 + 3.7);
-            vec3 c = mix(uColA, uColB, smoothstep(0.3, 0.7, hue));
-            c = mix(c, uColC, smoothstep(0.55, 0.9, fbm(q * 0.25 - 1.3)));
+        vec3 c = mixOklab(uColA, uColB, smoothstep(0.3, 0.7, hue));
+        c = mixOklab(c, uColC, smoothstep(0.55, 0.9, fbm(q * 0.25 - 1.3)));
             // cheap self-shadowing: denser clouds glow hotter at their cores
             c *= 0.75 + d * 0.65;
             // embedded newborn stars flare inside the densest knots
@@ -363,6 +390,86 @@ function fresnelShell(radius, color, power = 3.0, intensity = 1.0) {
 }
 
 /* ------------------------------------------------------------------ */
+/* RAYLEIGH + MIE ATMOSPHERE — RECOVERY 1.2 #3 (verified technique).
+   Earth's atmosphere as a separate BackSide sphere shell with a single-
+   scattering fragment shader after the Hillaire 2020 model — NOT a rim-lit
+   material. Per-channel Rayleigh coefficients give the physically correct
+   blue limb that whitens toward the sun; a Henyey-Greenstein Mie lobe puts
+   the forward-scatter halo around the light. The march is short (12 steps)
+   because the shell is thin; density falls off exponentially with height.  */
+function atmosphereShell(planetR, shellR, sunDir, intensity = 1.0) {
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide, transparent: true, depthWrite: false,
+    uniforms: {
+      uSunDir: { value: sunDir.clone().normalize() },
+      uPlanetR: { value: planetR },
+      uShellR: { value: shellR },
+      uInt: { value: intensity },
+      uRayleigh: { value: new THREE.Color(0.18, 0.42, 1.0) }, // ∝ 1/λ⁴ (hueShift hook)
+      uMie: { value: new THREE.Color(0.85, 0.82, 0.78) },
+    },
+    vertexShader: `
+      varying vec3 vLocal;
+      void main(){
+        vLocal = position;                      // object space: planet centre = origin
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 uSunDir; uniform float uPlanetR, uShellR, uInt;
+      uniform vec3 uRayleigh, uMie;
+      varying vec3 vLocal;
+      /* sphere intersection: returns (near, far) distances along ro+rd*t, or (-1,-1) */
+      vec2 raySphere(vec3 ro, vec3 rd, float r){
+        float b = dot(ro, rd);
+        float c = dot(ro, ro) - r * r;
+        float h = b * b - c;
+        if (h < 0.0) return vec2(-1.0);
+        h = sqrt(h);
+        return vec2(-b - h, -b + h);
+      }
+      void main(){
+        /* camera relative to the planet centre (shell has no rotation/scale) */
+        vec3 camLocal = cameraPosition - (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vec3 rd = normalize(vLocal - camLocal);
+        vec2 shell = raySphere(camLocal, rd, uShellR);
+        if (shell.y < 0.0) discard;
+        float t0 = max(shell.x, 0.0);
+        float t1 = shell.y;
+        /* the solid planet truncates the march */
+        vec2 ground = raySphere(camLocal, rd, uPlanetR);
+        if (ground.x > 0.0) t1 = min(t1, ground.x);
+        float H = (uShellR - uPlanetR);                 // scale height ≈ shell thickness
+        float stepLen = (t1 - t0) / 12.0;
+        float mu = dot(rd, uSunDir);
+        /* phase functions: Rayleigh + Henyey-Greenstein Mie (g = 0.76) */
+        float phR = 0.0596831 * (1.0 + mu * mu);
+        float g = 0.76;
+        float phM = 0.1193662 * (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * mu, 1.5);
+        vec3 sumR = vec3(0.0); float sumM = 0.0;
+        float t = t0 + stepLen * 0.5;
+        for (int i = 0; i < 12; i++){
+          vec3 p = camLocal + rd * t;
+          float h = max(0.0, length(p) - uPlanetR);
+          float dR = exp(-h / (H * 0.35));              // Rayleigh: taller falloff
+          float dM = exp(-h / (H * 0.12));              // Mie: hugs the surface
+          /* sun visibility: night side of the shell scatters nothing */
+          float sunH = dot(normalize(p), uSunDir);
+          float lit = smoothstep(-0.28, 0.12, sunH);
+          sumR += uRayleigh * dR * lit * stepLen;
+          sumM += dM * lit * stepLen;
+          t += stepLen;
+        }
+        vec3 col = (sumR * phR * 14.0 + uMie * sumM * phM * 5.0) * uInt / H;
+        /* transmittance-ish alpha: thick slant paths read opaque at the limb */
+        float a = clamp(dot(col, vec3(0.30, 0.55, 0.15)) * 1.6, 0.0, 1.0);
+        gl_FragColor = vec4(col, a);
+      }`,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(shellR, 64, 64), mat);
+  return mesh;
+}
+
+/* ------------------------------------------------------------------ */
 /* instanced asteroid field — real displaced rock geometry, drifting   */
 function asteroidField(count, box, scaleMin, scaleMax, color = 0x4a4550) {
   count = scaled(count);
@@ -482,6 +589,14 @@ export function buildWorld(scene, key, params) {
 
   const addTimeMat = (obj) => { timeMats.push(obj.material); return obj; };
 
+  /* RECOVERY 1.2 #4 — glare occlusion: aim the star dome's fade cone at the
+     world's brightest body. Real stars vanish inside a sun's scattered light;
+     a dome that ignores its sun is a screensaver. fade 0 = untouched night sky. */
+  const sunGlare = (pos, fade) => {
+    stars.material.uniforms.uSunDir.value.copy(pos).normalize();
+    stars.material.uniforms.uSunFade.value = fade;
+  };
+
   if (key === 'nebula-drift') {
     scene.background = new THREE.Color(0x020112);
     fogColor = 0x0a0620;
@@ -508,11 +623,12 @@ export function buildWorld(scene, key, params) {
     // real displaced martian terrain with real Mars albedo
     const ground = terrain(90, 90, 96, 1.6, tex('/textures/mars_2k.jpg'));
     ground.position.y = -1.55; group.add(ground);
-    // sun: plasma shader sphere + fresnel corona shell (all geometry)
-    const sun = addTimeMat(plasmaStar(2.6, 0xfff2cc, 0xffb35a, 0xd96a20));
+    // sun: black-body photosphere (5700K, G-type) + fresnel corona shell
+    const sun = addTimeMat(plasmaStar(2.6, 5700, 3.2));
     sun.position.set(9, 8, -38); group.add(sun);
     const corona = addTimeMat(fresnelShell(4.4, 0xff9944, 2.2, 2.4));
     corona.position.copy(sun.position); group.add(corona);
+    sunGlare(sun.position, 1.0);   // stars drown in the sun's scattered light
     // Phobos — real moon texture, irregular scale
     const phobos = new THREE.Mesh(new THREE.SphereGeometry(0.9, 32, 32), new THREE.MeshStandardMaterial({ map: tex('/textures/moon_1024.jpg'), roughness: 1, color: 0xaa8877 }));
     phobos.scale.set(1.2, 0.9, 1); phobos.position.set(-8, 10, -30); group.add(phobos);
@@ -585,7 +701,11 @@ export function buildWorld(scene, key, params) {
       map: tex('/textures/earth_clouds_1024.png'), transparent: true, opacity: 0.85, depthWrite: false,
     }));
     clouds.position.copy(earth.position); group.add(clouds);
-    const atmoShell = fresnelShell(5.55, 0x4d8fff, 3.4, 1.6);
+    /* RECOVERY 1.2 #3 — Rayleigh + Mie scattering shell (Hillaire model), lit by
+       the same key the surface sees. The blue limb IS the realism; it whitens
+       toward the sun and dies on the night side, exactly like orbital footage. */
+    const sunDirEarth = new THREE.Vector3(-14, 10, 6).normalize();
+    const atmoShell = atmosphereShell(5.2, 5.62, sunDirEarth, 1.15);
     atmoShell.position.copy(earth.position); group.add(atmoShell);
     updaters.push((t) => { earth.rotation.y = t * 0.014; clouds.rotation.y = t * 0.019; });
     // the Moon — real texture
@@ -603,16 +723,18 @@ export function buildWorld(scene, key, params) {
     updaters.push((t, dt) => belt.userData.update(t, dt));
     lights.push(new THREE.DirectionalLight(0xffffff, 2.6)); lights[0].position.set(-14, 10, 6);
     lights.push(new THREE.PointLight(0x4477ff, 14, 30)); lights[1].position.set(-2, 6, -10);
+    sunGlare(sunDirEarth, 0.45);   // off-frame sun still eats the stars near its cone
   } else { // dying-star
     scene.background = new THREE.Color(0x0d0302);
     fogColor = 0x1a0503;
-    // the star itself: animated plasma surface + two corona shells — all geometry
-    const star = addTimeMat(plasmaStar(7, 0xfff0b0, 0xff7a1e, 0x8a1500));
+    // the star itself: black-body red giant (3400K — deep M-class) + two corona shells
+    const star = addTimeMat(plasmaStar(7, 3400, 3.6));
     star.position.set(6, 6, -36); group.add(star);
     const corona1 = addTimeMat(fresnelShell(9.2, 0xff6622, 2.0, 2.6));
     corona1.position.copy(star.position); group.add(corona1);
     const corona2 = addTimeMat(fresnelShell(12.5, 0xff3300, 3.5, 1.2));
     corona2.position.copy(star.position); group.add(corona2);
+    sunGlare(star.position, 1.25); // a giant this close owns half the sky's glare
     updaters.push((t) => {
       star.rotation.y = t * 0.02;
       corona1.scale.setScalar(1 + 0.03 * Math.sin(t * 0.9));
