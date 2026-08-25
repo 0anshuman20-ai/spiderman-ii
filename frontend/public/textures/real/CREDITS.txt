@@ -1,0 +1,29 @@
+Real-photo sky and nebula assets — mandatory attributions
+==========================================================
+
+milkyway_4k.jpg
+  ESO GigaGalaxy Zoom: The Milky Way panorama (eso0932a)
+  Credit: ESO/S. Brunier — https://www.eso.org/public/images/eso0932a/
+  License: CC BY 4.0. Downscaled from 6000x3000 to 4096x2048.
+
+carina_ir_2k.jpg
+  VLT HAWK-I infrared view of the Carina Nebula (eso1208a)
+  Credit: ESO/T. Preibisch — https://www.eso.org/public/images/eso1208a/
+  License: CC BY 4.0. Downscaled to 2048px.
+
+carina_hst_2k.jpg
+  Hubble view of the Carina Nebula (heic0707a)
+  Credit: NASA, ESA, N. Smith (University of California, Berkeley),
+  and The Hubble Heritage Team (STScI/AURA)
+  https://esahubble.org/images/heic0707a/ — downscaled to 2048px.
+
+eagle_spire_2k.jpg
+  Hubble Eagle Nebula spire (heic0506b)
+  Credit: NASA, ESA, and The Hubble Heritage Team (STScI/AURA)
+  https://esahubble.org/images/heic0506b/ — downscaled to 2048px.
+
+Fonts (frontend/public/fonts/)
+  montserrat-800.woff2 / montserrat-900.woff2
+  Montserrat, The Montserrat Project (Julieta Ulanovsky et al.)
+  License: SIL Open Font License 1.1. Instanced from the variable TTF
+  at weights 800/900 and subset to Latin + punctuation.
