@@ -210,3 +210,18 @@ Those decisions are all downstream of a door 86% never walked through.
 4. Freeze-frame acceptance test (1.3) — gate
 5. Re-door the Sun Signal (2 + 3) — publish
 6. Read the two numbers. Follow the tripwire table. Nothing else.
+
+## 7 — IMPLEMENTATION STATUS (what the studio now enforces)
+
+| Plan section | Instrument | Where |
+| --- | --- | --- |
+| 1.2 #1–2 filmic pipeline + handheld | ACES/log-depth/grain/CA/vignette grade + breathing rig | `studio/stage.js`, `studio/handheld.js` |
+| 1.2 #3–4 atmospheric edges + occlusion | Black-body photospheres, Rayleigh+Mie shells, OKLab gradients, star-glare fade cone | `studio/worlds.js` |
+| 1.2 #5 archival hybrid + #6 horror grade | Archival source + grade uniforms | `studio/archival.js`, `studio/stage.js` |
+| 1.3 + 2 #4 the gates | Freeze-frame tester panel + 64-bit dHash first-frame fingerprint; Phase 3 locked until majority pass | `/gate` (`studio/gate.js`, `pages/GateRoom.jsx`) |
+| 2 the doors | `frameZero` / `firstFrame` anomaly openings on every Signal | `studio/scripts.js` |
+| 3 + 4 the re-test + tripwires | Upload ledger: verdict sealed 72h, rolling median over last 20 measured Shorts, tripwire table evaluated deterministically, 30-day geo tripwires | `/retest` (`studio/tripwire.js`, `pages/RetestRoom.jsx`) |
+
+The numbers themselves (stayed-to-watch, AVD, swipe-away, geography) are
+entered by hand from YouTube Studio — the ledger never pretends to have
+API access it doesn't. Same numbers in, same decision out, forever.
