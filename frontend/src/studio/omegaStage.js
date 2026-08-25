@@ -115,7 +115,9 @@ export const RIG_BY_KEY = CAMERA_RIGS.reduce((m, r) => { m[r.key] = r; return m;
 /* ------------------------------------------------------------------ */
 
 export function createOmegaStage(canvas) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  /* RECOVERY 1.2 #1 (verified specific) — same log-depth contract as the live
+     stage: the FAR/40m rigs put metres and hundreds-of-units in one frustum. */
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
   renderer.setSize(W, H, false);
   renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;

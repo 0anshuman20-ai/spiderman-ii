@@ -61,7 +61,12 @@ const GradeShader = {
 };
 
 export function createStage(canvas) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+  /* RECOVERY 1.2 #1 (verified specific) — logarithmic depth: planetary-scale
+     worlds put a 4-unit sun and a 200-unit nebula dome in one frustum; a linear
+     z-buffer wastes its precision on the first metre and shimmers/z-fights the
+     far bodies, which reads as "game engine". Log depth spends precision where
+     the scene actually is. */
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: false, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
   renderer.setSize(W, H, false);
   renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;

@@ -871,6 +871,9 @@ export default function Studio() {
         <Link to="/omega" className="cw-chip mono text-[10px]" style={{ padding: '8px 14px', textDecoration: 'none' }} data-testid="omega-link">
           <span>Ω OMEGA ROOM</span>
         </Link>
+        <Link to="/gate" className="cw-chip mono text-[10px]" style={{ padding: '8px 14px', textDecoration: 'none' }} data-testid="gate-link" title="Freeze-frame acceptance test + first-frame fingerprint QA (RECOVERY 1.3 / 2#4)">
+          <span>⨂ THE GATE</span>
+        </Link>
         {recording && cutting && (
           <span className="mono text-[9px] px-2 py-1" data-testid="autocut-chip"
             style={{ color: 'var(--cw-amber)', border: '1px solid var(--cw-border)', letterSpacing: '0.2em' }}>
