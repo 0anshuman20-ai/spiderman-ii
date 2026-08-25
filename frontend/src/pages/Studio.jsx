@@ -13,7 +13,7 @@ import { createDoor, parseHiddenFrame } from '../studio/door';
 import { DEFAULT_WORLD_PARAMS } from '../studio/worlds';
 import { readActiveParams, writeActiveParams, readPresets, savePreset, deletePreset, isDefaultParams } from '../studio/worldPresets';
 import { ScenePanel, ExpressionPanel, VoicePanel, StatusPanel, MusicPanel, WorldEditorPanel } from '../components/studio/Panels';
-import { ScriptLog, Prompter, UploadKit } from '../components/studio/Teleprompter';
+import { ScriptLog, Prompter, UploadKit, NextUp } from '../components/studio/Teleprompter';
 import { TakesPanel } from '../components/studio/TakesPanel';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -465,7 +465,7 @@ export default function Studio() {
     if (stage && stage.clearOverlays) stage.clearOverlays();
   }, []);
 
-  /* the actual roll — everything timing-sensitive lives HERE, after the countdown,
+  /* the actual roll ��� everything timing-sensitive lives HERE, after the countdown,
      so recStartRef / perfRec.start keep beat timing exactly as before */
   const startRecording = useCallback(async () => {
     const rec = recorderRef.current;
@@ -1085,6 +1085,7 @@ export default function Studio() {
         {/* right rail */}
         <div className="lg:col-span-4 space-y-3 order-3 flex flex-col">
           <StatusPanel tracking={tracking} micOk={micOk} fps={fps} mode={booted === 'sim' ? 'sim' : rigRef.current.tracking.mode} />
+          <NextUp progress={progress} onPick={pickScript} active={activeScript} />
           <ScriptLog active={activeScript} onPick={pickScript} progress={progress} recording={recording} beatIdx={beatIdx} />
           <UploadKit script={activeScript} />
           <TakesPanel takes={takes} onDelete={(id) => {

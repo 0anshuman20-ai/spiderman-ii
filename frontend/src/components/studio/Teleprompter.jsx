@@ -1,12 +1,112 @@
 import { useMemo, useState } from 'react';
 import { TRANSMISSIONS, PILLARS } from '../../studio/scripts';
+import {
+  PRODUCTION_QUEUE, CALENDAR_SIGNALS, QUEUE_KINDS,
+  queueEntry, isCalendarSignal, nextInQueue, queueProgress, sortByQueue,
+} from '../../studio/queue';
+
+const BY_NUMBER = TRANSMISSIONS.reduce((m, s) => { m[s.number] = s; return m; }, {});
+
+/* NEXT UP — the whole point: one card that tells you exactly what to shoot now,
+   in doctrine order, so no signal is ever hunted for again. */
+export const NextUp = ({ progress, onPick, active }) => {
+  const { entry, blockedBy } = useMemo(() => nextInQueue(progress), [progress]);
+  const stats = useMemo(() => queueProgress(progress), [progress]);
+  const upcoming = useMemo(
+    () => PRODUCTION_QUEUE.filter((q) => !progress[q.number] && (!entry || q.step > entry.step)).slice(0, 3),
+    [progress, entry]
+  );
+  const script = entry ? BY_NUMBER[entry.number] : null;
+  const kind = entry ? QUEUE_KINDS[entry.kind] : null;
+
+  return (
+    <div className="cw-panel" data-testid="next-up">
+      <h2>▶ Next Up — Queue {stats.done}/{stats.total}</h2>
+      <div className="cw-meter mb-2" style={{ height: 4 }}>
+        <div style={{ width: `${stats.pct}%`, background: 'var(--cw-green)' }} />
+      </div>
+
+      {!script ? (
+        <p className="mono text-[10px] m-0" style={{ color: 'var(--cw-green)' }}>
+          QUEUE CLEAR — every non-calendar signal is on tape.
+        </p>
+      ) : (
+        <>
+          <div
+            className={`cw-chip ${active && active.number === script.number ? 'on' : ''}`}
+            style={{ justifyContent: 'flex-start', gap: 8, flexWrap: 'wrap', padding: '9px 10px' }}
+            data-testid={`next-up-pick-${script.number}`}
+            onClick={() => onPick(script)}>
+            <span className="mono text-[9px]" style={{ color: 'var(--cw-red)', letterSpacing: '0.15em' }}>
+              STEP {String(entry.step).padStart(2, '0')}
+            </span>
+            <span className="flex-1 truncate" style={{ fontSize: 11 }}>{script.title}</span>
+            <small className="mono" style={{ color: 'var(--cw-muted)' }}>{script.world} · {script.durationSec}s</small>
+            {entry.kind !== 'standard' && (
+              <small className="mono text-[9px]" style={{ color: kind.color, letterSpacing: '0.12em' }}>{kind.label}</small>
+            )}
+          </div>
+          {entry.note && (
+            <p className="mono text-[9px] mt-1 mb-0" style={{ color: 'var(--cw-muted)' }}>◮ {entry.note.toUpperCase()}</p>
+          )}
+          {blockedBy.length > 0 && (
+            <p className="mono text-[9px] mt-1 mb-0" style={{ color: 'var(--cw-red)' }} data-testid="next-up-blocked">
+              ⨂ GATED — SHOOT {blockedBy.map((n) => `#${String(n).padStart(2, '0')}`).join(', ')} FIRST
+            </p>
+          )}
+        </>
+      )}
+
+      {upcoming.length > 0 && (
+        <div className="mt-2">
+          <span className="mono text-[9px]" style={{ color: 'var(--cw-muted)', letterSpacing: '0.15em' }}>THEN</span>
+          <div className="space-y-0.5 mt-0.5">
+            {upcoming.map((q) => {
+              const s = BY_NUMBER[q.number];
+              if (!s) return null;
+              return (
+                <div key={q.step} className="flex items-center gap-2 mono text-[9px]" style={{ color: 'var(--cw-text-2)' }}>
+                  <span style={{ color: 'var(--cw-muted)', minWidth: 42 }}>STEP {String(q.step).padStart(2, '0')}</span>
+                  <span className="flex-1 truncate">{s.title}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--cw-border)' }}>
+        <span className="mono text-[9px]" style={{ color: 'var(--cw-muted)', letterSpacing: '0.15em' }}>
+          OFF-QUEUE · DATE TRIGGERED
+        </span>
+        <div className="space-y-0.5 mt-0.5" data-testid="calendar-signals">
+          {CALENDAR_SIGNALS.map((c) => {
+            const s = BY_NUMBER[c.number];
+            if (!s) return null;
+            return (
+              <div key={c.number} className="flex items-center gap-2 mono text-[9px]"
+                style={{ color: progress[c.number] ? 'var(--cw-green)' : 'var(--cw-text-2)', cursor: 'pointer' }}
+                onClick={() => onPick(s)}>
+                <span style={{ color: 'var(--cw-muted)', minWidth: 26 }}>
+                  {progress[c.number] ? '✓' : '#'}{String(c.number).padStart(2, '0')}
+                </span>
+                <span className="flex-1 truncate">{c.trigger}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const ScriptLog = ({ active, onPick, progress, recording = false, beatIdx = 0 }) => {
-  const [filter, setFilter] = useState('all');
-  const list = useMemo(
-    () => (filter === 'all' ? TRANSMISSIONS : TRANSMISSIONS.filter((s) => s.pillar === filter)),
-    [filter]
-  );
+  const [filter, setFilter] = useState('queue');
+  const list = useMemo(() => {
+    if (filter === 'queue') return sortByQueue(TRANSMISSIONS);
+    if (filter === 'all') return TRANSMISSIONS;
+    return TRANSMISSIONS.filter((s) => s.pillar === filter);
+  }, [filter]);
   /* coverage: how much of the whole transmission slate is on tape */
   const recorded = useMemo(
     () => TRANSMISSIONS.reduce((n, s) => n + (progress[s.number] ? 1 : 0), 0),
@@ -25,6 +125,8 @@ export const ScriptLog = ({ active, onPick, progress, recording = false, beatIdx
         </span>
       </div>
       <div className="flex flex-wrap gap-1 mb-2">
+        <div className={`cw-chip ${filter === 'queue' ? 'on' : ''}`} style={{ padding: '4px 7px', fontSize: 9 }}
+          data-testid="pillar-filter-queue" onClick={() => setFilter('queue')}>▶ SHOOT ORDER</div>
         <div className={`cw-chip ${filter === 'all' ? 'on' : ''}`} style={{ padding: '4px 7px', fontSize: 9 }}
           data-testid="pillar-filter-all" onClick={() => setFilter('all')}>ALL</div>
         {Object.entries(PILLARS).map(([k, p]) => (
@@ -35,6 +137,7 @@ export const ScriptLog = ({ active, onPick, progress, recording = false, beatIdx
       <div className="overflow-y-auto space-y-1" style={{ maxHeight: 320 }}>
         {list.map((s) => {
           const isActive = active && active.id === s.id;
+          const q = queueEntry(s.number);
           return (
             <div key={s.id}
               className={`cw-chip ${isActive ? 'on' : ''}`}
@@ -44,9 +147,21 @@ export const ScriptLog = ({ active, onPick, progress, recording = false, beatIdx
               <span className="mono" style={{ color: progress[s.number] ? 'var(--cw-green)' : 'var(--cw-muted)', minWidth: 26 }}>
                 {progress[s.number] ? '✓' : '#'}{String(s.number).padStart(2, '0')}
               </span>
+              {q ? (
+                <span className="mono text-[9px]" style={{ color: 'var(--cw-red)', minWidth: 46, letterSpacing: '0.1em' }}>
+                  STEP {String(q.step).padStart(2, '0')}
+                </span>
+              ) : (
+                <span className="mono text-[9px]" style={{ color: 'var(--cw-muted)', minWidth: 46, letterSpacing: '0.1em' }}>
+                  {isCalendarSignal(s.number) ? 'DATED' : 'SHOT'}
+                </span>
+              )}
               <span className="flex-1 truncate" style={{ fontSize: 10 }}>{s.title}</span>
               <small className="mono" style={{ color: 'var(--cw-muted)' }}>{s.beats.length}B · {s.durationSec}s</small>
               <small style={{ color: PILLARS[s.pillar].color }}>{PILLARS[s.pillar].label}</small>
+              {q && q.kind !== 'standard' && (
+                <small className="mono text-[9px]" style={{ color: QUEUE_KINDS[q.kind].color }}>{QUEUE_KINDS[q.kind].label}</small>
+              )}
               {isActive && recording && (
                 <div className="cw-meter w-full" style={{ height: 3 }} data-testid={`script-beat-progress-${s.number}`}>
                   <div style={{ width: `${Math.min(100, ((beatIdx + 1) / s.beats.length) * 100)}%` }} />
