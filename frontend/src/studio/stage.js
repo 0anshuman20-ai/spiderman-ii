@@ -13,6 +13,7 @@ import { createSuitLayer } from './suit';
 import { createActor } from './actor';
 import { FACE, FACE_CH } from './perf';
 import { buildWorld } from './worlds';
+import { createHandheld } from './handheld';
 
 const W = 1080, H = 1920;
 
@@ -48,6 +49,13 @@ const GradeShader = {
       float d = distance(uv, vec2(0.5, 0.48));
       col *= 1.0 - d * d * 0.42;                              // gentle vignette
       col *= 1.0 - uGlitch * 0.12;
+      /* HORROR GRADE — the genre is "wrong space", not "pretty space":
+         crushed blacks, cooled shadows, one warm accent held for highlights */
+      col = max(vec3(0.0), col - 0.014) * 1.05;               // crush blacks
+      float L = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      float sh = 1.0 - smoothstep(0.0, 0.42, L);
+      col += vec3(-0.012, -0.004, 0.020) * sh;                // cool the shadows
+      col += vec3(0.024, 0.011, -0.012) * smoothstep(0.62, 1.0, L); // warm accent
       gl_FragColor = vec4(col, 1.0);
     }`,
 };
@@ -63,6 +71,7 @@ export function createStage(canvas) {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(34, W / H, 0.1, 200);
   const baseCam = new THREE.Vector3(0, 1.18, 3.5);
+  const handheld = createHandheld(5);
   camera.position.copy(baseCam);
   scene.add(camera);
 
@@ -504,15 +513,18 @@ export function createStage(canvas) {
       const rootZ = rig ? rig.root.z : 0;
       // per-world far-layer counter-shift strengthens the depth read
       if (world.parallax) world.parallax(rootX, rig ? rig.root.y || 0 : 0);
-      const drift = 0.05;
-      camera.position.x = baseCam.x + Math.sin(t * 0.11) * drift - rootX * 0.45;
-      camera.position.y = baseCam.y + Math.sin(t * 0.09 + 2) * drift * 0.5;
+      /* RECOVERY 1.2 #2 — a pure sine drift is a mathematically smooth camera,
+         which reads synthetic. Banded handheld noise replaces it: the operator
+         breathes, the frame never repeats, the subject stays framed. */
+      camera.position.x = baseCam.x - rootX * 0.45;
+      camera.position.y = baseCam.y;
       camera.position.z = baseCam.z - rootZ * 0.35;
       const sincePunch = t - punchT;
       const punch = sincePunch < 1.2 ? Math.exp(-sincePunch * 4) : 0;
       camera.fov = 34 - punch * 5;
       camera.updateProjectionMatrix();
       camera.lookAt(0, 1.34, 0);
+      handheld.apply(camera, t, 0);
 
       if (glitchT > 0) glitchT -= dt;
       updateCaptionAnim();
