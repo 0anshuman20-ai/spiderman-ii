@@ -150,6 +150,124 @@ export function gateOpen() {
   return Boolean(readGate().passedAt);
 }
 
+/* ------------------------------------------------------------------ */
+/* PHASE A5 — v3 additions. Three instruments, all pre-committed by
+   memory/RECOVERY_PLAN.md §2 #6 + Phase C #2:
+
+   1) LOOP SEAM CHECK (same take): first vs last frame must be SIMILAR —
+      the exact inverse of the cross-upload rule. dist < DOOR_MIN_DIST is
+      how the feed decides "same picture"; the seam WANTS that read, so it
+      passes where the cross-upload rule would fail. SEAM_MAX_DIST is a
+      little looser (the frame-zero burn text and grain flip a few bits).
+   2) DOOR PAIRING WARNING (cross upload): consecutive planned uploads that
+      share BOTH worldKey and doorMove are pre-flagged BEFORE recording —
+      the dHash rule would only catch them after the takes exist.
+   3) PRE-PUBLISH CHECKLIST (Phase C #2): enforced in the gate, not
+      remembered. Persisted per-attempt in localStorage; publish verdict is
+      ALL boxes, no override. */
+
+export const SEAM_MAX_DIST = 16;
+
+/** same-take loop-seam verdict: last frame ≈ first frame (v3 corr. 2) */
+export function seamReport(firstHash, lastHash) {
+  const dist = hamming(firstHash, lastHash);
+  return { dist, ok: dist <= SEAM_MAX_DIST };
+}
+
+/** decode a take (video File/Blob), dHash its first and last frames.
+    Seeks are event-driven — works on WebM out of the studio recorder. */
+export function hashVideoEnds(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    const fail = (msg) => { URL.revokeObjectURL(url); reject(new Error(msg)); };
+    const grab = () => {
+      try { return dhash(video); } catch (err) { fail('frame unreadable'); return null; }
+    };
+    let firstHash = null;
+    video.onerror = () => fail('undecodable video');
+    video.onloadedmetadata = () => {
+      /* MediaRecorder WebM often reports Infinity until seeked past the end —
+         the standard workaround: seek far, duration resolves, then start over */
+      if (!Number.isFinite(video.duration)) { video.currentTime = 1e9; return; }
+      video.currentTime = 0.001;
+    };
+    video.onseeked = () => {
+      if (!Number.isFinite(video.duration)) return; // still resolving
+      if (video.currentTime > video.duration - 0.2 && firstHash === null && video.currentTime > 1) {
+        /* this was the duration-resolving seek — rewind to the real start */
+        video.currentTime = 0.001;
+        return;
+      }
+      if (firstHash === null) {
+        firstHash = grab();
+        if (firstHash === null) return;
+        video.currentTime = Math.max(0, video.duration - 0.05);
+        return;
+      }
+      const lastHash = grab();
+      if (lastHash === null) return;
+      const duration = video.duration;
+      URL.revokeObjectURL(url);
+      resolve({ firstHash, lastHash, duration, ...seamReport(firstHash, lastHash) });
+    };
+    video.src = url;
+  });
+}
+
+/** RECOVERY 2 #6 — pre-flag consecutive planned uploads sharing BOTH
+    worldKey and doorMove. entries: [{ label, world, doorMove }] in
+    publish order. */
+export function pairingReport(entries) {
+  const pairs = [];
+  for (let i = 1; i < entries.length; i++) {
+    const a = entries[i - 1];
+    const b = entries[i];
+    const shared = a.world === b.world && a.doorMove === b.doorMove;
+    pairs.push({ a: a.label, b: b.label, world: b.world, doorMove: b.doorMove, ok: !shared });
+  }
+  return { pairs, violations: pairs.filter((p) => !p.ok).length, pass: pairs.every((p) => p.ok) };
+}
+
+/* PHASE C #2 — the checklist, verbatim from the plan. Ordered; ids stable
+   (the ledger stores ids, so rewording an item never un-checks it). */
+export const PRE_PUBLISH_CHECKLIST = [
+  { id: 'burn-legible', text: 'Burned hook text legible at 360px width' },
+  { id: 'word-half-sec', text: 'First spoken word ≤ 0.5s; audio at t=0' },
+  { id: 'runtime-25', text: 'Runtime ≤ 25s' },
+  { id: 'seam-verified', text: 'Loop seam verified by scrubbing (last frame ≈ first frame)' },
+  { id: 'ip-labels', text: 'Fan-made parody label + AI disclosure flag set' },
+  { id: 'no-command-cta', text: 'No command-phrased CTA anywhere' },
+  { id: 'title-not-hook', text: 'Title is not the hook text verbatim (no redundancy tax)' },
+  { id: 'plays-outside', text: 'File plays outside the browser' },
+];
+
+const CHECKLIST_KEY = 'veyl-prepublish-v1';
+
+export function readChecklist() {
+  try { return JSON.parse(localStorage.getItem(CHECKLIST_KEY)) || {}; } catch (_) { return {}; }
+}
+
+export function toggleChecklist(id) {
+  const c = readChecklist();
+  c[id] = !c[id];
+  try { localStorage.setItem(CHECKLIST_KEY, JSON.stringify(c)); } catch (_) { /* storage unavailable */ }
+  return c;
+}
+
+export function resetChecklist() {
+  try { localStorage.removeItem(CHECKLIST_KEY); } catch (_) { /* storage unavailable */ }
+  return {};
+}
+
+/** publish verdict: every box, no override */
+export function checklistClear(state) {
+  return PRE_PUBLISH_CHECKLIST.every((item) => Boolean(state[item.id]));
+}
+
 /* the 5 real NASA public-domain stills shipped with the app (public/gate/) */
 export const REAL_STILLS = [
   { src: '/gate/real-earthrise.jpg', label: 'APOLLO 8 — EARTHRISE' },

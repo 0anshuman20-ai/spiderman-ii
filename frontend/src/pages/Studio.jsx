@@ -659,7 +659,7 @@ export default function Studio() {
         stage.setHud('COSMIC WEAVER ── TAKE FAILED, ENCODER DROPPED TO SAFE MODE — ROLL AGAIN');
       }
     }
-  }, [startRecording]);
+  }, [startRecording, closeDoor]);
 
   // the telemetry poll cuts the take through this ref — always the latest closure
   useEffect(() => { toggleRecRef.current = toggleRec; }, [toggleRec]);

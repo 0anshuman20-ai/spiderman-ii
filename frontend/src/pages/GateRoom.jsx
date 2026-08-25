@@ -19,7 +19,10 @@ import {
   dhash, fingerprintReport, decodeImageFile,
   buildDeck, scoreRun, readGate, saveRun, clearGate,
   DOOR_MIN_DIST, PASS_MIN_FOOLED, REAL_STILLS,
+  SEAM_MAX_DIST, hashVideoEnds, pairingReport,
+  PRE_PUBLISH_CHECKLIST, readChecklist, toggleChecklist, resetChecklist, checklistClear,
 } from '../studio/gate';
+import { SIGNALS } from '../studio/scripts';
 
 const WORLDS = [
   { key: 'dying-star', name: 'DYING STAR' },
@@ -49,6 +52,11 @@ export default function GateRoom() {
 
   /* flash-test state machine: idle → flash → answer → (next…) → done */
   const [test, setTest] = useState({ phase: 'idle' });
+
+  /* PHASE A5 — loop-seam verdicts on dropped takes + pre-publish checklist */
+  const [seams, setSeams] = useState([]);       // { label, dist, ok, duration }
+  const [seamBusy, setSeamBusy] = useState(false);
+  const [checklist, setChecklist] = useState(readChecklist());
 
   /* ---- render the 5 first frames through the production pipeline ---- */
   useEffect(() => {
@@ -132,8 +140,37 @@ export default function GateRoom() {
 
   const resetGate = useCallback(() => { clearGate(); setGate(readGate()); }, []);
 
+  /* ---- A5: loop-seam check on dropped takes (first ≈ last frame) ---- */
+  const onTakeFiles = useCallback(async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setSeamBusy(true);
+    for (const f of files) {
+      try {
+        const r = await hashVideoEnds(f);
+        setSeams((s) => [...s, { label: f.name.toUpperCase(), dist: r.dist, ok: r.ok, duration: r.duration }]);
+      } catch (err) {
+        setSeams((s) => [...s, { label: f.name.toUpperCase(), dist: null, ok: false, error: String(err.message || err) }]);
+      }
+    }
+    setSeamBusy(false);
+    e.target.value = '';
+  }, []);
+
+  /* ---- A5: pre-publish checklist, persisted ---- */
+  const onToggle = useCallback((id) => setChecklist(toggleChecklist(id)), []);
+  const onResetChecklist = useCallback(() => setChecklist(resetChecklist()), []);
+
   const autoReport = fingerprintReport(renders);
   const uploadReport = fingerprintReport(uploads);
+
+  /* ---- A5: door pairing over the planned publish order ---- */
+  const plannedQueue = SIGNALS
+    .filter((s) => Number.isFinite(s.publishOrder))
+    .sort((a, b) => a.publishOrder - b.publishOrder)
+    .map((s) => ({ label: `#${s.publishOrder} · ${s.frameZero || s.title}`, world: s.world, doorMove: s.doorMove }));
+  const pairing = pairingReport(plannedQueue);
+  const cleared = checklistClear(checklist);
   const passingRuns = gate.runs.filter((r) => r.pass).length;
   const open = Boolean(gate.passedAt);
 
@@ -294,6 +331,97 @@ export default function GateRoom() {
               ))}
             </ul>
           )}
+        </section>
+
+        {/* ---------------- A5: LOOP SEAM CHECK ---------------- */}
+        <section aria-label="Loop seam verification" className="cw-panel p-4 flex flex-col gap-4">
+          <div>
+            <h2 className="text-xs tracking-widest m-0">∞ LOOP SEAM — SAME-TAKE CHECK</h2>
+            <p className="text-[10px] leading-relaxed mt-1 mb-0" style={{ color: C.text2 }}>
+              THE {'>'}100% AVD ENGINE: LAST FRAME ≈ FIRST FRAME (v3 CORR. 2). DROP A TAKE —
+              BOTH END FRAMES ARE dHASHED; DISTANCE ≤ {SEAM_MAX_DIST}/64 BITS = RESTART INVISIBLE.
+              THE INVERSE OF THE CROSS-UPLOAD RULE: THE SEAM PASSES WHERE A REPOST WOULD FAIL.
+            </p>
+          </div>
+          <label htmlFor="gate-seam-upload" className="text-[10px] tracking-widest">
+            DROP TAKE FILES (WEBM/MP4) — FIRST + LAST FRAME COMPARED
+          </label>
+          <input id="gate-seam-upload" type="file" accept="video/*" multiple onChange={onTakeFiles}
+            className="text-[10px]" style={{ color: C.text2 }} data-testid="gate-seam-upload" />
+          {seamBusy && <p className="text-[10px] m-0" style={{ color: C.muted }}>HASHING END FRAMES…</p>}
+          {seams.length > 0 && (
+            <ul className="flex flex-col gap-1 list-none m-0 p-0" data-testid="gate-seam-report">
+              {seams.map((s, i) => (
+                <li key={`${s.label}-${i}`} className="flex items-center justify-between text-[10px] gap-2">
+                  <span className="truncate" style={{ color: C.muted }}>
+                    {s.label}{Number.isFinite(s.duration) ? ` · ${s.duration.toFixed(1)}s` : ''}
+                  </span>
+                  <span className="whitespace-nowrap" style={{ color: s.ok ? C.green : C.red }}>
+                    {s.dist === null
+                      ? (s.error || 'UNREADABLE')
+                      : `${s.dist}/64 ${s.ok ? 'LOOP VERIFIED' : `SEAM VISIBLE (> ${SEAM_MAX_DIST})`}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* ---------------- A5: DOOR PAIRING WARNING ---------------- */}
+        <section aria-label="Door pairing warning" className="cw-panel p-4 flex flex-col gap-4">
+          <div>
+            <h2 className="text-xs tracking-widest m-0">◇ DOOR PAIRING — PLANNED PUBLISH ORDER</h2>
+            <p className="text-[10px] leading-relaxed mt-1 mb-0" style={{ color: C.text2 }}>
+              PRE-FLAGGED BEFORE RECORDING: CONSECUTIVE UPLOADS SHARING BOTH WORLD AND DOOR MOVE
+              RECREATE THE SEVEN-IDENTICAL-FIRST-FRAMES FAILURE. THE dHASH RULE ONLY CATCHES THEM
+              AFTER THE TAKES EXIST — THIS CATCHES THEM IN THE DATA.
+            </p>
+          </div>
+          <p className="text-[11px] tracking-widest m-0" style={{ color: pairing.pass ? C.green : C.red }} data-testid="gate-pairing-verdict">
+            {pairing.pass
+              ? `ALL ${pairing.pairs.length} CONSECUTIVE PAIRS DISTINCT — PLANNED ORDER CLEAR`
+              : `${pairing.violations} CONSECUTIVE PAIR(S) SHARE WORLD + DOOR MOVE — REORDER OR RE-TAG`}
+          </p>
+          {!pairing.pass && (
+            <ul className="flex flex-col gap-1 list-none m-0 p-0" data-testid="gate-pairing-violations">
+              {pairing.pairs.filter((p) => !p.ok).map((p) => (
+                <li key={`${p.a}-${p.b}`} className="text-[10px]" style={{ color: C.red }}>
+                  {p.a} → {p.b} — BOTH “{p.world}” + {p.doorMove}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* ---------------- A5 / PHASE C: PRE-PUBLISH CHECKLIST ---------------- */}
+        <section aria-label="Pre-publish checklist" className="cw-panel p-4 flex flex-col gap-4 lg:col-span-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-xs tracking-widest m-0">☑ PRE-PUBLISH CHECKLIST — ENFORCED, NOT REMEMBERED</h2>
+              <p className="text-[10px] leading-relaxed mt-1 mb-0" style={{ color: C.text2 }}>
+                PHASE C #2, VERBATIM. EVERY BOX OR NO PUBLISH — NO OVERRIDE. RESET PER TAKE.
+              </p>
+            </div>
+            <button type="button" onClick={onResetChecklist} className="cw-chip text-[10px]" style={{ padding: '6px 10px' }} data-testid="checklist-reset">
+              RESET FOR NEW TAKE
+            </button>
+          </div>
+          <ul className="grid gap-2 list-none m-0 p-0 md:grid-cols-2" data-testid="prepublish-checklist">
+            {PRE_PUBLISH_CHECKLIST.map((item) => (
+              <li key={item.id}>
+                <label className="flex items-start gap-2 text-[11px] leading-relaxed cursor-pointer" style={{ color: checklist[item.id] ? C.green : C.text2 }}>
+                  <input type="checkbox" checked={Boolean(checklist[item.id])} onChange={() => onToggle(item.id)}
+                    className="mt-0.5" data-testid={`check-${item.id}`} />
+                  <span>{item.text}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] tracking-widest m-0 pt-3" style={{ borderTop: C.border, color: cleared ? C.green : C.red }} data-testid="prepublish-verdict">
+            {cleared
+              ? 'ALL CHECKS CLEAR — PUBLISH THE ONE UPLOAD, THEN STOP: NOTHING ELSE FOR 72H MINIMUM'
+              : `${PRE_PUBLISH_CHECKLIST.filter((i) => checklist[i.id]).length}/${PRE_PUBLISH_CHECKLIST.length} — PUBLISH LOCKED UNTIL EVERY BOX IS TRUE`}
+          </p>
         </section>
       </main>
     </div>
