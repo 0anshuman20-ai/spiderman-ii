@@ -44,6 +44,53 @@ function tex(path, srgb = true) {
 }
 
 /* ------------------------------------------------------------------ */
+/* REAL SKY (recording-fix Phase 4) — an actual photograph of the Milky Way
+   (ESO eso0932a all-sky panorama, CC BY 4.0 — credits in
+   public/textures/real/CREDITS.txt) on an inside-out sphere. This is what
+   kills the "fake 2D shader sky" read: the backdrop has the structure,
+   grain and dynamic range only a real exposure has. Per-world tint +
+   exposure keep each world's palette; fog is excluded (a sky at optical
+   infinity cannot be fogged); the material's .color means the WORLD
+   EDITOR's hueShift traverse keeps working on it untouched. */
+function photoSky(url, { tint = 0xffffff, exposure = 1 } = {}) {
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex(url),
+    side: THREE.BackSide,
+    fog: false,
+    depthWrite: false,
+    color: new THREE.Color(tint).multiplyScalar(exposure),
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(150, 48, 32), mat);
+  mesh.scale.x = -1; // inside-out equirect reads un-mirrored
+  mesh.rotation.y = Math.PI * 0.35; // frame the galactic core off-axis
+  mesh.renderOrder = -100; // always behind everything, including the star dome
+  return mesh;
+}
+
+/* flat telescope frames (Carina, Eagle Spire — NOT equirects) as large
+   distant CURVED BACKDROPS: a partial sphere segment, additive-blended so
+   their black frame edges dissolve into the photo sky behind them. Never a
+   full sphere — stretching a flat frame around 360° is exactly the fake
+   look this phase removes. */
+function photoBackdrop(url, { tint = 0xffffff, intensity = 1, phi = 1.8, theta = 1.2, yaw = 0, pitch = 0 } = {}) {
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex(url),
+    side: THREE.BackSide,
+    fog: false,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    color: new THREE.Color(tint).multiplyScalar(intensity),
+  });
+  const geo = new THREE.SphereGeometry(135, 32, 24, -phi / 2, phi, Math.PI / 2 - theta / 2, theta);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.scale.x = -1;
+  mesh.rotation.set(pitch, yaw, 0);
+  mesh.renderOrder = -90;
+  return mesh;
+}
+
+/* ------------------------------------------------------------------ */
 /* GPU star dome — real 3D shell of round, twinkling shader points     */
 function starDome(count = 8200, radius = 90) {
   count = scaled(count);
@@ -575,10 +622,23 @@ export function buildWorld(scene, key, params) {
   const group = new THREE.Group();
   const updaters = [];
   const timeMats = []; // materials with uTime
-  const stars = starDome();
+  /* DEMOTED (recording-fix Phase 4): with a real photographed sky carrying
+     the star field, the procedural dome becomes a sparse foreground twinkle
+     layer — it adds the live shimmer a static photo can't, without fighting
+     the photo's own stars. */
+  const stars = starDome(2800);
   group.add(stars);
   timeMats.push(stars.material);
   updaters.push((t) => { stars.rotation.y = t * 0.003; });
+  /* the real Milky Way behind every world, drifting imperceptibly so even a
+     locked-off shot never reads as a still image */
+  const addSky = (opts) => {
+    const sky = photoSky('/textures/real/milkyway_4k.jpg', opts);
+    group.add(sky);
+    const yaw0 = sky.rotation.y;
+    updaters.push((t) => { sky.rotation.y = yaw0 + t * 0.0015; });
+    return sky;
+  };
   // occasional meteors streak the dome in every world
   const meteors = meteorShower();
   group.add(meteors);
@@ -598,11 +658,17 @@ export function buildWorld(scene, key, params) {
   };
 
   if (key === 'nebula-drift') {
-    scene.background = new THREE.Color(0x020112);
+    scene.background = new THREE.Color(0x020112); // load fallback behind the photo sky
     fogColor = 0x0a0620;
-    const neb = nebulaVolume(0x7a2ce0, 0xd42a55, 0x1e64c8, 1.15);
-    group.add(addTimeMat(neb));
-    updaters.push((t) => { neb.rotation.y = t * 0.004; });
+    addSky({ tint: 0xcdbcff, exposure: 1.0 });
+    /* the FBM raymarch is GONE here (recording-fix Phase 4) — replaced by the
+       real thing: ESO's VLT infrared exposure of the Carina nebula as a
+       curved distant backdrop, tinted into the world's violet palette */
+    const carina = photoBackdrop('/textures/real/carina_ir_2k.jpg', {
+      tint: 0xd9c2ff, intensity: 1.2, yaw: -0.45, pitch: -0.1, phi: 2.0, theta: 1.3,
+    });
+    group.add(carina);
+    updaters.push((t) => { carina.rotation.y = -0.45 + t * 0.002; });
     // a distant spiral galaxy tilted into the deep field
     const gal = addTimeMat(spiralGalaxy(18, 0xfff0dd, 0x8866ff));
     gal.position.set(-16, 18, -60);
