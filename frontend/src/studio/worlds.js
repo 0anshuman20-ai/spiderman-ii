@@ -73,14 +73,20 @@ function starDome(count = 8200, radius = 90) {
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   geo.setAttribute('aStar', new THREE.BufferAttribute(attr, 2));
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+    /* RECOVERY 1.2 #4 — in a real exposure, stars near a bright body are
+       swallowed by glare and scattered light. uSunDir/uSunFade fade the dome
+       toward any sun the active world declares. */
+    uniforms: { uTime: { value: 0 }, uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uSunFade: { value: 0 } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: `
       attribute vec2 aStar; varying vec3 vC; varying float vTw;
-      uniform float uTime;
+      uniform float uTime; uniform vec3 uSunDir; uniform float uSunFade;
       void main(){
         vC = color;
         vTw = 0.75 + 0.25 * sin(uTime * (1.5 + aStar.y) + aStar.y * 7.0);
+        // glare occlusion: stars vanish inside the sun's scattered-light cone
+        float glare = pow(max(dot(normalize(position), uSunDir), 0.0), 6.0);
+        vTw *= 1.0 - clamp(glare * uSunFade, 0.0, 1.0);
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_PointSize = aStar.x * 220.0 / -mv.z;
         gl_Position = projectionMatrix * mv;
@@ -269,24 +275,31 @@ function meteorShower(meteors = 5, trail = 16) {
 }
 
 /* ------------------------------------------------------------------ */
-/* animated plasma star — 3D noise displaces color across the surface  */
-function plasmaStar(radius, hot, mid, dark) {
+/* BLACK-BODY STAR — RECOVERY 1.2 #3.
+   No arbitrary palette: the surface color comes from Planck's law. FBM
+   granulation modulates the local TEMPERATURE (Kelvin), and the black-body
+   approximation converts temperature to color — so hot knots go white-blue and
+   cool lanes go deep red exactly the way real photospheres do. Limb darkening
+   (mu = cos of the view angle) darkens the edge like every real star photo.
+   Emissive is pushed hard (x3.2) so ACES tonemapping cannot gray it out.      */
+function plasmaStar(radius, tempK = 5700, intensity = 3.2) {
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uTime: { value: 0 },
-      uHot: { value: new THREE.Color(hot) },
-      uMid: { value: new THREE.Color(mid) },
-      uDark: { value: new THREE.Color(dark) },
+      uTemp: { value: tempK },
+      uInt: { value: intensity },
+      uTint: { value: new THREE.Color(0xffffff) }, // hueShift hook
     },
     vertexShader: `
-      varying vec3 vPos; varying vec3 vN;
+      varying vec3 vPos; varying vec3 vNv;
       void main(){
-        vPos = position; vN = normal;
+        vPos = position;
+        vNv = normalize(normalMatrix * normal);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: `
-      uniform float uTime; uniform vec3 uHot, uMid, uDark;
-      varying vec3 vPos; varying vec3 vN;
+      uniform float uTime; uniform float uTemp; uniform float uInt; uniform vec3 uTint;
+      varying vec3 vPos; varying vec3 vNv;
       float hash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
       float noise(vec3 x){
         vec3 i = floor(x), f = fract(x);
@@ -301,13 +314,27 @@ function plasmaStar(radius, hot, mid, dark) {
         for (int i = 0; i < 5; i++){ v += a * noise(p); p = p * 2.1 + vec3(1.3); a *= 0.5; }
         return v;
       }
+      /* Planckian locus approximation: temperature (K) -> normalized RGB */
+      vec3 blackbody(float T){
+        float t = clamp(T, 1000.0, 40000.0) / 100.0;
+        float r = t <= 66.0 ? 1.0 : clamp(1.2929 * pow(t - 60.0, -0.1332), 0.0, 1.0);
+        float g = t <= 66.0 ? clamp(0.39008 * log(t) - 0.63184, 0.0, 1.0)
+                            : clamp(1.1299 * pow(t - 60.0, -0.0755), 0.0, 1.0);
+        float b = t >= 66.0 ? 1.0 : (t <= 19.0 ? 0.0 : clamp(0.5432 * log(t - 10.0) - 1.19625, 0.0, 1.0));
+        return vec3(r, g, b);
+      }
       void main(){
         vec3 p = normalize(vPos);
+        // granulation: convecting cells modulate LOCAL temperature, not color
         float n = fbm(p * 4.0 + vec3(uTime * 0.06, uTime * 0.04, 0.0));
         n += 0.4 * fbm(p * 11.0 - vec3(0.0, uTime * 0.12, 0.0));
-        vec3 col = mix(uDark, uMid, smoothstep(0.25, 0.6, n));
-        col = mix(col, uHot, smoothstep(0.62, 0.95, n));
-        col *= 2.4; // HDR push so bloom catches the granulation
+        float T = uTemp * (0.82 + n * 0.42);            // cool lanes .. hot knots
+        // Stefan-Boltzmann-ish: hotter cells are disproportionately brighter
+        float lum = pow(T / uTemp, 4.0);
+        // limb darkening: I(mu) = 1 - u(1 - mu), the signature of a real disk
+        float mu = clamp(abs(vNv.z), 0.0, 1.0);
+        float limb = 1.0 - 0.62 * (1.0 - mu);
+        vec3 col = blackbody(T) * lum * limb * uInt * uTint;
         gl_FragColor = vec4(col, 1.0);
       }`,
   });

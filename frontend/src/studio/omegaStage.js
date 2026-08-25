@@ -20,6 +20,7 @@ import { createActor } from './actor';
 import { sampleAt, meanVisibility, FACE_CH, J } from './perf';
 import { createCinema } from './synth';
 import { createNovelView, stillCamera } from './novelview';
+import { createHandheld } from './handheld';
 
 const W = 1080, H = 1920;
 
@@ -54,6 +55,12 @@ const GradeShader = {
       float d = distance(uv, vec2(0.5, 0.48));
       col *= 1.0 - d * d * 0.42;
       col *= 1.0 - uGlitch * 0.12;
+      /* HORROR GRADE — identical to the live stage: continuity contract */
+      col = max(vec3(0.0), col - 0.014) * 1.05;
+      float L = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      float sh = 1.0 - smoothstep(0.0, 0.42, L);
+      col += vec3(-0.012, -0.004, 0.020) * sh;
+      col += vec3(0.024, 0.011, -0.012) * smoothstep(0.62, 1.0, L);
       gl_FragColor = vec4(col, 1.0);
     }`,
 };
@@ -197,6 +204,9 @@ export function createOmegaStage(canvas) {
   let onTick = null;
   let onEnd = null;
   let stuntSolver = null;
+  /* RECOVERY 1.2 #2 — no frame ever ships with a mathematically perfect camera.
+     Seeded per shot, pure function of shot time: deterministic and re-renderable. */
+  let handheld = createHandheld(11);
 
   function setWorld(k) {
     if (!k || k === worldKey) return;
@@ -230,6 +240,7 @@ export function createOmegaStage(canvas) {
       camera.fov = s.fov;
       camera.updateProjectionMatrix();
       camera.lookAt(s.look[0], s.look[1], s.look[2]);
+      handheld.apply(camera, t, u);
       grade.uniforms.uGlitch.value = 0;
       grade.uniforms.uTime.value = t;
       cinema.tick(t);
@@ -254,6 +265,7 @@ export function createOmegaStage(canvas) {
 
     chest.y = Math.max(0.6, actor.head.position.y + actor.group.position.y - 0.34);
     solveCamera(u);
+    handheld.apply(camera, t, u);
     world.update(t + (shot.worldPhase || 0), 1 / 30);
     grade.uniforms.uTime.value = t;
     cinema.tick(t);
@@ -300,6 +312,7 @@ export function createOmegaStage(canvas) {
       setBadge(shot.label);
       cinema.strength = shot.cinema || 0;
       cinema.seed = shot.cinemaSeed || 11;
+      handheld = createHandheld(shot.cinemaSeed || 11);
       clock = 0;
 
       /* tear down any previous still view */
