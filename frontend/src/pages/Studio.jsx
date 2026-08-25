@@ -33,6 +33,26 @@ const OUTRO_BASE = 1.0;
    frame, restart invisible. */
 const SEAM_SEC = 0.8;
 
+/* ONE SHARED ENDING CLOCK (recording-fix Phase 2) — seconds until the take
+   should cut, computed IDENTICALLY for the poll's auto-cut and the door's
+   loop seam, so the seam always lands on the exact frame the cut fires.
+   Buffered voice: the outro window from the real end of speech, extended by
+   whatever the closer caption still needs. LIVE MIC: `voice.done` is often
+   never confirmed (recognition may miss the final words entirely), so once
+   the LAST line's caption has fired, the caption clock ALONE drives the
+   ending — the old `voice.done` gate silently skipped both the seam and the
+   auto-cut on live-mic takes ("at the end nothing happened").
+   Returns Infinity while the ending hasn't started. */
+function remainingSeconds(voice, stage, lastCapLine) {
+  if (!voice || !voice.ready || !voice.canRoll() || voice.lines.length === 0) return Infinity;
+  const capLeft = stage && stage.captionRemaining ? stage.captionRemaining() : 0;
+  if (voice.done) {
+    return Math.max(OUTRO_BASE + voice.tailSeconds() - voice.secondsSinceDone(), capLeft);
+  }
+  if (voice.micMode && lastCapLine === voice.lines.length - 1) return capLeft;
+  return Infinity;
+}
+
 const FX_MAP = {
   glitch: (stage, voice, music) => { stage.glitch(0.45); voice.triggerGlitch(250); if (music) music.glitchZap(); },
   zoom: (stage, voice, music) => { stage.punch(); if (music) music.impact(); },
@@ -285,15 +305,20 @@ export default function Studio() {
           ds.insertFired = true;
           stage.insert(ds.insertSpec);
         }
-        /* LOOP SEAM (v3 corr. 2) — once the last line has landed, compute the
-           SAME remaining-time the poll's cut decision uses (whichever finishes
-           last: audio drain or closer caption) and lerp the camera back to the
-           opening composition across the final SEAM_SEC seconds, so
-           frame-last ≈ frame-zero and the restart is invisible. */
-        if (ds.resolved && voice.ready && voice.canRoll() && voice.lines.length > 0 && voice.done) {
-          const capLeft = stage.captionRemaining ? stage.captionRemaining() : 0;
-          const remaining = Math.max(OUTRO_BASE + voice.tailSeconds() - voice.secondsSinceDone(), capLeft);
-          if (remaining < SEAM_SEC) doorRef.current.seam(1 - Math.max(0, remaining) / SEAM_SEC);
+        /* LOOP SEAM (v3 corr. 2 / recording-fix Phase 2) — the shared
+           remainingSeconds() clock (the SAME one the poll's auto-cut reads,
+           live-mic included) drives the final SEAM_SEC seconds: the camera
+           lerps back to the door's opening composition AND the frame-zero
+           hook burn fades back in (the reveal cleared it), so the last frame
+           pixel-matches frame zero. Per-move actor visibility is re-applied
+           inside door.seam() (COLD_WORLD re-hides the actor at the tail). */
+        if (ds.resolved) {
+          const remaining = remainingSeconds(voice, stage, capLineRef.current);
+          if (remaining < SEAM_SEC) {
+            const u = 1 - Math.max(0, remaining) / SEAM_SEC;
+            doorRef.current.seam(u);
+            if (script && script.frameZero && stage.setBurnAlpha) stage.setBurnAlpha(u, script.frameZero);
+          }
         }
       }
       // auto-perform teleprompter cues while recording — on RECORDED time, so
@@ -399,35 +424,29 @@ export default function Studio() {
            also pads for the audio still draining through the output chain
            (context latency + compressor/reverb tail), so the mix finishes
            INSIDE the file, every time. */
-        if (v && v.ready && v.canRoll() && v.lines.length > 0 && v.done) {
-          if (!outroFiredRef.current) {
-            outroFiredRef.current = true;
-            if (musicRef.current) musicRef.current.outro();
+        {
+          /* THE SHARED ENDING CLOCK (recording-fix Phase 2) — the poll reads
+             the SAME remainingSeconds() the seam does. rem < Infinity means
+             the ending window has opened (last line landed, or — LIVE MIC —
+             the last caption is running even though voice.done never
+             confirmed): fire the outro sting once, then cut at exactly 0.
+             The cut waits for whichever finishes last — the audio drain or
+             the closing caption — so truncation stays structurally
+             impossible, and live-mic takes now auto-cut instead of hanging
+             until a manual stop that skipped the seam. */
+          const rem = remainingSeconds(v, stageRef.current, capLineRef.current);
+          if (rem < Infinity) {
+            if (!outroFiredRef.current) {
+              outroFiredRef.current = true;
+              if (musicRef.current) musicRef.current.outro();
+            }
+            if (doneTRef.current !== -999 && rem <= 0) {
+              doneTRef.current = -999; // one-shot guard
+              if (toggleRecRef.current) toggleRecRef.current({ auto: true });
+            }
+          } else if (doneTRef.current > 0) {
+            doneTRef.current = 0;
           }
-          /* 1.0s (was 2.6): secondsSinceDone() now counts from the REAL end of
-             speech (the padded buffer tail is subtracted at the source), so the
-             window no longer needs to over-compensate — and the old 2.6s left
-             seconds of voiceless video hanging at the end of every take. 1.0s
-             plus the physical drain (context latency + compressor release) is
-             exactly enough for the outro sting and the closer caption to land
-             inside the file with no dead air after the final word. */
-          const outroWindow = OUTRO_BASE + v.tailSeconds();
-          /* THE CUT WAITS FOR WHICHEVER FINISHES LAST — the audio drain or the
-             closing caption. Previously these were two independently hand-tuned
-             numbers: the window was 1.0s + drain while the final caption held
-             2.2s, so the cut landed while the closer still had ~1.2s to run and
-             chopped the last words off the file. Reading the caption's real
-             remaining time makes truncation structurally impossible, and adds no
-             dead air beyond what the caption needs. */
-          const st = stageRef.current;
-          const capLeft = st && st.captionRemaining ? st.captionRemaining() : 0;
-          const closerDone = capLeft <= 0;
-          if (doneTRef.current !== -999 && v.secondsSinceDone() >= outroWindow && closerDone) {
-            doneTRef.current = -999; // one-shot guard
-            if (toggleRecRef.current) toggleRecRef.current();
-          }
-        } else if (doneTRef.current > 0) {
-          doneTRef.current = 0;
         }
       } else {
         setCutting(false);
@@ -561,7 +580,10 @@ export default function Studio() {
     setRecording(true);
   }, []);
 
-  const toggleRec = useCallback(async () => {
+  const toggleRec = useCallback(async (opts) => {
+    /* auto === true ONLY from the auto-cut poll — a click handler's event
+       object can never look like { auto: true } */
+    const auto = !!(opts && opts.auto === true);
     const rec = recorderRef.current;
     const stage = stageRef.current;
     if (!stage) return;
@@ -617,9 +639,16 @@ export default function Studio() {
         }
       }, 1000);
     } else {
+      /* STOP ORDERING (recording-fix Phase 2) — on the AUTO-CUT the door
+         pose is the seam's final composition (pixel-matching frame zero):
+         it must survive until MediaRecorder.stop() has flushed its last
+         frame, so closeDoor runs AFTER the await. A MANUAL stop is a
+         bail-out mid-take: instant abort FIRST, so the performer sees the
+         studio reset immediately and no neutral-pose frame ships anyway. */
+      if (!auto) closeDoor();
       const take = await rec.stop();
       const perf = perfRecRef.current.stop();
-      closeDoor(); // stop: restore actor/camera/overlays no matter where the door was
+      if (auto) closeDoor(); // seam pose held through the flush; restore now
       if (voiceRef.current) voiceRef.current.stopPlayback(); // cut any mid-line audio with the take
       if (musicRef.current) musicRef.current.stopScore();    // groove out, ambient bed back
       setRecording(false); setElapsed(0);
