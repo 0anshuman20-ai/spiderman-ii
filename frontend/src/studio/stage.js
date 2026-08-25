@@ -80,6 +80,22 @@ export function createStage(canvas) {
   camera.position.copy(baseCam);
   scene.add(camera);
 
+  /* THE DOOR's camera channel (RECOVERY v3 §2 / Phase A) — offsets the door
+     engine (studio/door.js) writes and the loop applies AFTER the handheld
+     solve, so the humanization noise survives the door pose. exposure rides
+     the tone mapper (DIM_WORLD animates the world's light through the door). */
+  const BASE_EXPOSURE = 1.18;
+  const doorCam = { active: false, dolly: 0, yaw: 0, pitch: 0, fov: 0, exposure: 1 };
+
+  /* ACTOR VISIBILITY — stored flag, applied at layer CREATION inside start()
+     (layers are lazy: an early-armed door must not leak the character into
+     frame zero) and on every later toggle. */
+  let actorVisible = true;
+  function applyActorVisible() {
+    if (suitLayer) suitLayer.group.visible = actorVisible;
+    simRoot.visible = actorVisible;
+  }
+
   let worldParams = null; // WORLD EDITOR overrides {hueShift, density, motion}
   let world = buildWorld(scene, 'nebula-drift', worldParams);
   let worldKey = 'nebula-drift';
@@ -216,6 +232,148 @@ export function createStage(canvas) {
   cap.position.set(0, -0.19, -1);
   cap.renderOrder = 1000; // above the suit layer
   camera.add(cap);
+
+  /* ---- THE OVERLAY PLANES (RECOVERY v3 §2 / Phase A3) ----
+     Three camera-anchored planes on their OWN canvases, renderOrder 1001+,
+     with ZERO contact with the karaoke caption clock — captionRemaining() and
+     the auto-cut can never be disturbed by a burn, a CTA flash or an insert.
+
+       burnPlane   — the frame-zero hook (frameZero), 800-weight condensed
+                     over a backing bar, ~65% down the frame (ABOVE the
+                     karaoke lower-third at y=-0.19: they cannot collide)
+       ctaPlane    — the soft CTA, self-clearing ~1s, never queued
+       insertPlane — the hiddenFrame glyph+text flash (~0.1s), center frame
+
+     Every clear path wipes all three — uploads and the live preview can never
+     carry stray burned text. */
+  function makeOverlayPlane(cw, ch, pw, ph, y, order) {
+    const cnv = document.createElement('canvas'); cnv.width = cw; cnv.height = ch;
+    const ctx = cnv.getContext('2d');
+    const tex = new THREE.CanvasTexture(cnv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(pw, ph),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }),
+    );
+    mesh.position.set(0, y, -1);
+    mesh.renderOrder = order;
+    camera.add(mesh);
+    return { cnv, ctx, tex, mesh, clear() { ctx.clearRect(0, 0, cw, ch); tex.needsUpdate = true; } };
+  }
+  const burnPlane = makeOverlayPlane(1024, 300, 0.30, 0.088, -0.088, 1001);
+  const ctaPlane = makeOverlayPlane(1024, 160, 0.26, 0.041, 0.115, 1002);
+  const insertPlane = makeOverlayPlane(1024, 640, 0.30, 0.1875, 0.01, 1003);
+  let ctaUntil = 0;     // performance.now()/1000 the CTA self-clears at
+  let insertUntil = 0;  // performance.now()/1000 the insert self-clears at
+
+  /** the frame-zero hook — burned at 0.0s, cleared at the reveal.
+      800-weight condensed caps on a backing bar; must stay legible at 360px
+      width (the plan's pre-publish check). */
+  function burn(text) {
+    const { ctx, tex } = burnPlane;
+    ctx.clearRect(0, 0, 1024, 300);
+    if (text) {
+      const t = String(text).toUpperCase();
+      let size = 132;
+      do {
+        ctx.font = `800 condensed ${size}px 'Arial Narrow', 'Roboto Condensed', Arial, sans-serif`;
+        if (ctx.measureText(t).width <= 940) break;
+        size -= 8;
+      } while (size > 56);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const w = ctx.measureText(t).width;
+      ctx.fillStyle = 'rgba(0,0,0,0.72)';
+      ctx.fillRect(512 - w / 2 - 26, 150 - size * 0.62, w + 52, size * 1.24);
+      ctx.fillStyle = 'rgba(255,255,255,0.97)';
+      ctx.fillText(t, 512, 150);
+      ctx.textBaseline = 'alphabetic';
+    }
+    tex.needsUpdate = true;
+  }
+  function clearBurn() { burnPlane.clear(); }
+
+  /** the soft CTA — curiosity-phrased (never a command), own plane, ~1s,
+      self-clearing, never queued: a second call replaces the first. */
+  function flashCta(text, seconds = 1.1) {
+    const { ctx, tex } = ctaPlane;
+    ctx.clearRect(0, 0, 1024, 160);
+    if (text) {
+      const t = String(text).toLowerCase();
+      let size = 54;
+      do {
+        ctx.font = `700 ${size}px 'JetBrains Mono', monospace`;
+        if (ctx.measureText(t).width <= 920) break;
+        size -= 4;
+      } while (size > 30);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const w = ctx.measureText(t).width;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(512 - w / 2 - 20, 80 - size * 0.72, w + 40, size * 1.44);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fillText(t, 512, 80);
+      ctx.textBaseline = 'alphabetic';
+      ctaUntil = performance.now() / 1000 + Math.max(0.3, seconds);
+    }
+    tex.needsUpdate = true;
+  }
+
+  /** the hiddenFrame insert — 2-3 frames (~0.1s) of glyph + text, center
+      frame. LORE, NEVER SOLICITED: nothing in the audio or CTA may reference
+      it. Generic renderer: the glyph always draws; spec.text is optional
+      (glyph-only fallback for the inserts the parser can't reduce). */
+  function insert(spec, seconds = 0.1) {
+    const { ctx, tex } = insertPlane;
+    ctx.clearRect(0, 0, 1024, 640);
+    // THE GLYPH — the channel's recurring sigil: a broken octagon web-node
+    ctx.save();
+    ctx.translate(512, 250);
+    ctx.strokeStyle = 'rgba(255,46,99,0.95)';
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      if (i === 5) continue; // the broken segment — always the same one
+      const a0 = (i / 8) * Math.PI * 2 - Math.PI / 2;
+      const a1 = ((i + 1) / 8) * Math.PI * 2 - Math.PI / 2;
+      ctx.moveTo(Math.cos(a0) * 110, Math.sin(a0) * 110);
+      ctx.lineTo(Math.cos(a1) * 110, Math.sin(a1) * 110);
+    }
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 - Math.PI / 4;
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(a) * 110, Math.sin(a) * 110);
+    }
+    ctx.stroke();
+    ctx.restore();
+    if (spec && spec.text) {
+      const t = String(spec.text).toUpperCase();
+      let size = 44;
+      do {
+        ctx.font = `500 ${size}px 'JetBrains Mono', monospace`;
+        if (ctx.measureText(t).width <= 940) break;
+        size -= 4;
+      } while (size > 22);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillText(t, 512, 470);
+    }
+    tex.needsUpdate = true;
+    insertUntil = performance.now() / 1000 + Math.max(0.05, seconds);
+  }
+
+  /** every exit path calls this — no take, preview or upload can carry stray
+      burned text out of the studio */
+  function clearOverlays() {
+    burnPlane.clear(); ctaPlane.clear(); insertPlane.clear();
+    ctaUntil = 0; insertUntil = 0;
+  }
+
+  /* self-clearing timers, ticked from the render loop */
+  function updateOverlays(t) {
+    if (ctaUntil > 0 && t >= ctaUntil) { ctaUntil = 0; ctaPlane.clear(); }
+    if (insertUntil > 0 && t >= insertUntil) { insertUntil = 0; insertPlane.clear(); }
+  }
 
   function setCaption(text) {
     capAnim = null; // static captions and karaoke captions share the canvas
@@ -531,8 +689,21 @@ export function createStage(canvas) {
       camera.lookAt(0, 1.34, 0);
       handheld.apply(camera, t, 0);
 
+      /* THE DOOR's pose rides ON TOP of the handheld solve — the door frames
+         the shot, the handheld keeps it human. exposure always applies (1
+         when no door/seam is active), so DIM_WORLD can animate the light. */
+      if (doorCam.active) {
+        camera.translateZ(-doorCam.dolly);
+        camera.rotation.y += doorCam.yaw;
+        camera.rotation.x += doorCam.pitch;
+        camera.fov += doorCam.fov;
+        camera.updateProjectionMatrix();
+      }
+      renderer.toneMappingExposure = BASE_EXPOSURE * (doorCam.active ? doorCam.exposure : 1);
+
       if (glitchT > 0) glitchT -= dt;
       updateCaptionAnim();
+      updateOverlays(t);
       grade.uniforms.uTime.value = t;
       grade.uniforms.uGlitch.value = Math.max(0, Math.min(1, glitchT * 3));
 
@@ -576,6 +747,9 @@ export function createStage(canvas) {
         simActor.setRim(rimFor(worldKey).getHex());
         simRoot.add(simActor.group);
       }
+      /* layers are lazy — apply the stored actor-visibility flag AT CREATION,
+         so an early-armed door can never leak the character into frame zero */
+      applyActorVisible();
       /* SHADER PREWARM — three.js compiles every material the first time it is
          rendered; on the old path those compiles (world + suit compositor +
          bloom + grade, easily 1-2s combined on an integrated GPU) landed inside
@@ -616,6 +790,14 @@ export function createStage(canvas) {
     setCaption,
     playCaption,
     captionRemaining,
+    /* ---- THE DOOR surface (RECOVERY v3 §2 / Phase A) ---- */
+    doorCam,
+    setActorVisible(on) { actorVisible = !!on; applyActorVisible(); },
+    burn,
+    clearBurn,
+    flashCta,
+    insert,
+    clearOverlays,
     /* measured render fps — the recorder reads this to pick its capture tier */
     get fps() { return fps; },
     /* EXPLICIT FRAME DELIVERY — captureStream(fps) leaves frame timing to the
