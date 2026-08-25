@@ -56,12 +56,13 @@ Only the ESO panorama is a true equirect; nebula photos are flat telescope frame
 ## Out of scope
 No changes to voice/recognition pipeline, recorder tiers, music engine, or script data. No end card.
 
-## Progress log
+## Progress log — ALL PHASES COMPLETE
 - [x] Assets downloaded, optimized (woff2 subsets, 4k sky), committed (c1ed49b)
 - [x] door.js: roll channel added, MASK_SNAP punched up, snap glitch fired, roll through seam
-- [~] stage.js: doorCam roll edit was in progress when session cut — VERIFY state before continuing
-- [ ] stage.js: font fix, Montserrat type system, 2× caption canvas, scrims, setBurnAlpha
-- [ ] Studio.jsx: remainingSeconds helper, seam gate, stop ordering
-- [ ] index.html: @font-face + preloads
-- [ ] worlds.js: photoSky + backdrops
-- [ ] Build + browser verification
+- [x] stage.js: doorCam roll applied in render loop (rotation.z += doorCam.roll)
+- [x] stage.js: font fix (valid ctx.font everywhere), Montserrat 800/900 type system + FONT_STACK, document.fonts.load await at boot, 2048-wide 2× caption canvas, gradient scrims, #FF2E63 hot word with scale-pop, setBurnAlpha exported
+- [x] Studio.jsx: shared remainingSeconds() drives both auto-cut and seam (live-mic gate on caption-remaining when voice.done unconfirmed); seam lerps camera + fades hook burn back in via setBurnAlpha + per-move actor visibility inside door.seam(); auto-cut holds seam pose through MediaRecorder flush (closeDoor after await), manual stop keeps instant abort
+- [x] index.html: @font-face 800/900 + rel=preload for both woff2 files
+- [x] worlds.js: photoSky (milkyway_4k, BackSide sphere, SRGB, per-world tint/exposure) in all 5 worlds; carina_ir / eagle_spire / carina_hst photoBackdrops; starDome demoted to sparse twinkle; atmosphere shader varying fix (Earthview)
+- [x] Build passes (only pre-existing exhaustive-deps warnings); no [v0] debug logs remain
+- [x] Browser verification: all 5 worlds render photo skies (screenshots taken in sim mode), Montserrat 800/900 both report loaded via document.fonts.check, zero console errors
