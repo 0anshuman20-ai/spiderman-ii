@@ -150,6 +150,7 @@ export default function GateRoom() {
         <nav className="flex items-center gap-2">
           <Link to="/" className="cw-chip text-[10px]" style={{ padding: '8px 14px', textDecoration: 'none' }} data-testid="studio-link">STUDIO</Link>
           <Link to="/omega" className="cw-chip text-[10px]" style={{ padding: '8px 14px', textDecoration: 'none' }}>Ω OMEGA ROOM</Link>
+          <Link to="/retest" className="cw-chip text-[10px]" style={{ padding: '8px 14px', textDecoration: 'none' }} data-testid="retest-link">⨁ RE-TEST</Link>
         </nav>
       </header>
 

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Studio from "@/pages/Studio";
 import OmegaRoom from "@/pages/OmegaRoom";
 import GateRoom from "@/pages/GateRoom";
+import RetestRoom from "@/pages/RetestRoom";
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
         <Route path="/" element={<Studio />} />
         <Route path="/omega" element={<OmegaRoom />} />
         <Route path="/gate" element={<GateRoom />} />
+        <Route path="/retest" element={<RetestRoom />} />
       </Routes>
     </BrowserRouter>
   );
