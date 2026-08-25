@@ -17,6 +17,22 @@ import { createHandheld } from './handheld';
 
 const W = 1080, H = 1920;
 
+/* THE TYPE SYSTEM — every burned-in word (hook, karaoke, CTA, insert) is
+   Montserrat 800/900, bundled locally (public/fonts/*.woff2, @font-face in
+   index.html). The old code asked canvas for `800 condensed ... 'Arial
+   Narrow'` — an INVALID shorthand (`condensed` is font-stretch, which the
+   canvas shorthand doesn't accept), so Chrome silently kept `10px sans-serif`
+   and the frame-zero hook rendered microscopic. Loading is kicked off at
+   module import; the files are ~25KB each and local, so they are resident
+   long before any take can start. */
+const FONT_STACK = `'Montserrat', 'Arial Black', Arial, sans-serif`;
+try {
+  if (typeof document !== 'undefined' && document.fonts && document.fonts.load) {
+    document.fonts.load('900 100px Montserrat');
+    document.fonts.load('800 100px Montserrat');
+  }
+} catch (_) { /* font preload is an enhancement, never a blocker */ }
+
 // rim-light color the suit picks up from each world
 const WORLD_RIM = {
   'nebula-drift': 0x7a5aff,
@@ -221,7 +237,7 @@ export function createStage(canvas) {
   }
 
   // ---- CAPTION lower-third burned into the recording (bottom of frame) ----
-  const capCanvas = document.createElement('canvas'); capCanvas.width = 1024; capCanvas.height = 220;
+  const capCanvas = document.createElement('canvas'); capCanvas.width = 2048; capCanvas.height = 440; // 2×: crisp in the 1080p encode
   const capCtx = capCanvas.getContext('2d');
   const capTex = new THREE.CanvasTexture(capCanvas);
   capTex.colorSpace = THREE.SRGBColorSpace;
@@ -260,59 +276,114 @@ export function createStage(canvas) {
     camera.add(mesh);
     return { cnv, ctx, tex, mesh, clear() { ctx.clearRect(0, 0, cw, ch); tex.needsUpdate = true; } };
   }
-  const burnPlane = makeOverlayPlane(1024, 300, 0.30, 0.088, -0.088, 1001);
-  const ctaPlane = makeOverlayPlane(1024, 160, 0.26, 0.041, 0.115, 1002);
+  /* 2× canvases: the planes are small in NDC but the recording is 1080×1920 —
+     a 1024-wide canvas was visibly soft in the encode. */
+  const burnPlane = makeOverlayPlane(2048, 600, 0.30, 0.088, -0.088, 1001);
+  const ctaPlane = makeOverlayPlane(2048, 320, 0.26, 0.041, 0.115, 1002);
   const insertPlane = makeOverlayPlane(1024, 640, 0.30, 0.1875, 0.01, 1003);
   let ctaUntil = 0;     // performance.now()/1000 the CTA self-clears at
   let insertUntil = 0;  // performance.now()/1000 the insert self-clears at
 
-  /** the frame-zero hook — burned at 0.0s, cleared at the reveal.
-      800-weight condensed caps on a backing bar; must stay legible at 360px
-      width (the plan's pre-publish check). */
-  function burn(text) {
+  /** the frame-zero hook — burned at 0.0s, cleared at the reveal, and faded
+      BACK IN across the loop seam (setBurnAlpha) so the last frame pixel-
+      matches frame zero. 900-weight Montserrat caps over a soft gradient
+      scrim; the longest content word runs hot crimson — a real thumbnail
+      hook, legible at 360px width. */
+  const BURN_STOP = new Set(['THE', 'A', 'AN', 'OF', 'TO', 'IN', 'IS', 'IT', 'MY', 'ON', 'AT', 'AND', 'FOR', 'YOU', 'I', 'ME', 'WE', 'BE', 'DO', 'SO']);
+  let burnText = null;
+  let burnAlphaV = 1;
+  function drawBurn() {
     const { ctx, tex } = burnPlane;
-    ctx.clearRect(0, 0, 1024, 300);
-    if (text) {
-      const t = String(text).toUpperCase();
-      let size = 132;
+    ctx.clearRect(0, 0, 2048, 600);
+    if (burnText && burnAlphaV > 0.004) {
+      const t = String(burnText).toUpperCase();
+      let size = 264;
       do {
-        ctx.font = `800 condensed ${size}px 'Arial Narrow', 'Roboto Condensed', Arial, sans-serif`;
-        if (ctx.measureText(t).width <= 940) break;
-        size -= 8;
-      } while (size > 56);
-      ctx.textAlign = 'center';
+        ctx.font = `900 ${size}px ${FONT_STACK}`;
+        if (ctx.measureText(t).width <= 1860) break;
+        size -= 16;
+      } while (size > 112);
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, Math.max(0, burnAlphaV));
+      ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      const w = ctx.measureText(t).width;
-      ctx.fillStyle = 'rgba(0,0,0,0.72)';
-      ctx.fillRect(512 - w / 2 - 26, 150 - size * 0.62, w + 52, size * 1.24);
-      ctx.fillStyle = 'rgba(255,255,255,0.97)';
-      ctx.fillText(t, 512, 150);
-      ctx.textBaseline = 'alphabetic';
+      ctx.lineJoin = 'round';
+      const total = ctx.measureText(t).width;
+      // soft gradient scrim instead of a flat black rect
+      const g = ctx.createLinearGradient(0, 300 - size * 0.95, 0, 300 + size * 0.95);
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(0.32, 'rgba(0,0,0,0.62)');
+      g.addColorStop(0.68, 'rgba(0,0,0,0.62)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(1024 - total / 2 - 80, 300 - size * 0.95, total + 160, size * 1.9);
+      // longest content word runs hot — the thumbnail keyword
+      const words = t.split(/\s+/);
+      let hot = -1, hotLen = 0;
+      words.forEach((wd, i) => {
+        const clean = wd.replace(/[^A-Z0-9]/g, '');
+        if (!BURN_STOP.has(clean) && clean.length > hotLen) { hotLen = clean.length; hot = i; }
+      });
+      const widths = words.map((wd) => ctx.measureText(`${wd} `).width);
+      let x = 1024 - total / 2;
+      ctx.lineWidth = Math.max(10, size * 0.08);
+      ctx.strokeStyle = 'rgba(0,0,0,0.92)';
+      words.forEach((wd, i) => {
+        ctx.shadowColor = 'rgba(0,0,0,0.55)';
+        ctx.shadowBlur = size * 0.10;
+        ctx.shadowOffsetY = size * 0.04;
+        ctx.strokeText(wd, x, 300);
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetY = 0;
+        ctx.fillStyle = i === hot ? '#FF2E63' : 'rgba(255,255,255,0.98)';
+        ctx.fillText(wd, x, 300);
+        x += widths[i];
+      });
+      ctx.restore();
     }
     tex.needsUpdate = true;
   }
-  function clearBurn() { burnPlane.clear(); }
+  function burn(text) { burnText = text || null; burnAlphaV = 1; drawBurn(); }
+  function clearBurn() { burnText = null; burnAlphaV = 1; burnPlane.clear(); }
+  /** loop-seam re-burn: fade the frame-zero hook back in (0→1) WITHOUT
+      forgetting the text — the seam calls this every frame with its own u */
+  function setBurnAlpha(a, text) {
+    if (text) burnText = text;
+    burnAlphaV = Math.min(1, Math.max(0, a));
+    drawBurn();
+  }
 
   /** the soft CTA — curiosity-phrased (never a command), own plane, ~1s,
       self-clearing, never queued: a second call replaces the first. */
   function flashCta(text, seconds = 1.1) {
     const { ctx, tex } = ctaPlane;
-    ctx.clearRect(0, 0, 1024, 160);
+    ctx.clearRect(0, 0, 2048, 320);
     if (text) {
-      const t = String(text).toLowerCase();
-      let size = 54;
+      const raw = String(text).trim();
+      const t = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase(); // sentence case
+      let size = 108;
       do {
-        ctx.font = `700 ${size}px 'JetBrains Mono', monospace`;
-        if (ctx.measureText(t).width <= 920) break;
-        size -= 4;
-      } while (size > 30);
+        ctx.font = `800 ${size}px ${FONT_STACK}`;
+        if (ctx.measureText(t).width <= 1840) break;
+        size -= 8;
+      } while (size > 60);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
       const w = ctx.measureText(t).width;
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillRect(512 - w / 2 - 20, 80 - size * 0.72, w + 40, size * 1.44);
-      ctx.fillStyle = 'rgba(255,255,255,0.92)';
-      ctx.fillText(t, 512, 80);
+      const g = ctx.createLinearGradient(0, 160 - size * 0.9, 0, 160 + size * 0.9);
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(0.35, 'rgba(0,0,0,0.55)');
+      g.addColorStop(0.65, 'rgba(0,0,0,0.55)');
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(1024 - w / 2 - 56, 160 - size * 0.9, w + 112, size * 1.8);
+      ctx.lineWidth = Math.max(8, size * 0.08);
+      ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+      ctx.strokeText(t, 1024, 160);
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.fillText(t, 1024, 160);
       ctx.textBaseline = 'alphabetic';
       ctaUntil = performance.now() / 1000 + Math.max(0.3, seconds);
     }
@@ -350,12 +421,16 @@ export function createStage(canvas) {
       const t = String(spec.text).toUpperCase();
       let size = 44;
       do {
-        ctx.font = `500 ${size}px 'JetBrains Mono', monospace`;
+        ctx.font = `800 ${size}px ${FONT_STACK}`;
         if (ctx.measureText(t).width <= 940) break;
         size -= 4;
       } while (size > 22);
       ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(4, size * 0.08);
+      ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+      ctx.strokeText(t, 512, 470);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
       ctx.fillText(t, 512, 470);
     }
     tex.needsUpdate = true;
@@ -377,9 +452,9 @@ export function createStage(canvas) {
 
   function setCaption(text) {
     capAnim = null; // static captions and karaoke captions share the canvas
-    capCtx.clearRect(0, 0, 1024, 220);
+    capCtx.clearRect(0, 0, 2048, 440);
     if (text) {
-      capCtx.font = '500 42px "JetBrains Mono", monospace';
+      capCtx.font = `700 84px ${FONT_STACK}`;
       capCtx.textAlign = 'center';
       // word-wrap into at most 3 lines
       const words = String(text).toUpperCase().split(/\s+/);
@@ -387,20 +462,24 @@ export function createStage(canvas) {
       let line = '';
       for (const w2 of words) {
         const next = line ? `${line} ${w2}` : w2;
-        if (capCtx.measureText(next).width > 940 && line) { lines.push(line); line = w2; }
+        if (capCtx.measureText(next).width > 1880 && line) { lines.push(line); line = w2; }
         else line = next;
         if (lines.length === 3) break;
       }
       if (line && lines.length < 3) lines.push(line);
-      const lh = 58;
-      const y0 = 110 - ((lines.length - 1) * lh) / 2;
+      const lh = 116;
+      const y0 = 220 - ((lines.length - 1) * lh) / 2;
       lines.forEach((l, i) => {
         const w3 = capCtx.measureText(l).width;
-        // subtle backing bar so the line reads over any world
-        capCtx.fillStyle = 'rgba(0,0,0,0.55)';
-        capCtx.fillRect(512 - w3 / 2 - 18, y0 + i * lh - 40, w3 + 36, 54);
+        // soft scrim so the line reads over any world
+        const g = capCtx.createLinearGradient(0, y0 + i * lh - 80, 0, y0 + i * lh + 28);
+        g.addColorStop(0, 'rgba(0,0,0,0)');
+        g.addColorStop(0.4, 'rgba(0,0,0,0.55)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        capCtx.fillStyle = g;
+        capCtx.fillRect(1024 - w3 / 2 - 36, y0 + i * lh - 80, w3 + 72, 108);
         capCtx.fillStyle = 'rgba(255,255,255,0.94)';
-        capCtx.fillText(l, 512, y0 + i * lh);
+        capCtx.fillText(l, 1024, y0 + i * lh);
       });
     }
     capTex.needsUpdate = true;
@@ -413,33 +492,51 @@ export function createStage(canvas) {
   let capAnim = null; // { words, start, dur, drawn }
   const CAP_CHUNK = 3;
 
-  function drawCaptionChunk(words, activeIdx) {
-    capCtx.clearRect(0, 0, 1024, 220);
+  function drawCaptionChunk(words, activeIdx, pop = 1) {
+    capCtx.clearRect(0, 0, 2048, 440);
     const text = words.join(' ');
-    let size = 100;
+    let size = 200;
     do {
-      capCtx.font = `800 ${size}px Arial, Helvetica, sans-serif`;
-      if (capCtx.measureText(text).width <= 930) break;
-      size -= 6;
-    } while (size > 48);
+      capCtx.font = `900 ${size}px ${FONT_STACK}`;
+      if (capCtx.measureText(text).width <= 1860) break;
+      size -= 12;
+    } while (size > 96);
     capCtx.textAlign = 'left';
     capCtx.textBaseline = 'middle';
     capCtx.lineJoin = 'round';
     const widths = words.map((w) => capCtx.measureText(`${w} `).width);
     const total = capCtx.measureText(text).width;
-    let x = 512 - total / 2;
-    const y = 116;
+    let x = 1024 - total / 2;
+    const y = 232;
+    /* 120ms scale-pop on the word that just went hot: 1.0→1.08 ease-out */
+    const popScale = 1 + 0.08 * (1 - Math.pow(1 - Math.min(1, Math.max(0, pop)), 3));
     words.forEach((w, i) => {
       /* PROGRESSIVE REVEAL — words AFTER the active one stay invisible (their
          space is reserved so nothing shifts when they land). Drawing the whole
          chunk up front put the next words on screen before they were spoken —
          exactly "it displays some words before I'm speaking". */
       if (i > activeIdx) { x += widths[i]; return; }
+      const active = i === activeIdx;
+      capCtx.save();
+      if (active && popScale !== 1) {
+        // scale the hot word around its own center
+        const wWidth = capCtx.measureText(w).width;
+        capCtx.translate(x + wWidth / 2, y);
+        capCtx.scale(popScale, popScale);
+        capCtx.translate(-(x + wWidth / 2), -y);
+      }
       capCtx.strokeStyle = 'rgba(0,0,0,0.92)';
-      capCtx.lineWidth = Math.max(10, size * 0.16);
+      capCtx.lineWidth = Math.max(10, size * 0.08);
+      capCtx.shadowColor = 'rgba(0,0,0,0.5)';
+      capCtx.shadowBlur = size * 0.08;
+      capCtx.shadowOffsetY = size * 0.03;
       capCtx.strokeText(w, x, y);
-      capCtx.fillStyle = i === activeIdx ? '#FF2E63' : 'rgba(255,255,255,0.98)';
+      capCtx.shadowColor = 'transparent';
+      capCtx.shadowBlur = 0;
+      capCtx.shadowOffsetY = 0;
+      capCtx.fillStyle = active ? '#FF2E63' : 'rgba(255,255,255,0.98)';
       capCtx.fillText(w, x, y);
+      capCtx.restore();
       x += widths[i];
     });
     capCtx.textBaseline = 'alphabetic';
@@ -495,10 +592,11 @@ export function createStage(canvas) {
       lastAudio: 0,    // last authoritative audio-clock reading
       lastWall: 0,     // wall clock at that reading, for freewheeling past it
       drawn: -1,
+      popAt: 0,        // wall-clock seconds the active word last changed — drives the scale-pop
     };
     /* the previous line's caption clears NOW — during this line's lead-in
        silence the frame stays clean instead of showing stale words */
-    capCtx.clearRect(0, 0, 1024, 220);
+    capCtx.clearRect(0, 0, 2048, 440);
     capTex.needsUpdate = true;
     /* DRAW IMMEDIATELY (live-mic lines): the performer is already speaking when
        the line fires — waiting for playhead math left them captionless. The
@@ -558,7 +656,7 @@ export function createStage(canvas) {
     // line rides the outro)
     if (t >= capAnim.dur + CAP_BREATH + capAnim.hold) {
       capAnim = null;
-      capCtx.clearRect(0, 0, 1024, 220);
+      capCtx.clearRect(0, 0, 2048, 440);
       capTex.needsUpdate = true;
       return;
     }
@@ -587,9 +685,20 @@ export function createStage(canvas) {
     }
     const chunk = Math.floor(wIdx / CAP_CHUNK);
     const key = chunk * 100 + (wIdx % CAP_CHUNK);
-    if (key === capAnim.drawn) return;
-    capAnim.drawn = key;
-    drawCaptionChunk(capAnim.words.slice(chunk * CAP_CHUNK, chunk * CAP_CHUNK + CAP_CHUNK), wIdx % CAP_CHUNK);
+    const wall = performance.now() / 1000;
+    const POP_SEC = 0.12;
+    if (key !== capAnim.drawn) {
+      // new hot word: start its pop and draw frame 1 of it
+      capAnim.drawn = key;
+      capAnim.popAt = wall;
+      drawCaptionChunk(capAnim.words.slice(chunk * CAP_CHUNK, chunk * CAP_CHUNK + CAP_CHUNK), wIdx % CAP_CHUNK, 0);
+      return;
+    }
+    // same word: keep animating the 120ms scale-pop per-frame until it settles
+    const popT = wall - capAnim.popAt;
+    if (popT < POP_SEC + 0.05) {
+      drawCaptionChunk(capAnim.words.slice(chunk * CAP_CHUNK, chunk * CAP_CHUNK + CAP_CHUNK), wIdx % CAP_CHUNK, Math.min(1, popT / POP_SEC));
+    }
   }
 
   let punchT = -10, glitchT = 0, running = true, lastT = performance.now() / 1000;
@@ -796,6 +905,7 @@ export function createStage(canvas) {
     setActorVisible(on) { actorVisible = !!on; applyActorVisible(); },
     burn,
     clearBurn,
+    setBurnAlpha,
     flashCta,
     insert,
     clearOverlays,
