@@ -82,13 +82,20 @@ function drawFace(g, cx, cy, d, roll, yaw) {
 function Cell({ c }) {
   const ref = useRef(null);
   const obs = c.d * Math.cos(c.yaw);
-  // mirrors suit.js: yaw foreshortens the eye distance but not your distance to
-  // camera, so cos(yaw) is divided back out to hold true lens size
+  // mirrors suit.js exactly: horizontal scale follows the OBSERVED eye distance
+  // so a turned head narrows the lenses with the face, and the lost height is
+  // handed back on the y axis alone. Compensating both axes pushed offOut past
+  // the skull edge on the yaw cases below.
   const yawC = Math.max(0.55, Math.abs(Math.cos(c.yaw)));
-  const size = (obs / yawC) * LENS_TUNING.LENS_SIZE_K;
+  const stretchY = Math.min(1.8, 1 / yawC);
+  const size = obs * LENS_TUNING.LENS_SIZE_K;
   const pl = lensPlacement(CELL_W / 2, CELL_H / 2, obs / 2, size, c.roll, obs);
   const outer = (obs / 2 + pl.offOut) + 1.27 * size; // rim outer reach from centreline
-  const ok = pl.bridge > 0.5;
+  const reach = outer / obs;
+  const bridgeOk = pl.bridge > 0.5;
+  // the assertion that was missing: printing the reach without failing on it is
+  // how two revisions shipped with the rims hanging past the temples.
+  const reachOk = reach <= LENS_TUNING.OUTER_REACH_MAX + 0.005;
 
   useEffect(() => {
     const cv = ref.current;
@@ -98,8 +105,8 @@ function Cell({ c }) {
     g.fillStyle = '#131313';
     g.fillRect(0, 0, CELL_W, CELL_H);
     drawFace(g, CELL_W / 2, CELL_H / 2, c.d, c.roll, c.yaw);
-    drawLensPair(g, pl, size, c.roll, 1);
-  }, [c, pl, size]);
+    drawLensPair(g, pl, size, c.roll, 1, stretchY);
+  }, [c, pl, size, stretchY]);
 
   return (
     <figure className="m-0 flex flex-col gap-2">
@@ -111,10 +118,16 @@ function Cell({ c }) {
       />
       <figcaption className="flex flex-col gap-1 font-mono text-[11px] leading-relaxed text-neutral-400">
         <span className="text-neutral-200">{c.label}</span>
-        <span>size {size.toFixed(1)}px / offOut {pl.offOut.toFixed(1)}</span>
-        <span>outer reach {(outer / obs).toFixed(2)} x eyeDist</span>
-        <span className={ok ? 'text-emerald-400' : 'text-red-400'}>
-          bridge {pl.bridge.toFixed(1)}px {ok ? 'PASS' : 'FAIL — rims merged'}
+        <span>
+          w {size.toFixed(1)}px / h {(size * LENS_TUNING.LENS_HEIGHT_K * 1.594).toFixed(1)}px
+        </span>
+        <span>offOut {pl.offOut.toFixed(1)} / stretchY {stretchY.toFixed(2)}</span>
+        <span className={reachOk ? 'text-emerald-400' : 'text-red-400'}>
+          reach {reach.toFixed(2)} / {LENS_TUNING.OUTER_REACH_MAX.toFixed(2)}{' '}
+          {reachOk ? 'PASS' : 'FAIL — off the temples'}
+        </span>
+        <span className={bridgeOk ? 'text-emerald-400' : 'text-red-400'}>
+          bridge {pl.bridge.toFixed(1)}px {bridgeOk ? 'PASS' : 'FAIL — rims merged'}
         </span>
       </figcaption>
     </figure>
@@ -129,8 +142,11 @@ export default function LensLab() {
         <h1 className="font-mono text-lg tracking-tight text-white">lens lab</h1>
         <p className="max-w-2xl text-sm leading-relaxed text-neutral-400">
           Real exported geometry over a synthetic face. Red crosshairs are your true
-          eye centres; the vertical line is the nose bridge. Edit the four constants
-          in <code className="text-neutral-300">studio/suit.js</code> and reload.
+          eye centres; the vertical line is the nose bridge. Every case asserts twice:{' '}
+          <span className="text-neutral-300">reach</span> must stay inside the
+          temples and <span className="text-neutral-300">bridge</span> must stay
+          open over the nose. Edit the constants in{' '}
+          <code className="text-neutral-300">studio/suit.js</code> and reload.
         </p>
         <dl className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs text-neutral-400">
           <div className="flex gap-2">
@@ -142,6 +158,14 @@ export default function LensLab() {
           <div className="flex gap-2">
             <dt>LENS_SIZE_K</dt>
             <dd className="text-neutral-100">{t.LENS_SIZE_K}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt>LENS_HEIGHT_K</dt>
+            <dd className="text-neutral-100">{t.LENS_HEIGHT_K}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt>OUTER_REACH_MAX</dt>
+            <dd className="text-neutral-100">{t.OUTER_REACH_MAX}</dd>
           </div>
           <div className="flex gap-2">
             <dt>LENS_INNER</dt>
