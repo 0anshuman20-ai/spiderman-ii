@@ -460,26 +460,45 @@ const fragmentShader = /* glsl */ `
                distance. offOut is solved from this so the two rubber rims can
                never merge into one dark band across the bridge at any size.
    ------------------------------------------------------------------------- */
-const LENS_TILT = 0.22;     // rad, ~12.6deg. Sane range 0.16 - 0.30
-const LENS_SIZE_K = 0.535;  // was 0.52 — see the footprint budget below
-const LENS_INNER = 1.24;    // measured rim extent, see note above
-const BRIDGE_GAP = 0.018;   // fraction of eyeDist
+const LENS_TILT = 0.22;    // rad, ~12.6deg. Sane range 0.16 - 0.30
+const LENS_SIZE_K = 0.47;  // capped by the footprint budget below — see OUTER_REACH_MAX
+const LENS_INNER = 1.24;   // measured rim extent, see note above
+const BRIDGE_GAP = 0.018;  // fraction of eyeDist
+const OFF_OUT_FLOOR = 0.10; // minimum outward offset, fraction of eyeDist
 
-/* FOOTPRINT BUDGET — why LENS_SIZE_K is 0.535 and not 0.6.
-   Because offOut is solved from the bridge gap, size and spread are coupled:
-   growing the lens ALSO pushes it outward, so the outer rim reach is
+/* FOOTPRINT BUDGET — why LENS_SIZE_K is 0.47.
+   Because offOut is solved from the bridge gap, width and spread are coupled:
+   a wider lens ALSO gets pushed outward. The outer rim reach, in eye distances
+   from the face centreline, is
 
-       outer = BRIDGE_GAP + (LENS_INNER*cos(TILT) + 1.247) * LENS_SIZE_K
-             ~ 0.018 + 2.458 * 0.535  ~  1.33 x eyeDist from the face centreline
+       outer = 0.5 + offOut/eyeDist + 1.247 * LENS_SIZE_K
 
-   An adult face is only ~1.10 half-widths of interpupillary distance at eye
-   level (bizygomatic ~139mm vs IPD ~63mm), and the shipped 0.52 already
-   reached 1.24. Pushing LENS_SIZE_K to 0.6 reaches ~1.47 and the rims visibly
-   hang off the sides of a tracked face.
-   So the lenses do NOT get much wider. The "too small" read was never width —
-   it was that level, low-sitting lenses look like goggles. The fix is the
-   canthal tilt, the brow raise, and the sharpened inner tip, plus a modest
-   ~8% size bump and the restored lens HEIGHT below. */
+   and offOut has TWO branches (see lensPlacement). The bridge branch only wins
+   above LENS_SIZE_K ~ 0.481; below that the OFF_OUT_FLOOR branch is binding and
+   the budget collapses to
+
+       outer = 0.5 + OFF_OUT_FLOOR + 1.247 * LENS_SIZE_K
+             = 0.6 + 1.247 * 0.47  ~  1.19 x eyeDist
+
+   Getting this wrong is easy and was: an earlier version of this comment used
+   only the bridge branch, "solved" for 1.10, and the lab reported 1.15. Always
+   read the reach off /lenslab rather than trusting the algebra here.
+
+   The ceiling is OUTER_REACH_MAX = 1.19, the temple half-width of an adult head
+   in eye distances (~150mm across vs IPD ~63mm). The films' lenses do reach the
+   mask silhouette at eye level, so touching it is correct; passing it is not.
+   /lenslab now FAILS any case above it, and draws the boundary from the same
+   constant so the number and the picture cannot disagree. That assertion was
+   the actual missing piece: the reach was already being printed when 0.52
+   (reach 1.25) and then 0.535 (reach 1.33) shipped with the rims hanging off
+   the temples, because nothing ever failed on it.
+
+   Obeying the cap costs ~12% of linear lens size versus 0.535. That cost is
+   real and is not bought back on the y axis: an earlier revision flattened the
+   path height to 1.33 chasing a wider aspect and quietly removed 17% of the
+   lens area, which is the "eyes look too small" bug itself. Height stays at the
+   path's native 1.594. The apparent-size fix is the canthal tilt, the brow
+   raise (offUp) and the sharpened inner tip — none of which spend face width. */
 
 /* teardrop spider lens path in unit space (right-eye orientation, +x = outward).
    Sharpened from the original: the inner tip is pulled to a point and sits LOW
@@ -607,7 +626,7 @@ export function lensPlacement(midX, midY, span, size, angle, eyeDistPx) {
   // effective inward reach is LENS_INNER * cos(LENS_TILT), not LENS_INNER
   const innerReach = LENS_INNER * Math.cos(LENS_TILT) * size;
   const offOut = Math.max(
-    eyeDistPx * 0.10,
+    eyeDistPx * OFF_OUT_FLOOR,
     innerReach + BRIDGE_GAP * eyeDistPx - span,
   );
   // 0.13 (was 0.08): seats the lenses up onto the brow rather than on the eyes
@@ -627,13 +646,26 @@ export function lensPlacement(midX, midY, span, size, angle, eyeDistPx) {
 /* Draws both lenses with the canthal tilt applied.
    theta = angle - mirror * LENS_TILT raises the OUTER corner of each lens.
    Head roll (angle) still drives both equally, so tracking is unchanged — the
-   tilt is a fixed property of the hardware, not an expression. */
-export function drawLensPair(g, pl, size, angle, glow) {
-  drawLens(g, pl.lx, pl.ly, size, angle + LENS_TILT, -1, 1, glow);
-  drawLens(g, pl.rx, pl.ry, size, angle - LENS_TILT, 1, 1, glow);
+   tilt is a fixed property of the hardware, not an expression.
+
+   stretchY is the YAW DECOMPOSITION, not an expression either. `size` is the
+   HORIZONTAL scale and follows the observed (foreshortened) eye distance, so a
+   turned head narrows the lenses exactly as it narrows the face and the derived
+   spread stays put. Height must NOT foreshorten — a rigid lens turned edge-on
+   loses width, never height — so 1/cos(yaw) is handed back on the y axis only.
+   Compensating on BOTH axes (the earlier version) held full width against a
+   narrowed face, which inflated offOut and hung the rims off the skull. */
+export function drawLensPair(g, pl, size, angle, glow, stretchY = 1) {
+  drawLens(g, pl.lx, pl.ly, size, angle + LENS_TILT, -1, stretchY, glow);
+  drawLens(g, pl.rx, pl.ry, size, angle - LENS_TILT, 1, stretchY, glow);
 }
 
-export const LENS_TUNING = { LENS_TILT, LENS_SIZE_K, LENS_INNER, BRIDGE_GAP };
+/* OUTER_REACH_MAX: half the bizygomatic width of an adult face expressed in eye
+   distances. /lenslab asserts every case against it. */
+export const OUTER_REACH_MAX = 1.10;
+export const LENS_TUNING = {
+  LENS_TILT, LENS_SIZE_K, LENS_HEIGHT_K, LENS_INNER, BRIDGE_GAP, OUTER_REACH_MAX,
+};
 
 function drawSpider(g, x, y, s, ang) {
   g.save();
@@ -857,13 +889,13 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       // film-suit lens proportion: the big expressive teardrop is what makes the
       // mask instantly read as Spider-Man — slightly larger than half the
       // interpupillary distance, like the screen-used suits.
-      // YAW COMPENSATION: a head turn foreshortens the eye distance but your
-      // head is no further from the camera — divide out cos(yaw) so the lenses
-      // hold their true size through every head turn.
+      // YAW: the horizontal scale tracks the OBSERVED eye distance, so a head
+      // turn narrows the lenses with the face and the derived spread holds its
+      // footprint. The lost height is handed back on the y axis alone via
+      // stretchY below — see drawLensPair.
       const yawC = Math.max(0.55, Math.abs(Math.cos(rig.headYaw)));
-      // LENS_SIZE_K (0.57): the screen-suit proportion. 0.52 read too small on
-      // camera — the lenses sat ON the eyes instead of covering brow-to-cheek.
-      const size = (eyeDistPx / yawC) * LENS_SIZE_K;
+      const stretchY = Math.min(1.8, 1 / yawC);
+      const size = eyeDistPx * LENS_SIZE_K;
       const angle = f.angle;
       /* ---- mask center seam: forehead over the nose bridge to the chin ---- */
       const fhx = f.forehead.x * CROP_W, fhy = f.forehead.y * CROP_H;
@@ -913,9 +945,10 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       const fAngle = euro.angle.filter(aIn, fdt);
       lastAngle = fAngle;
       const pl = lensPlacement(fMidX, fMidY, fSpan, fSize, fAngle, eyeDistPx);
-      /* squash is CONSTANT 1: blinking, brow raises and expression beats can
-         change the glow, never the geometry — like the films' rigid lenses. */
-      drawLensPair(og, pl, fSize, fAngle, exprState.glow);
+      /* The only y-axis term is the yaw stretch, which is geometry, not mood:
+         blinking, brow raises and expression beats can change the glow, never
+         the shape — like the films' rigid lenses. */
+      drawLensPair(og, pl, fSize, fAngle, exprState.glow, stretchY);
       og.restore();
     }
     const p = tracker.points.pose;
