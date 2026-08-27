@@ -4,6 +4,7 @@ import Studio from "@/pages/Studio";
 import OmegaRoom from "@/pages/OmegaRoom";
 import GateRoom from "@/pages/GateRoom";
 import RetestRoom from "@/pages/RetestRoom";
+import LensLab from "@/pages/LensLab";
 
 function App() {
   return (
@@ -13,6 +14,8 @@ function App() {
         <Route path="/omega" element={<OmegaRoom />} />
         <Route path="/gate" element={<GateRoom />} />
         <Route path="/retest" element={<RetestRoom />} />
+        {/* dev-only lens geometry harness — see pages/LensLab.jsx */}
+        <Route path="/lenslab" element={<LensLab />} />
       </Routes>
     </BrowserRouter>
   );

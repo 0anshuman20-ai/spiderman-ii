@@ -45,7 +45,17 @@ export const VIRAL_RULES = [
   { rule: 'Write the ending first', why: 'Loop frame, then payoff, then build the hook that promises it. Scripts written forward sag in the middle.' },
   { rule: 'One idea per video. A second fact is video #2', why: 'Every "also..." is a swipe. Ruthlessly.' },
   { rule: 'Micro open loops at ~6s, ~12s, ~17s', why: '"But that is not the weird part..." Three defibrillators, not one.' },
-  { rule: 'Delete the setup sentence. No background context, ever', why: 'Confused viewers rewatch — that is a win. Informed viewers leave.' },
+  /* CORRECTED. The old rule here read "Delete the setup sentence. No background
+     context, ever" — because "confused viewers rewatch." That is backwards and
+     it was costing the channel its distribution. A confused viewer does not
+     rewatch, they SWIPE, and a sub-second swipe is the worst signal a Short can
+     send. Mystery must come from STAKES ("this thing kills civilizations"), not
+     from withholding the subject ("they call it the filter" — what filter?).
+     Curiosity needs an object to attach to. */
+  { rule: 'Name the topic in plain words by 3-5s. One sentence of context, then escalate', why: 'Mystery comes from stakes, not from withholding the subject. "They call it the filter" is not suspense, it is confusion — and confusion swipes. Say what the thing IS, then make it terrifying.' },
+  { rule: 'The 12-year-old test: if a 12-year-old cannot retell the video in one sentence, rewrite it', why: 'Retelling is what a share IS. A video nobody can summarise cannot be shared, and shares are the heaviest ranking signal.' },
+  { rule: 'The performer test: if you cannot explain the line you are reading, the viewer cannot understand the line they are hearing', why: 'Vague lines are audible. The delivery goes flat because there is nothing underneath to play, and flat delivery reads as fake fear.' },
+  { rule: 'Beat 2 is the plain-language anchor slot', why: 'Makes clarity structural instead of a matter of taste. One beat, always in the same place, whose only job is to say what the thing actually is.' },
   { rule: 'Visual change every 1.5-2s; new information every 2-3s; hard cuts only', why: 'Fades are where retention graphs die. No fades. Ever.' },
   { rule: 'No CTA, no black frame, no hard stop at the end', why: 'The ending belongs exclusively to the loop. All CTAs move to burned-in text at the emotional peak mid-video.' },
   { rule: 'Every word from the 1000 most common English words unless the rare word IS the hook', why: 'Sentences <=10 words. Present tense or simple past only.' },
@@ -61,6 +71,8 @@ export const RETENTION_CHECKLIST = [
   { check: 'Frame zero is MOVING (motion within the first 4 frames)?', fails: 'Static open = wallpaper = swipe at 0.4s.' },
   { check: 'Burned-in text <=4 words AND creates a question?', fails: '"MOON FACTS" names a topic. "THIS SKY IS FAKE" opens a gap.' },
   { check: 'Spoken hook <=7 words, different from the burned-in text?', fails: 'One open loop where there should be two.' },
+  { check: 'Is the real subject NAMED OUT LOUD, in plain words, before 5s?', fails: 'Not in the title, not in the tags — in the audio. If the spoken track never says what the thing is, the viewer swipes and the performance goes flat.' },
+  { check: 'Could a 12-year-old retell this video in one sentence?', fails: 'Unsummarisable means unshareable, and shares outrank everything else.' },
   { check: 'The twist sits at the 8-14s midpoint, not the end?', fails: 'End-loaded twists play to an empty room.' },
   { check: 'Micro-hooks placed at ~6s, ~12s, ~17s?', fails: 'The retention curve needs three defibrillators, not one.' },
   { check: 'Final frame visually matches the opening frame (loop)?', fails: 'A visible seam is where the viewer remembers they can leave.' },
