@@ -461,44 +461,69 @@ const fragmentShader = /* glsl */ `
                never merge into one dark band across the bridge at any size.
    ------------------------------------------------------------------------- */
 const LENS_TILT = 0.22;    // rad, ~12.6deg. Sane range 0.16 - 0.30
-const LENS_SIZE_K = 0.47;  // capped by the footprint budget below — see OUTER_REACH_MAX
-const LENS_INNER = 1.24;   // measured rim extent, see note above
-const BRIDGE_GAP = 0.018;  // fraction of eyeDist
-const OFF_OUT_FLOOR = 0.10; // minimum outward offset, fraction of eyeDist
+const LENS_SIZE_K = 0.43;  // capped by the footprint budget below — see OUTER_REACH_MAX
+const LENS_INNER = 1.2447; // measured rim extent, see note above
+const BRIDGE_GAP = 0.03;   // fraction of eyeDist
+const OFF_OUT_FLOOR = 0.04; // minimum outward offset, fraction of eyeDist
 
-/* FOOTPRINT BUDGET — why LENS_SIZE_K is 0.47.
+/* LENS_HEIGHT_K — extra vertical scale on top of the path's NATIVE height
+   (1.592 units). Deliberately 1: the height-flattening experiment is reverted
+   for good, because scaling this below 1 is what removed 17% of the lens area
+   and caused the "eyes look too small" bug. It stays as a named constant only
+   so /lenslab can print the rendered lens height, and so that any future
+   attempt to reintroduce a height scale has one obvious place to do it.
+   Keep at 1 unless the whole footprint budget below is recomputed. */
+const LENS_HEIGHT_K = 1;
+
+/* MEASURED PATH EXTENTS — sampled off the real beziers in lensPath at 20k
+   steps per segment, not read off the control points:
+     x -0.9879 .. 0.9899, height 1.5920, aspect 1.242
+   Scaled by the rubber rim (1.26 x, 1.32 y) the rim reaches 1.2447 inward and
+   1.2472 outward. Those two numbers drive LENS_INNER and the reach budget. */
+const RIM_OUTER = 1.2472;  // outward rim extent in unit space
+const PATH_HEIGHT = 1.592; // native path height in unit space
+
+/* FOOTPRINT BUDGET — why LENS_SIZE_K is 0.43.
    Because offOut is solved from the bridge gap, width and spread are coupled:
    a wider lens ALSO gets pushed outward. The outer rim reach, in eye distances
    from the face centreline, is
 
-       outer = 0.5 + offOut/eyeDist + 1.247 * LENS_SIZE_K
+       reach = 0.5 + offOut/eyeDist + RIM_OUTER * LENS_SIZE_K
 
-   and offOut has TWO branches (see lensPlacement). The bridge branch only wins
-   above LENS_SIZE_K ~ 0.481; below that the OFF_OUT_FLOOR branch is binding and
-   the budget collapses to
+   offOut has TWO branches (see lensPlacement), and WHICH ONE BINDS decides the
+   budget. With the bridge branch binding, offOut/eyeDist = 1.2147*K + GAP - 0.5
+   and the 0.5 cancels, leaving
 
-       outer = 0.5 + OFF_OUT_FLOOR + 1.247 * LENS_SIZE_K
-             = 0.6 + 1.247 * 0.47  ~  1.19 x eyeDist
+       reach = BRIDGE_GAP + K * (1.2147 + 1.2472)
+             = 0.03 + 0.43 * 2.4619  =  1.089 x eyeDist
 
-   Getting this wrong is easy and was: an earlier version of this comment used
-   only the bridge branch, "solved" for 1.10, and the lab reported 1.15. Always
-   read the reach off /lenslab rather than trusting the algebra here.
+   The ceiling is OUTER_REACH_MAX = 1.10: the BIZYGOMATIC (cheekbone) half-width
+   of an adult face, ~139mm across vs IPD ~63mm. That is the correct boundary
+   because the lenses sit at eye level, where the skull is at its cheekbone
+   width — not the wider ~152mm temple/parietal breadth higher up.
 
-   The ceiling is OUTER_REACH_MAX = 1.19, the temple half-width of an adult head
-   in eye distances (~150mm across vs IPD ~63mm). The films' lenses do reach the
-   mask silhouette at eye level, so touching it is correct; passing it is not.
-   /lenslab now FAILS any case above it, and draws the boundary from the same
-   constant so the number and the picture cannot disagree. That assertion was
-   the actual missing piece: the reach was already being printed when 0.52
-   (reach 1.25) and then 0.535 (reach 1.33) shipped with the rims hanging off
-   the temples, because nothing ever failed on it.
+   Two lessons are baked into these numbers, both learned the hard way:
 
-   Obeying the cap costs ~12% of linear lens size versus 0.535. That cost is
-   real and is not bought back on the y axis: an earlier revision flattened the
-   path height to 1.33 chasing a wider aspect and quietly removed 17% of the
-   lens area, which is the "eyes look too small" bug itself. Height stays at the
-   path's native 1.594. The apparent-size fix is the canthal tilt, the brow
-   raise (offUp) and the sharpened inner tip — none of which spend face width. */
+   1. TRUST THE PICTURE, NOT THIS COMMENT. A previous pass argued the ceiling up
+      to 1.19 to make an over-large lens "pass", then shipped K = 0.47 at reach
+      1.186. /lenslab reported PASS on all nine cases while visibly hanging the
+      rims off the skull, because the cap had been fitted to the lens instead of
+      to the face. The number must come from anthropometry; only then does PASS
+      mean anything. The lab now draws the boundary from this same constant, so
+      a cap that disagrees with the face is immediately visible.
+
+   2. THE OUTWARD FLOOR WAS SPENDING THE BUDGET FOR NOTHING. At OFF_OUT_FLOOR =
+      0.10 the floor branch bound instead, giving reach = 0.6 + 1.2472*K and
+      capping K at 0.401. Dropping the floor to 0.04 lets the bridge branch bind
+      — the minimum spread that still keeps a seam — which allows K = 0.43 at
+      the SAME 1.10 reach: ~8% more linear lens size, free.
+
+   Height is not part of this budget and must not be used to buy size back: an
+   earlier revision flattened the path height to 1.33 chasing a wider aspect and
+   quietly removed 17% of the lens area, which is the "eyes look too small" bug
+   itself. Height stays at the path's native 1.592 (LENS_HEIGHT_K = 1). The
+   apparent-size fixes are the canthal tilt, the brow raise (offUp) and the
+   sharpened inner tip — none of which spend face width. */
 
 /* teardrop spider lens path in unit space (right-eye orientation, +x = outward).
    Sharpened from the original: the inner tip is pulled to a point and sits LOW
@@ -660,11 +685,16 @@ export function drawLensPair(g, pl, size, angle, glow, stretchY = 1) {
   drawLens(g, pl.rx, pl.ry, size, angle - LENS_TILT, 1, stretchY, glow);
 }
 
-/* OUTER_REACH_MAX: half the bizygomatic width of an adult face expressed in eye
-   distances. /lenslab asserts every case against it. */
+/* OUTER_REACH_MAX: the bizygomatic (cheekbone) half-width of an adult face in
+   eye distances — ~139mm across vs IPD ~63mm. This is an ANTHROPOMETRIC fact
+   about faces, not a dial: it is never to be raised to make a lens fit. If a
+   case FAILS, shrink LENS_SIZE_K. /lenslab asserts every case against it AND
+   draws the synthetic skull from it, so the number and the picture cannot
+   disagree. See the FOOTPRINT BUDGET above for the full history. */
 export const OUTER_REACH_MAX = 1.10;
 export const LENS_TUNING = {
-  LENS_TILT, LENS_SIZE_K, LENS_HEIGHT_K, LENS_INNER, BRIDGE_GAP, OUTER_REACH_MAX,
+  LENS_TILT, LENS_SIZE_K, LENS_HEIGHT_K, LENS_INNER, BRIDGE_GAP,
+  OUTER_REACH_MAX, RIM_OUTER, PATH_HEIGHT,
 };
 
 function drawSpider(g, x, y, s, ang) {
