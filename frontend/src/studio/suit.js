@@ -627,10 +627,18 @@ export function lensPlacement(midX, midY, span, size, angle, eyeDistPx) {
 /* Draws both lenses with the canthal tilt applied.
    theta = angle - mirror * LENS_TILT raises the OUTER corner of each lens.
    Head roll (angle) still drives both equally, so tracking is unchanged — the
-   tilt is a fixed property of the hardware, not an expression. */
-export function drawLensPair(g, pl, size, angle, glow) {
-  drawLens(g, pl.lx, pl.ly, size, angle + LENS_TILT, -1, 1, glow);
-  drawLens(g, pl.rx, pl.ry, size, angle - LENS_TILT, 1, 1, glow);
+   tilt is a fixed property of the hardware, not an expression.
+
+   stretchY is the YAW DECOMPOSITION, not an expression either. `size` is the
+   HORIZONTAL scale and follows the observed (foreshortened) eye distance, so a
+   turned head narrows the lenses exactly as it narrows the face and the derived
+   spread stays put. Height must NOT foreshorten — a rigid lens turned edge-on
+   loses width, never height — so 1/cos(yaw) is handed back on the y axis only.
+   Compensating on BOTH axes (the earlier version) held full width against a
+   narrowed face, which inflated offOut and hung the rims off the skull. */
+export function drawLensPair(g, pl, size, angle, glow, stretchY = 1) {
+  drawLens(g, pl.lx, pl.ly, size, angle + LENS_TILT, -1, stretchY, glow);
+  drawLens(g, pl.rx, pl.ry, size, angle - LENS_TILT, 1, stretchY, glow);
 }
 
 export const LENS_TUNING = { LENS_TILT, LENS_SIZE_K, LENS_INNER, BRIDGE_GAP };
@@ -857,13 +865,13 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       // film-suit lens proportion: the big expressive teardrop is what makes the
       // mask instantly read as Spider-Man — slightly larger than half the
       // interpupillary distance, like the screen-used suits.
-      // YAW COMPENSATION: a head turn foreshortens the eye distance but your
-      // head is no further from the camera — divide out cos(yaw) so the lenses
-      // hold their true size through every head turn.
+      // YAW: the horizontal scale tracks the OBSERVED eye distance, so a head
+      // turn narrows the lenses with the face and the derived spread holds its
+      // footprint. The lost height is handed back on the y axis alone via
+      // stretchY below — see drawLensPair.
       const yawC = Math.max(0.55, Math.abs(Math.cos(rig.headYaw)));
-      // LENS_SIZE_K (0.57): the screen-suit proportion. 0.52 read too small on
-      // camera — the lenses sat ON the eyes instead of covering brow-to-cheek.
-      const size = (eyeDistPx / yawC) * LENS_SIZE_K;
+      const stretchY = Math.min(1.8, 1 / yawC);
+      const size = eyeDistPx * LENS_SIZE_K;
       const angle = f.angle;
       /* ---- mask center seam: forehead over the nose bridge to the chin ---- */
       const fhx = f.forehead.x * CROP_W, fhy = f.forehead.y * CROP_H;
@@ -913,9 +921,10 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       const fAngle = euro.angle.filter(aIn, fdt);
       lastAngle = fAngle;
       const pl = lensPlacement(fMidX, fMidY, fSpan, fSize, fAngle, eyeDistPx);
-      /* squash is CONSTANT 1: blinking, brow raises and expression beats can
-         change the glow, never the geometry — like the films' rigid lenses. */
-      drawLensPair(og, pl, fSize, fAngle, exprState.glow);
+      /* The only y-axis term is the yaw stretch, which is geometry, not mood:
+         blinking, brow raises and expression beats can change the glow, never
+         the shape — like the films' rigid lenses. */
+      drawLensPair(og, pl, fSize, fAngle, exprState.glow, stretchY);
       og.restore();
     }
     const p = tracker.points.pose;
