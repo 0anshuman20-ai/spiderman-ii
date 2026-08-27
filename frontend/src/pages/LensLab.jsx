@@ -20,8 +20,11 @@
 import { useEffect, useRef } from 'react';
 import { lensPlacement, drawLensPair, LENS_TUNING } from '@/studio/suit';
 
-const CELL_W = 260;
-const CELL_H = 300;
+/* cells must be wide enough for the whole synthetic head at the largest test
+   face (d = 128 -> half-width 1.10 * 128 = 141px), or the skull outline gets
+   clipped by the canvas and overhang becomes impossible to judge by eye. */
+const CELL_W = 300;
+const CELL_H = 340;
 
 /* roll = head tilt (rad), yaw = head turn (rad), d = true interpupillary px */
 const CASES = [
@@ -44,14 +47,29 @@ function drawFace(g, cx, cy, d, roll, yaw) {
   g.save();
   g.translate(cx, cy);
   g.rotate(roll);
-  // skull
+  /* skull half-width is drawn from OUTER_REACH_MAX itself — the same constant
+     the reach assertion uses. Previously it was an independent 1.12 literal,
+     so when the cap was argued up to 1.19 every cell reported PASS while the
+     rims visibly overhung this outline. Sharing the constant makes that
+     contradiction impossible: if a lens passes, it is inside the skull. */
+  const half = obs * LENS_TUNING.OUTER_REACH_MAX;
   g.beginPath();
-  g.ellipse(0, d * 0.12, obs * 1.12, d * 1.5, 0, 0, Math.PI * 2);
+  g.ellipse(0, d * 0.12, half, d * 1.5, 0, 0, Math.PI * 2);
   g.fillStyle = '#2a2320';
   g.fill();
   g.strokeStyle = 'rgba(255,255,255,0.14)';
   g.lineWidth = 1;
   g.stroke();
+  // temple boundary: the hard line the rim must not cross
+  g.setLineDash([4, 4]);
+  g.strokeStyle = 'rgba(255,150,90,0.55)';
+  [-1, 1].forEach((s) => {
+    g.beginPath();
+    g.moveTo(s * half, -d * 0.95);
+    g.lineTo(s * half, d * 0.95);
+    g.stroke();
+  });
+  g.setLineDash([]);
   // nose bridge — the line the lens seam must never swallow
   g.beginPath();
   g.moveTo(0, -d * 0.5);
@@ -90,7 +108,10 @@ function Cell({ c }) {
   const stretchY = Math.min(1.8, 1 / yawC);
   const size = obs * LENS_TUNING.LENS_SIZE_K;
   const pl = lensPlacement(CELL_W / 2, CELL_H / 2, obs / 2, size, c.roll, obs);
-  const outer = (obs / 2 + pl.offOut) + 1.27 * size; // rim outer reach from centreline
+  // rim outer reach from the centreline. RIM_OUTER comes from suit.js (sampled
+  // off the real beziers) rather than a literal, so the printed reach cannot
+  // drift away from the shape actually being drawn.
+  const outer = (obs / 2 + pl.offOut) + LENS_TUNING.RIM_OUTER * size;
   const reach = outer / obs;
   const bridgeOk = pl.bridge > 0.5;
   // the assertion that was missing: printing the reach without failing on it is
@@ -119,7 +140,8 @@ function Cell({ c }) {
       <figcaption className="flex flex-col gap-1 font-mono text-[11px] leading-relaxed text-neutral-400">
         <span className="text-neutral-200">{c.label}</span>
         <span>
-          w {size.toFixed(1)}px / h {(size * LENS_TUNING.LENS_HEIGHT_K * 1.594).toFixed(1)}px
+          w {size.toFixed(1)}px / h{' '}
+          {(size * stretchY * LENS_TUNING.LENS_HEIGHT_K * LENS_TUNING.PATH_HEIGHT).toFixed(1)}px
         </span>
         <span>offOut {pl.offOut.toFixed(1)} / stretchY {stretchY.toFixed(2)}</span>
         <span className={reachOk ? 'text-emerald-400' : 'text-red-400'}>
