@@ -911,6 +911,10 @@ export function createStage(canvas) {
     clearOverlays,
     /* measured render fps — the recorder reads this to pick its capture tier */
     get fps() { return fps; },
+    /* FRAMING CLAMP telemetry (RETENTION_FIX_PLAN Phase 3/6) — the suit layer's
+       live framing state: { scale, headFrac, headroomFrac, clamped, ok }.
+       null in sim mode / before the tracker exists. */
+    get framing() { return suitLayer ? suitLayer.framing : null; },
     /* EXPLICIT FRAME DELIVERY — captureStream(fps) leaves frame timing to the
        browser's dirty-canvas heuristic, which is exactly the path that stalls
        the video track mid-take under load (frozen picture, audio continues).
