@@ -133,6 +133,22 @@ export function pickTier(stage, { micLive = false, fpsOverride = 0 } = {}) {
   return tier;
 }
 
+/** PRE-ROLL FPS PROBE (RETENTION_FIX_PLAN Phase 2) — sample the stage's
+    measured fps over a 2-3s window and return the rolling average. A single
+    instantaneous stage.fps read let one transient dip lock a whole take into
+    the floor tier; the averaged probe is what callers should feed pickTier's
+    fpsOverride, and what the pre-roll gate judges. */
+export async function probeFps(stage, seconds = 2.5) {
+  const t0 = performance.now();
+  let acc = 0, n = 0;
+  while (performance.now() - t0 < seconds * 1000) {
+    await new Promise((r) => setTimeout(r, 250));
+    const f = stage && typeof stage.fps === 'number' ? stage.fps : 0;
+    if (f > 0) { acc += f; n++; }
+  }
+  return n ? acc / n : 0;
+}
+
 function supported(mime) {
   try { return MediaRecorder.isTypeSupported(mime); } catch (_) { return false; }
 }
@@ -170,6 +186,13 @@ export class Recorder {
     this._canvasTracks = []; // canvas video tracks we own — stopped on stop()
     this._watchdog = 0;      // frame heartbeat + encoder health interval
     this._lastChunkAt = 0;   // last dataavailable arrival (encoder health)
+    /* WATCHDOG TELEMETRY (RETENTION_FIX_PLAN Phase 2 item 5) — every frame the
+       watchdog forces through is a DUPLICATE of the last rendered frame: the
+       encoder stayed fed but the picture didn't change. Counting them exposes
+       the slideshow the old pipeline shipped silently; the take object carries
+       the ratio so the UI can flag a dropped-frame take before publish. */
+    this._dupFrames = 0;
+    this._takeFps = 30;      // the rolling take's capture fps (for the dup ratio)
     this._wakeLock = null;   // screen wake lock held for the take's duration
     /* warmup self-test results — persist across takes; a machine that failed
        the countdown probe once will fail it again */
@@ -571,6 +594,8 @@ export class Recorder {
       this.tier = tierName;
       this._stage = stage;
       this._canvasTracks = [];
+      this._dupFrames = 0;
+      this._takeFps = tier.captureFps;
       this._acquireWakeLock();
       const periodMs = 1000 / tier.captureFps;
       this._watchdog = setInterval(() => {
@@ -579,6 +604,7 @@ export class Recorder {
           const last = typeof stage.lastCaptureFrameAt === 'number' ? stage.lastCaptureFrameAt : 0;
           if (performance.now() - last > periodMs * 1.5 && typeof stage.forceCaptureFrame === 'function') {
             stage.forceCaptureFrame();
+            this._dupFrames++; // a forced frame is a duplicated picture (Phase 2 telemetry)
           }
         } catch (_) { /* heartbeat must never kill the take */ }
         if (this._lastChunkAt && performance.now() - this._lastChunkAt > 2000 && !this.stalled) {
@@ -643,6 +669,8 @@ export class Recorder {
     this.tier = tierName;
     this._stage = stage;
     this._canvasTracks = canvasStream.getVideoTracks();
+    this._dupFrames = 0;
+    this._takeFps = tier.captureFps;
     this._acquireWakeLock();
 
     /* DECOUPLED FRAME HEARTBEAT + ENCODER HEALTH — the render loop's pushFrame
@@ -660,6 +688,7 @@ export class Recorder {
         const last = typeof stage.lastCaptureFrameAt === 'number' ? stage.lastCaptureFrameAt : 0;
         if (performance.now() - last > periodMs * 1.5 && typeof stage.forceCaptureFrame === 'function') {
           stage.forceCaptureFrame();
+          this._dupFrames++; // a forced frame is a duplicated picture (Phase 2 telemetry)
         }
       } catch (_) { /* heartbeat must never kill the take */ }
       if (this._lastChunkAt && performance.now() - this._lastChunkAt > 2000 && !this.stalled) {
