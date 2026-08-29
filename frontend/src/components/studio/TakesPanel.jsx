@@ -27,6 +27,19 @@ export const TakesPanel = ({ takes, onDelete }) => {
               >
                 {previewId === t.id ? '▾ ' : '▸ '}{t.name}
               </button>
+              {/* POST-TAKE REPORT CARD verdict (RETENTION_FIX_PLAN Phase 6) —
+                  a flagged take is never silently downloaded; the chip says so
+                  at a glance and the expanded view shows the failing rows */}
+              {t.report && (
+                <span className="mono" data-testid={`take-report-chip-${t.id}`}
+                  style={{
+                    fontSize: 9, padding: '1px 5px',
+                    border: `1px solid ${t.report.pass ? 'var(--cw-green)' : 'var(--cw-red)'}`,
+                    color: t.report.pass ? 'var(--cw-green)' : 'var(--cw-red)',
+                  }}>
+                  {t.report.pass ? 'PASS' : 'FLAGGED'}
+                </span>
+              )}
               <small>{fmtDur(t.duration)} · {fmtSize(t.size)}</small>
               <a href={t.url} download={`${t.name}.${t.ext || 'webm'}`} className="mono"
                 style={{ color: 'var(--cw-green)', fontSize: 10, textDecoration: 'none' }}
@@ -47,6 +60,30 @@ export const TakesPanel = ({ takes, onDelete }) => {
                 >
                   <track kind="captions" />
                 </video>
+                {/* one-glance pass/fail rows (RETENTION_FIX_PLAN Phase 6 item 2):
+                    recorder telemetry + loudness verification + director counters */}
+                {t.report && t.report.rows && (
+                  <div className="w-full mono flex flex-col gap-0.5" style={{ fontSize: 9 }}
+                    data-testid={`take-report-${t.id}`} aria-label="Take report card">
+                    {t.report.rows.map((r) => (
+                      <div key={r.label} className="flex items-center justify-between gap-2 px-1.5 py-0.5"
+                        style={{
+                          background: r.ok ? 'rgba(255,255,255,0.03)' : 'rgba(255,26,46,0.08)',
+                          border: `1px solid ${r.ok ? 'var(--cw-border)' : 'var(--cw-red)'}`,
+                        }}>
+                        <span style={{ color: 'var(--cw-muted)' }}>
+                          {r.ok ? '✓' : '✕'} {r.label}{r.critical && !r.ok ? ' — CRITICAL' : ''}
+                        </span>
+                        <span style={{ color: r.ok ? 'var(--cw-text-2)' : 'var(--cw-red)' }}>{r.value}</span>
+                      </div>
+                    ))}
+                    {!t.report.pass && (
+                      <span className="text-center mt-0.5" style={{ color: 'var(--cw-red)' }}>
+                        FLAGGED — AUTO-DOWNLOAD SKIPPED · ▼ SAVE IS THE EXPLICIT OVERRIDE
+                      </span>
+                    )}
+                  </div>
+                )}
                 <button className="bg-transparent border-0 cursor-pointer mono text-[9px]"
                   style={{ color: 'var(--cw-muted)' }}
                   data-testid={`take-preview-close-${t.id}`}
