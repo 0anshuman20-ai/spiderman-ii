@@ -804,6 +804,22 @@ export class Recorder {
       ext: this.ext,
       tier: this.tier,
       createdAt: new Date().toISOString(),
+      ...this._frameTelemetry(dur),
+    };
+  }
+
+  /** WATCHDOG TELEMETRY → take object (RETENTION_FIX_PLAN Phase 2 item 5 /
+      Phase 6): every watchdog-forced frame is a duplicated picture. The ratio
+      against the take's expected frame count exposes the slideshow the old
+      pipeline shipped silently; effectiveFps is what the viewer actually saw. */
+  _frameTelemetry(dur) {
+    const total = Math.max(1, Math.round(dur * this._takeFps));
+    const dupRatio = Math.min(1, this._dupFrames / total);
+    return {
+      captureFps: this._takeFps,
+      dupFrames: this._dupFrames,
+      dupRatio,
+      effectiveFps: Math.round(this._takeFps * (1 - dupRatio) * 10) / 10,
     };
   }
 
@@ -846,6 +862,7 @@ export class Recorder {
           ext: this.ext,
           tier: this.tier,
           createdAt: new Date().toISOString(),
+          ...this._frameTelemetry(dur),
         });
       };
       /* FLUSH THE TAIL: with 500ms timeslices the final <=500ms of audio+video
