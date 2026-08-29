@@ -335,7 +335,7 @@ export class SpideyVoice {
       const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 180; body.gain.value = 2;
       const mudCut = ctx.createBiquadFilter(); mudCut.type = 'peaking'; mudCut.frequency.value = 320; mudCut.Q.value = 1.15; mudCut.gain.value = -3.5;
       const nasalCut = ctx.createBiquadFilter(); nasalCut.type = 'peaking'; nasalCut.frequency.value = 900; nasalCut.Q.value = 1.3; nasalCut.gain.value = -1.5;
-      const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2600; presence.Q.value = 0.85; presence.gain.value = 3;
+      const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2600; presence.Q.value = 0.85; presence.gain.value = 3.5;
       const clarity = ctx.createBiquadFilter(); clarity.type = 'highshelf'; clarity.frequency.value = 4500; clarity.gain.value = 1.5;
       // A broad high-band cut safely softens sharp earbud S sounds.
       const deEss = ctx.createBiquadFilter(); deEss.type = 'peaking'; deEss.frequency.value = 6800; deEss.Q.value = 2.2; deEss.gain.value = -3.5;
@@ -345,30 +345,13 @@ export class SpideyVoice {
       const comp = ctx.createDynamicsCompressor();
       comp.threshold.value = -18; comp.knee.value = 10; comp.ratio.value = 3.2; comp.attack.value = 0.006; comp.release.value = 0.14;
       const makeup = ctx.createGain(); makeup.gain.value = 1.55;
-      /* FINAL STAGE — gain-staging rebuild (RETENTION_FIX_PLAN Phase 4).
-         Target: -14 LUFS integrated, -1.5 dBTP ceiling. The old config
-         (threshold -1.5, ratio 20, attack 0.5ms) tried to be a brickwall —
-         a WebAudio DynamicsCompressor is NOT one, and with the old +23-27 dB
-         static overshoot it leaked several dB (+2.9 dBTP measured on a real
-         published take). Now the compressor is a SAFETY stage that should be
-         barely working (< 3 dB GR in normal speech), and true-peak headroom
-         is GUARANTEED by a hard-ceiling WaveShaper clamp at -1.5 dBFS after
-         it — Opus intersample overs can no longer clip. */
       const limiter = ctx.createDynamicsCompressor();
-      limiter.threshold.value = -6; limiter.knee.value = 0; limiter.ratio.value = 12; limiter.attack.value = 0.002; limiter.release.value = 0.15;
-      const CEIL = Math.pow(10, -1.5 / 20); // -1.5 dBFS ≈ 0.8414 linear
-      const ceiling = ctx.createWaveShaper();
-      {
-        const n = 2048; const curve = new Float32Array(n);
-        for (let i = 0; i < n; i++) {
-          const x = (i / (n - 1)) * 4 - 2; // ±2 input span so hot peaks land on the flat
-          curve[i] = Math.max(-CEIL, Math.min(CEIL, x));
-        }
-        ceiling.curve = curve; ceiling.oversample = '4x';
-      }
+      limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.0005; limiter.release.value = 0.06;
+      /* kept as refs: LIVE MIC takes run the final stage hotter (makeup 2.0,
+         limiter -1.0 dB) and restore these exact values when the mic drops —
+         the TTS/upload paths must never hear the mic-take loudness. */
       this._makeup = makeup;
       this._limiter = limiter;
-      this._ceiling = ceiling;
 
     this.outGain = ctx.createGain(); this.outGain.gain.value = 1;
     /* 256 samples is ~5ms at 48kHz. The old 1024-sample (~21ms) analysis
@@ -382,7 +365,7 @@ export class SpideyVoice {
       this.voiceIn.connect(hp); hp.connect(body); body.connect(mudCut); mudCut.connect(nasalCut);
       nasalCut.connect(presence); presence.connect(clarity); clarity.connect(deEss);
       deEss.connect(hissCut); hissCut.connect(leveller); leveller.connect(comp);
-      comp.connect(makeup); makeup.connect(limiter); limiter.connect(ceiling); ceiling.connect(this.outGain);
+      comp.connect(makeup); makeup.connect(limiter); limiter.connect(this.outGain);
       this.outGain.connect(this.analyser);
       this.outGain.connect(this.dest);
       this.outGain.connect(this.monitorGain);
@@ -729,7 +712,6 @@ export class SpideyVoice {
      the "it already knows the script" sync. */
   update(dt, jaw, recording) {
     if (!this.ready) return;
-    this._meterTick(recording);
     /* LIVE MIC MODE — your voice is the audio AND the clock; jaw is ignored */
     if (this.micMode) { this._updateLiveMic(dt, recording); return; }
     // live output level for meters / music ducking
@@ -817,28 +799,26 @@ export class SpideyVoice {
     const ctx = this.ctx;
     this.micStream = stream;
     const src = ctx.createMediaStreamSource(stream);
-    /* MIC PRE-STAGE — gain-staging rebuild (RETENTION_FIX_PLAN Phase 4).
-       The old chain stacked ~+23-27 dB of STATIC gain (boost x2.0, trim x1.9,
-       stacked EQ boosts, mic-mode makeup x2.0) into a non-brickwall
-       compressor — a measured -5.7 LUFS / +2.9 dBTP clipped take was the only
-       possible output. Rebuilt:
-         ONE calibrated makeup (+4 dB) -> gate -> AGC leveler (max +6 dB,
-         targets ~-16 LUFS short-term) -> subtractive-first repair EQ (every
-         boost <= +3 dB) -> unity trim -> broadcast chain -> safety limiter ->
-         -1.5 dBFS hard ceiling.
-       Typical speech now lands near -18..-16 LUFS BEFORE the leveler, so the
-       downstream limiter barely works instead of being pinned. */
-    const boost = ctx.createGain(); boost.gain.value = 1.6; // THE one calibrated makeup stage (+4 dB)
+    /* MIC PRE-STAGE — earbud/laptop capsules arrive QUIET, thin, boxy and
+       noisy. Fix level and tone BEFORE the broadcast chain so the compressors
+       downstream work with a voice, not a problem:
+         boost (+6 dB) -> gate (downward expander) -> auto-leveler -> repair EQ
+       The boost recovers the ~6-10 dB these capsules sit under; the gate mutes
+       room hiss between phrases without clipping word onsets; the leveler
+       (driven per-frame from the VAD analyser) rides your distance/energy
+       swings +-9 dB so every take lands at the same loudness. */
+    const boost = ctx.createGain(); boost.gain.value = 2.0; // +6 dB input recovery
     const gate = ctx.createGain(); gate.gain.value = 1;     // VAD-driven downward expander
-    const leveler = ctx.createGain(); leveler.gain.value = 1; // AGC, driven per-frame, capped at +6 dB
+    const leveler = ctx.createGain(); leveler.gain.value = 1; // slow AGC, +-9 dB
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 82; hp.Q.value = 0.71;
-    const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 160; body.gain.value = 2;
-    /* subtractive first: cut the 250-400 Hz mud instead of stacking presence */
-    const box = ctx.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 320; box.Q.value = 1.1; box.gain.value = -3;
+    const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 160; body.gain.value = 3;
+    const box = ctx.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 300; box.Q.value = 1.1; box.gain.value = -2;
     const harsh = ctx.createBiquadFilter(); harsh.type = 'peaking'; harsh.frequency.value = 4200; harsh.Q.value = 1.4; harsh.gain.value = -2.5;
-    const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2800; presence.Q.value = 0.9; presence.gain.value = 3;
-    const shelf = ctx.createBiquadFilter(); shelf.type = 'highshelf'; shelf.frequency.value = 3400; shelf.gain.value = 2;
-    const trim = ctx.createGain(); trim.gain.value = 1.0; // unity — the makeup stage above owns level
+    /* STRONGER intelligibility for tiny capsules: presence peak +5 dB @2.8kHz
+       and a +2.5 dB shelf from 3.4kHz — consonants cut through phone speakers */
+    const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2800; presence.Q.value = 0.9; presence.gain.value = 5;
+    const shelf = ctx.createBiquadFilter(); shelf.type = 'highshelf'; shelf.frequency.value = 3400; shelf.gain.value = 2.5;
+    const trim = ctx.createGain(); trim.gain.value = 1.9; // make-up into the chain (~+5.6 dB)
     src.connect(boost); boost.connect(gate); gate.connect(leveler);
     leveler.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh);
     harsh.connect(presence); presence.connect(shelf); shelf.connect(trim);
@@ -855,9 +835,13 @@ export class SpideyVoice {
     this._micGate = gate;
     this._micLeveler = leveler;
     this._agcRms = 0; // speech-RMS EMA driving the leveler
-    /* Phase 4: the old "hotter final loudness on mic takes" (makeup 2.0,
-       limiter -1.0) is GONE — it was part of the static overshoot that
-       guaranteed clipping. Mic takes share the same calibrated chain. */
+    /* HOTTER FINAL LOUDNESS on mic takes only: the synthesized voice is already
+       normalized at the source; your real voice needs the extra push to land at
+       the same perceived level phone-speaker-loud. Restored in disableLiveMic. */
+    try {
+      this._makeup.gain.setTargetAtTime(2.0, ctx.currentTime, 0.05);
+      this._limiter.threshold.setTargetAtTime(-1.0, ctx.currentTime, 0.05);
+    } catch (_) {}
     this.micMode = true;
     this.uploaded = false;
     this._noiseFloor = 0.01;
@@ -880,6 +864,14 @@ export class SpideyVoice {
     this._micGate = null;
     this._micLeveler = null;
     this.micAnalyser = null;
+    /* restore the shared chain's stock loudness — TTS/upload takes must never
+       inherit the hotter mic-take makeup/limiter settings */
+    if (this.ready && this._makeup && this._limiter) {
+      try {
+        this._makeup.gain.setTargetAtTime(1.55, this.ctx.currentTime, 0.05);
+        this._limiter.threshold.setTargetAtTime(-1.5, this.ctx.currentTime, 0.05);
+      } catch (_) {}
+    }
     if (this.micMode) {
       this.micMode = false;
       this.playing = false; this.currentLine = -1;
@@ -982,65 +974,14 @@ export class SpideyVoice {
     this.lastEndedAt = performance.now() - (sil || 0) * 1000;
   }
 
-  /* POST-TAKE LOUDNESS VERIFICATION (Phase 4 item 6) — meters the FINAL
-     recorder feed (post limiter + ceiling) across every take and produces an
-     integrated-loudness estimate + sample peak when the take ends. This is an
-     RMS-based LUFS estimate (no K-weighting) — accurate to within ~1-2 LU for
-     speech, which is all the go/no-go gate needs. Read `lastTakeAudioReport`
-     after stop; a take outside -16..-12 LUFS or peaking above -1.0 dBFS is
-     flagged so a broken take can never again ship silently. */
-  _meterTick(recording) {
-    if (recording && !this._meterOn) {
-      this._meterOn = true;
-      this._meterSum = 0; this._meterN = 0; this._meterPeak = 0;
-      this.lastTakeAudioReport = null;
-    }
-    if (this._meterOn) {
-      this.analyser.getByteTimeDomainData(this._levelBuf);
-      let s = 0;
-      for (let i = 0; i < this._levelBuf.length; i++) {
-        const v = (this._levelBuf[i] - 128) / 128;
-        s += v * v;
-        const a = Math.abs(v);
-        if (a > this._meterPeak) this._meterPeak = a;
-      }
-      this._meterSum += s; this._meterN += this._levelBuf.length;
-    }
-    if (!recording && this._meterOn) {
-      this._meterOn = false;
-      if (this._meterN > 0) {
-        const rms = Math.sqrt(this._meterSum / this._meterN);
-        const lufs = rms > 0 ? -0.691 + 20 * Math.log10(rms) : -70;
-        const peakDb = this._meterPeak > 0 ? 20 * Math.log10(this._meterPeak) : -70;
-        const ok = lufs >= -16 && lufs <= -12 && peakDb <= -1.0;
-        this.lastTakeAudioReport = {
-          lufs: Math.round(lufs * 10) / 10,
-          peakDb: Math.round(peakDb * 10) / 10,
-          ok,
-        };
-        if (!ok && this.onStatus) {
-          const why = peakDb > -1.0
-            ? `peak ${this.lastTakeAudioReport.peakDb} dBFS (ceiling -1.0)`
-            : `loudness ${this.lastTakeAudioReport.lufs} LUFS (target -16..-12)`;
-          this.onStatus({ level: 'warn', message: `take audio out of spec — ${why}` });
-        }
-      }
-    }
-  }
-
   _updateLiveMic(dt, recording) {
     // mic RMS from the repaired signal
     let rms = 0;
-    let rawRms = 0;
     if (this.micAnalyser) {
       this.micAnalyser.getByteTimeDomainData(this._micBuf);
       let s = 0;
       for (let i = 0; i < this._micBuf.length; i += 2) { const v = (this._micBuf[i] - 128) / 128; s += v * v; }
-      rawRms = Math.sqrt(s / (this._micBuf.length / 2));
-      /* x5 (was x4): the input makeup dropped 2.0 -> 1.6 in the Phase 4 gain
-         rebuild; the scale compensates so every VAD threshold below is
-         numerically unchanged. */
-      rms = Math.min(1, rawRms * 5);
+      rms = Math.min(1, Math.sqrt(s / (this._micBuf.length / 2)) * 4);
     }
     /* adaptive noise floor: drops fast toward silence, climbs very slowly, so
        speech can never teach the detector that talking is "background" */
@@ -1052,19 +993,6 @@ export class SpideyVoice {
        confirmed and NO caption ever fired. Recognition below is the backstop. */
     const voiced = rms > Math.max(0.015, this._noiseFloor * 2.6 + 0.009);
     this.level = { rms, gateOpen: voiced };
-
-    /* AGC LEVELER (Phase 4) — previously a dead node stuck at gain 1. While
-       you speak, a slow EMA of the raw speech RMS drives the leveler toward a
-       -16 LUFS-ish short-term target. Boost is CAPPED at +6 dB (gain 2.0) —
-       the old design promised ±9 dB and delivered clipping; cuts go to -6 dB
-       for hot capsules. Time constant is slow (0.4s) so it rides distance
-       drift, never syllables. */
-    if (this._micLeveler && voiced && rawRms > 0.004) {
-      this._agcRms = this._agcRms > 0 ? this._agcRms * 0.95 + rawRms * 0.05 : rawRms;
-      const TARGET_RMS = 0.06; // ≈ -18..-16 LUFS speech into the broadcast chain
-      const want = Math.min(2.0, Math.max(0.5, TARGET_RMS / Math.max(0.008, this._agcRms)));
-      try { this._micLeveler.gain.setTargetAtTime(want, this.ctx.currentTime, 0.4); } catch (_) {}
-    }
 
     // the recognizer rides the take: on when rolling, off when cut
     if (recording && !this._recogOn && !this._recogStartedForTake) {

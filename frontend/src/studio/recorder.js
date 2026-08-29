@@ -110,18 +110,11 @@ function isSoftwareGL(renderer) {
 }
 
 /** capability read: measured stage fps wins; GL backend and core count break
-    ties. Phase 2 (RETENTION_FIX_PLAN): the blanket micLive step-down is GONE —
-    live-mic cost is already reflected in the measured stage fps, and the
-    double penalty is what guaranteed every live take shipped at the 720p
-    floor tier. `fpsOverride` lets callers feed a rolling-average probe
-    (2-3s window) instead of the instantaneous stage.fps, so a transient dip
-    can no longer lock in `low` for a whole take. `micLive` is kept in the
-    signature for API compatibility but no longer affects the verdict. */
-export function pickTier(stage, { micLive = false, fpsOverride = 0 } = {}) {
-  void micLive;
-  const measured = fpsOverride > 0
-    ? fpsOverride
-    : (stage && typeof stage.fps === 'number' ? stage.fps : 0);
+    ties. MIC-AWARE: a live getUserMedia graph + a parallel speech-recognition
+    session add real load on top of the encoder — a machine that survives TTS
+    takes tips over on mic takes, so micLive steps the tier down one level. */
+export function pickTier(stage, { micLive = false } = {}) {
+  const measured = stage && typeof stage.fps === 'number' ? stage.fps : 0;
   const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
   const soft = isSoftwareGL(stage && stage.renderer);
   let tier;
@@ -130,6 +123,7 @@ export function pickTier(stage, { micLive = false, fpsOverride = 0 } = {}) {
   // a machine that only just holds 50fps stalls the encoder once REC adds load
   else if (cores <= 6 || (measured > 0 && measured < 55)) tier = 'medium';
   else tier = 'high';
+  if (micLive) tier = stepDown(tier);
   return tier;
 }
 
