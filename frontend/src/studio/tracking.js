@@ -22,12 +22,42 @@ export function makeRig() {
 
 const lerp = (a, b, k) => a + (b - a) * k;
 
-// crop resolution — the person layer texture (9:16)
+// crop resolution — the person layer texture (9:16).
+// 720x1280 is the FALLBACK for weak cameras; init() raises the crop to
+// 1080x1920 when the camera actually delivers >= 1080p, so the person layer
+// resolution follows the encode tier instead of capping it (retention fix, Phase 3).
 export const CROP_W = 720;
 export const CROP_H = 1280;
-// segmentation runs on a smaller canvas for speed; mask upscales smoothly on the GPU
+export const CROP_HD_W = 1080;
+export const CROP_HD_H = 1920;
+// segmentation runs on a smaller canvas for speed; mask upscales smoothly on
+// the GPU. 288x512 is the floor; the frame-budget guard raises it to 432x768
+// only when per-frame ML time shows real headroom (retention fix, Phase 1) —
+// cleaner matte edges paid for with reclaimed time, never with fps.
 const SEG_W = 288;
 const SEG_H = 512;
+const SEG_HI_W = 432;
+const SEG_HI_H = 768;
+
+/* ---- ML FRAME-BUDGET (Phase 1) ----
+   The old tick ran FaceLandmarker + PoseLandmarker + HandLandmarker +
+   ImageSegmenter back-to-back, synchronously, on the main thread, EVERY frame
+   — while live speech recognition, the WebGL render loop and the encoder
+   competed for the same thread. Measured result on a real published take:
+   ~8.8 unique fps (a slideshow the watchdog masked with duplicate frames).
+   The fix: only the face (mask + mouth — the most visible signal) runs every
+   frame; pose/hands/segmentation run on a staggered cadence with their
+   smoothed state interpolating between runs, and a rolling budget guard
+   widens/tightens the cadence from MEASURED per-tick ML time. */
+const ML_TIGHT = { pose: 2, hands: 3, seg: 2 };   // plan cadence on healthy machines
+const ML_WIDE = { pose: 3, hands: 4, seg: 3 };    // auto-widened under pressure
+const ML_BUDGET_WIDEN_MS = 14;  // rolling avg above this → widen the stagger
+const ML_BUDGET_TIGHTEN_MS = 8; // rolling avg below this → tighten back
+const ML_SEG_HI_MS = 9;         // headroom below this → raise seg resolution
+const ML_SEG_LO_MS = 13;        // pressure above this → drop seg resolution
+const ML_FRAME_CAP_MS = 17;     // never let tracking blow the whole frame:
+                                // a model whose expected cost exceeds the
+                                // remaining cap is SKIPPED, its last result reused
 
 export class Tracker {
   constructor(rig) {
@@ -36,6 +66,17 @@ export class Tracker {
     this.running = false;
     this.lastVideoTime = -1;
     this.frame = 0;
+
+    /* Phase 1 scheduler state: staggered model cadence + measured budgets.
+       cost.* are per-model EMA runtimes (ms) — the skip guard reads them. */
+    this.ml = {
+      iv: { ...ML_TIGHT },        // current cadence (frames between runs)
+      wide: false,
+      avgMs: 0,                   // rolling per-tick total ML time
+      cost: { face: 4, pose: 5, hands: 5, seg: 4 },
+      segHi: false,
+      last: { pose: -99, hands: -99, seg: -99 }, // frame index of last run
+    };
 
     // cropped, mirrored, 9:16 video — the base layer of the filter
     this.canvas = document.createElement('canvas');
@@ -66,13 +107,29 @@ export class Tracker {
 
   async init() {
     try {
+      /* Phase 3: ask for portrait-friendly frames where the hardware can give
+         them (phones/portrait-capable cams) — every degree of native portrait
+         reduces the 9:16 cover-crop loss. Landscape webcams ignore the
+         aspectRatio hint and still deliver their best 1080p. */
       this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+        video: {
+          width: { ideal: 1920 }, height: { ideal: 1080 },
+          aspectRatio: { ideal: 9 / 16 },
+          frameRate: { ideal: 30 },
+        },
       });
       const video = document.createElement('video');
       video.srcObject = this.stream; video.muted = true; video.playsInline = true;
       await video.play();
       this.video = video;
+      /* Phase 3: person-layer resolution follows the camera. A camera that
+         actually delivers >= 1080p gets the 1080x1920 crop (the old 720x1280
+         hard cap guaranteed a soft person layer inside a 1080p take); weaker
+         cameras keep the 720 fallback. Sized BEFORE model warmup so every
+         landmark lives in one consistent space for the whole session. */
+      if (Math.min(video.videoWidth || 0, video.videoHeight || 0) >= 1080) {
+        this.canvas.width = CROP_HD_W; this.canvas.height = CROP_HD_H;
+      }
       const fileset = await FilesetResolver.forVisionTasks('/wasm');
       const mk = (delegate) => async () => {
         const base = (path) => ({ baseOptions: { modelAssetPath: path, delegate }, runningMode: 'VIDEO' });
@@ -118,14 +175,15 @@ export class Tracker {
     const v = this.video;
     const vw = v.videoWidth, vh = v.videoHeight;
     if (!vw || !vh) return false;
-    const targetAspect = CROP_W / CROP_H;
+    const cw = this.canvas.width, ch = this.canvas.height;
+    const targetAspect = cw / ch;
     let sw = vh * targetAspect, sh = vh;
     if (sw > vw) { sw = vw; sh = vw / targetAspect; }
     const sx = (vw - sw) / 2, sy = (vh - sh) / 2;
     const g = this.ctx;
     g.save();
-    g.translate(CROP_W, 0); g.scale(-1, 1); // mirror
-    g.drawImage(v, sx, sy, sw, sh, 0, 0, CROP_W, CROP_H);
+    g.translate(cw, 0); g.scale(-1, 1); // mirror
+    g.drawImage(v, sx, sy, sw, sh, 0, 0, cw, ch);
     g.restore();
     return true;
   }
@@ -141,12 +199,19 @@ export class Tracker {
     this.frame++;
     const rig = this.rig;
     const pts = this.points;
+    /* Phase 1: the tick's ML wall-clock — every model charges against it,
+       and any model whose expected cost would blow the frame cap is skipped
+       this frame (its last result is reused) rather than stalling the render */
+    const mlStart = now;
+    const mlFits = (cost) => (performance.now() - mlStart) + cost < ML_FRAME_CAP_MS;
     const kFace = 1 - Math.exp(-dt * 20); // fast — the mask must feel glued to you
     const kPos = 1 - Math.exp(-dt * 26);  // near-instant landmark follow, tiny denoise
     const kBody = 1 - Math.exp(-dt * 10);
     const kMouth = 1 - Math.exp(-dt * 34); // dedicated near-raw mouth clock: zero perceptible lag
 
-    /* ---- FACE (every frame — this drives the mask + lenses) ---- */
+    /* ---- FACE (every frame — this drives the mask + lenses, the single
+       most visible tracking signal; it is never staggered) ---- */
+    const faceT0 = performance.now();
     try {
       const fr = this.face.detectForVideo(this.canvas, now);
       const lm = fr.faceLandmarks && fr.faceLandmarks[0];
@@ -214,40 +279,60 @@ export class Tracker {
       }
     } catch (_) { rig.tracking.face = false; }
 
-    /* ---- POSE (every frame — suit region classification + emblem) ---- */
-    try {
-      const pr = this.pose.detectForVideo(this.canvas, now);
-      const nl = pr.landmarks && pr.landmarks[0];
-      if (nl && nl.length >= 29) {
-        rig.tracking.pose = true;
-        pts.pose.ok = lerp(pts.pose.ok, 1, kBody);
-        if (!pts.pose.lm) pts.pose.lm = nl.map((p) => ({ x: p.x, y: p.y, v: p.visibility != null ? p.visibility : 1 }));
-        else nl.forEach((p, i) => {
-          const s = pts.pose.lm[i];
-          s.x = lerp(s.x, p.x, kPos); s.y = lerp(s.y, p.y, kPos);
-          s.v = lerp(s.v, p.visibility != null ? p.visibility : 1, kBody);
-        });
-        /* metric 3D joints for the Performance File — smoothed on the same clock as
-           the 2D landmarks so a synthetic re-render matches the matted take frame for
-           frame. Costs one array write per frame and nothing on the GPU. */
-        const wl = pr.worldLandmarks && pr.worldLandmarks[0];
-        if (wl && wl.length >= 29) {
-          if (!pts.pose.world) pts.pose.world = wl.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-          else wl.forEach((p, i) => {
-            const s = pts.pose.world[i];
-            s.x = lerp(s.x, p.x, kPos); s.y = lerp(s.y, p.y, kPos); s.z = lerp(s.z, p.z, kBody);
-          });
+    /* ---- POSE (staggered — Phase 1: runs every iv.pose frames; the raw
+       result is cached and the smoothed state interpolates toward it EVERY
+       frame, so the suit compositor never feels the stagger) ---- */
+    if (this.frame - this.ml.last.pose >= this.ml.iv.pose && (mlFits(this.ml.cost.pose) || !this._rawPose)) {
+      this.ml.last.pose = this.frame;
+      const t0 = performance.now();
+      try {
+        const pr = this.pose.detectForVideo(this.canvas, now);
+        const nl = pr.landmarks && pr.landmarks[0];
+        if (nl && nl.length >= 29) {
+          rig.tracking.pose = true;
+          this._poseSeen = true;
+          if (!this._rawPose) this._rawPose = nl.map((p) => ({ x: p.x, y: p.y, v: p.visibility != null ? p.visibility : 1 }));
+          else nl.forEach((p, i) => { const s = this._rawPose[i]; s.x = p.x; s.y = p.y; s.v = p.visibility != null ? p.visibility : 1; });
+          const wl = pr.worldLandmarks && pr.worldLandmarks[0];
+          if (wl && wl.length >= 29) {
+            if (!this._rawWorld) this._rawWorld = wl.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+            else wl.forEach((p, i) => { const s = this._rawWorld[i]; s.x = p.x; s.y = p.y; s.z = p.z; });
+          }
+        } else {
+          rig.tracking.pose = false;
+          this._poseSeen = false;
         }
-        // background parallax follows you
-        const cx = (nl[11].x + nl[12].x) / 2;
-        rig.root.x = lerp(rig.root.x, (cx - 0.5) * 2, kBody);
-        const sw = Math.abs(nl[11].x - nl[12].x);
-        if (sw > 0.02) rig.root.z = lerp(rig.root.z, Math.max(-1, Math.min(1, (sw / 0.3 - 1))), kBody * 0.5);
-      } else {
-        rig.tracking.pose = false;
-        pts.pose.ok = lerp(pts.pose.ok, 0, kBody * 0.5);
+      } catch (_) { rig.tracking.pose = false; this._poseSeen = false; }
+      this.ml.cost.pose = this.ml.cost.pose * 0.8 + (performance.now() - t0) * 0.2;
+    }
+    /* every-frame interpolation toward the latest raw pose */
+    if (this._poseSeen && this._rawPose) {
+      pts.pose.ok = lerp(pts.pose.ok, 1, kBody);
+      if (!pts.pose.lm) pts.pose.lm = this._rawPose.map((p) => ({ x: p.x, y: p.y, v: p.v }));
+      else this._rawPose.forEach((p, i) => {
+        const s = pts.pose.lm[i];
+        s.x = lerp(s.x, p.x, kPos); s.y = lerp(s.y, p.y, kPos);
+        s.v = lerp(s.v, p.v, kBody);
+      });
+      /* metric 3D joints for the Performance File — smoothed on the same clock as
+         the 2D landmarks so a synthetic re-render matches the matted take frame for
+         frame. Costs one array write per frame and nothing on the GPU. */
+      if (this._rawWorld) {
+        if (!pts.pose.world) pts.pose.world = this._rawWorld.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+        else this._rawWorld.forEach((p, i) => {
+          const s = pts.pose.world[i];
+          s.x = lerp(s.x, p.x, kPos); s.y = lerp(s.y, p.y, kPos); s.z = lerp(s.z, p.z, kBody);
+        });
       }
-    } catch (_) { rig.tracking.pose = false; }
+      // background parallax follows you
+      const L = this._rawPose;
+      const cx = (L[11].x + L[12].x) / 2;
+      rig.root.x = lerp(rig.root.x, (cx - 0.5) * 2, kBody);
+      const sw = Math.abs(L[11].x - L[12].x);
+      if (sw > 0.02) rig.root.z = lerp(rig.root.z, Math.max(-1, Math.min(1, (sw / 0.3 - 1))), kBody * 0.5);
+    } else {
+      pts.pose.ok = lerp(pts.pose.ok, 0, kBody * 0.5);
+    }
 
     /* ---- HANDS (every frame — real gloved fingers glued to yours) ---- */
     try {
