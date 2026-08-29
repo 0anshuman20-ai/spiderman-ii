@@ -684,7 +684,18 @@ export default function Studio() {
              go/no-go panel with specific fixes, never a silent broken take */
           const pf = preflightRef.current;
           if (pf.fps > 0 && pf.fps < 28 && !pf.override) {
-            setPreflightBlock({ fps: Math.round(pf.fps) });
+            /* one snapshot of everything the panel reports: measured fps
+               (the blocker), camera resolution and framing-clamp status —
+               Phase 6 item 1's single go/no-go read of the machine */
+            const trk = trackerRef.current;
+            const cam = trk && trk.video && trk.video.videoWidth
+              ? `${trk.video.videoWidth}×${trk.video.videoHeight}` : null;
+            const fr = stage.framing;
+            setPreflightBlock({
+              fps: Math.round(pf.fps),
+              cam,
+              framingOk: !(fr && fr.clamped),
+            });
             return;
           }
           if (musicRef.current) musicRef.current.blip(true);
@@ -1149,6 +1160,64 @@ export default function Studio() {
                 <span className="mono text-[10px]" style={{ color: 'var(--cw-text-2)', letterSpacing: '0.3em' }}>
                   ROLLING IN {countdown}… · SPACE / REC CANCELS
                 </span>
+              </div>
+            )}
+            {/* PRE-ROLL GATE (RETENTION_FIX_PLAN Phase 2 item 3 / Phase 6 item 1) —
+                the countdown's fps probe resolved the floor tier: a silent 9fps
+                720p take is exactly what killed retention, so the roll is BLOCKED
+                behind this go/no-go panel. Specific fixes, explicit override. */}
+            {preflightBlock !== null && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 p-6"
+                style={{ background: 'rgba(0,0,0,0.78)' }} data-testid="preflight-panel"
+                role="alertdialog" aria-modal="true" aria-label="Performance too low for quality recording">
+                <span className="mono font-bold text-[13px] text-center" style={{ color: 'var(--cw-red)', letterSpacing: '0.2em' }}>
+                  ⚠ PERFORMANCE TOO LOW FOR A QUALITY TAKE
+                </span>
+                <div className="mono text-[10px] w-full max-w-[260px] flex flex-col gap-1.5" style={{ color: 'var(--cw-text-2)' }}>
+                  <div className="flex justify-between gap-2">
+                    <span>STAGE FPS</span>
+                    <span style={{ color: 'var(--cw-red)' }}>{preflightBlock.fps} / 28 NEEDED</span>
+                  </div>
+                  {preflightBlock.cam && (
+                    <div className="flex justify-between gap-2">
+                      <span>CAMERA</span><span>{preflightBlock.cam}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between gap-2">
+                    <span>FRAMING</span>
+                    <span style={{ color: preflightBlock.framingOk ? 'var(--cw-green)' : 'var(--cw-red)' }}>
+                      {preflightBlock.framingOk ? 'OK' : 'TOO CLOSE — STEP BACK'}
+                    </span>
+                  </div>
+                </div>
+                <p className="mono text-[9px] text-center max-w-[280px] text-pretty" style={{ color: 'var(--cw-muted)' }}>
+                  AT THIS SPEED THE TAKE RECORDS AS A 720p SLIDESHOW.<br />
+                  CLOSE OTHER TABS · PLUG IN POWER · DISABLE LOW-POWER MODE · THEN HIT REC AGAIN.
+                </p>
+                <div className="flex items-center gap-3">
+                  <button className="mono text-[10px] px-3 py-2 cursor-pointer"
+                    style={{ background: 'transparent', border: '1px solid var(--cw-border)', color: 'var(--cw-text-2)' }}
+                    data-testid="preflight-cancel"
+                    onClick={() => {
+                      setPreflightBlock(null);
+                      /* the warmup probe held the take's render scale — give
+                         the preview its full quality back, same as a cancelled
+                         countdown */
+                      const st = stageRef.current;
+                      if (st && st.releaseCapture) st.releaseCapture();
+                    }}>CANCEL</button>
+                  <button className="mono text-[10px] px-3 py-2 cursor-pointer"
+                    style={{ background: 'rgba(255,26,46,0.12)', border: '1px solid var(--cw-red)', color: 'var(--cw-red)' }}
+                    data-testid="preflight-override"
+                    onClick={() => {
+                      /* EXPLICIT override — the plan allows the roll, but only
+                         on a deliberate click, never silently */
+                      preflightRef.current.override = true;
+                      setPreflightBlock(null);
+                      if (musicRef.current) musicRef.current.blip(true);
+                      startRecording();
+                    }}>RECORD ANYWAY</button>
+                </div>
               </div>
             )}
           </div>

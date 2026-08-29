@@ -208,3 +208,29 @@ Record a real live take on the same hardware class and confirm via ffprobe/ffmpe
 - -16..-13 LUFS integrated, true peak <= -1.0 dBTP, LRA >= 5, no audible clipping
 - Mask fully in frame with headroom; shoulders visible; world layer visible
 - Entrance beat within 1.5s; no 3s static window; captions unclipped
+
+---
+
+## Progress log
+
+- [x] **Phase 1 — tracking stagger**: staggered face/hands/seg cadence in `studio/tracking.js`.
+- [x] **Phase 2 — tier logic**: countdown fps probe (`probeFps`) feeds `pickTier` fpsOverride in
+      `studio/recorder.js`; H.264/MP4-first for high/medium tiers.
+- [x] **Phase 3 — resolution + framing**: headroom rule + framing clamp (`stage.framing`,
+      55–60% face-height ceiling) in `studio/suit.js` / stage.
+- [x] **Phase 4 — audio rebuild**: loudness chain + `lastTakeAudioReport` verification in
+      `studio/spideyVoice.js`; fallback-mode silent-take bug fixed (voice+score into one stream).
+- [x] **Phase 5 — hook + change engine**: `studio/director.js` — cold-open beat at 0.25s,
+      2.5–3s visual-change scheduler (doubles as the silence guard), speech-reactive
+      emphasis, freestyle hook-text burn. Armed after roll, `noteChange()` from scripted beats,
+      stopped on every stop/unmount path.
+- [x] **Phase 6 — quality gates**:
+      - Pre-roll gate: countdown probe blocks the roll below 28fps behind the go/no-go
+        panel (`preflight-panel` in `Studio.jsx`) showing fps / camera res / framing status,
+        with CANCEL (releases capture) and RECORD ANYWAY (explicit override).
+      - Post-take report card: `studio/reportCard.js` (`buildTakeReport`) folded into each
+        take entry; PASS/FLAGGED chip + one-glance rows rendered in `TakesPanel.jsx`.
+      - Publish guard: a flagged take skips auto-download; ▼ SAVE is the explicit override.
+- Build verified (`yarn build` clean). Mic-level speak test in the pre-roll was intentionally
+  scoped down to fps as the sole blocker: a silent performer during the countdown would
+  false-fail a speak test; loudness is verified post-take by the report card instead.
