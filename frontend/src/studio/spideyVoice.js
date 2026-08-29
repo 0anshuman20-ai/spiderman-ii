@@ -896,6 +896,7 @@ export class SpideyVoice {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     this._recogWords = 0;
     this._wordsAtLineStart = 0;
+    this._firstPhrase = null; // Phase 5: the freestyle hook's auto-text source
     if (!SR) { this._recogOn = false; return; }
     try {
       const r = new SR();
@@ -910,6 +911,15 @@ export class SpideyVoice {
         }
         // monotonic: interim retractions must never rewind the caption
         if (words > this._recogWords) this._recogWords = words;
+        /* Phase 5 (RETENTION_FIX_PLAN): capture the FIRST phrase heard so a
+           freestyle take can burn it as its hook text. Locked once a result
+           carries 3+ words (or finalizes), so an interim stub can't win. */
+        if (!this._firstPhrase && e.results.length > 0) {
+          const first = e.results[0][0];
+          const text = first && first.transcript ? first.transcript.trim() : '';
+          const n = text.split(/\s+/).filter(Boolean).length;
+          if (text && (n >= 3 || e.results[0].isFinal)) this._firstPhrase = text;
+        }
       };
       r.onerror = () => {};
       r.onend = () => { if (this._recogOn) { try { r.start(); } catch (_) { this._recogOn = false; } } };
@@ -925,6 +935,13 @@ export class SpideyVoice {
       try { this._recog.onend = null; this._recog.stop(); } catch (_) {}
       this._recog = null;
     }
+  }
+
+  /** Phase 5 (RETENTION_FIX_PLAN) — the first phrase live recognition heard
+      this session, or null. The take director burns it as the freestyle
+      hook text when no scripted hook exists. */
+  firstPhrase() {
+    return (this.micMode && this._recogOn && this._firstPhrase) || null;
   }
 
   /** WORD-INDEX KARAOKE — the confirmed word of the CURRENT live-mic line, or
