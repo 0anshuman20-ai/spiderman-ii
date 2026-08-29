@@ -133,22 +133,6 @@ export function pickTier(stage, { micLive = false, fpsOverride = 0 } = {}) {
   return tier;
 }
 
-/** PRE-ROLL FPS PROBE (RETENTION_FIX_PLAN Phase 2) — sample the stage's
-    measured fps over a 2-3s window and return the rolling average. A single
-    instantaneous stage.fps read let one transient dip lock a whole take into
-    the floor tier; the averaged probe is what callers should feed pickTier's
-    fpsOverride, and what the pre-roll gate judges. */
-export async function probeFps(stage, seconds = 2.5) {
-  const t0 = performance.now();
-  let acc = 0, n = 0;
-  while (performance.now() - t0 < seconds * 1000) {
-    await new Promise((r) => setTimeout(r, 250));
-    const f = stage && typeof stage.fps === 'number' ? stage.fps : 0;
-    if (f > 0) { acc += f; n++; }
-  }
-  return n ? acc / n : 0;
-}
-
 function supported(mime) {
   try { return MediaRecorder.isTypeSupported(mime); } catch (_) { return false; }
 }
@@ -186,13 +170,6 @@ export class Recorder {
     this._canvasTracks = []; // canvas video tracks we own — stopped on stop()
     this._watchdog = 0;      // frame heartbeat + encoder health interval
     this._lastChunkAt = 0;   // last dataavailable arrival (encoder health)
-    /* WATCHDOG TELEMETRY (RETENTION_FIX_PLAN Phase 2 item 5) — every frame the
-       watchdog forces through is a DUPLICATE of the last rendered frame: the
-       encoder stayed fed but the picture didn't change. Counting them exposes
-       the slideshow the old pipeline shipped silently; the take object carries
-       the ratio so the UI can flag a dropped-frame take before publish. */
-    this._dupFrames = 0;
-    this._takeFps = 30;      // the rolling take's capture fps (for the dup ratio)
     this._wakeLock = null;   // screen wake lock held for the take's duration
     /* warmup self-test results — persist across takes; a machine that failed
        the countdown probe once will fail it again */
@@ -241,11 +218,9 @@ export class Recorder {
     this._wakeLock = null;
   }
 
-  /** resolve the tier for a roll, folding in the warmup self-test verdict.
-      fpsOverride: the countdown's probeFps() rolling average — a transient
-      dip in the instantaneous stage.fps can no longer lock in `low`. */
-  _resolveTier(stage, micLive, fpsOverride = 0) {
-    let name = pickTier(stage, { micLive, fpsOverride });
+  /** resolve the tier for a roll, folding in the warmup self-test verdict */
+  _resolveTier(stage, micLive) {
+    let name = pickTier(stage, { micLive });
     if (this._forcedTier && TIER_ORDER.indexOf(this._forcedTier) > TIER_ORDER.indexOf(name)) {
       name = this._forcedTier;
     }
@@ -343,9 +318,9 @@ export class Recorder {
       same stream/codec and confirm a chunk actually arrives. If it doesn't,
       drop one tier + fall back a codec BEFORE the real take starts — the
       performer never burns a take discovering the encoder can't keep up. */
-  async warmup(stage, { micLive = false, fpsOverride = 0 } = {}) {
+  async warmup(stage, { micLive = false } = {}) {
     if (this.recording) return true;
-    const tierName = this._resolveTier(stage, micLive, fpsOverride);
+    const tierName = this._resolveTier(stage, micLive);
     const tier = TIERS[tierName];
     /* WEBCODECS FIRST — if the trial encode proves the machine can encode at
        this tier via WebCodecs, the take will use that path (no WebRTC rate-
@@ -579,9 +554,9 @@ export class Recorder {
     }
   }
 
-  start(stage, voiceStream, { micLive = false, fpsOverride = 0 } = {}) {
+  start(stage, voiceStream, { micLive = false } = {}) {
     if (this.recording) return false;
-    const tierName = this._resolveTier(stage, micLive, fpsOverride);
+    const tierName = this._resolveTier(stage, micLive);
     const tier = TIERS[tierName];
 
     /* WEBCODECS PRIMARY — proven by the countdown trial encode. Full-bitrate
@@ -596,8 +571,6 @@ export class Recorder {
       this.tier = tierName;
       this._stage = stage;
       this._canvasTracks = [];
-      this._dupFrames = 0;
-      this._takeFps = tier.captureFps;
       this._acquireWakeLock();
       const periodMs = 1000 / tier.captureFps;
       this._watchdog = setInterval(() => {
@@ -606,7 +579,6 @@ export class Recorder {
           const last = typeof stage.lastCaptureFrameAt === 'number' ? stage.lastCaptureFrameAt : 0;
           if (performance.now() - last > periodMs * 1.5 && typeof stage.forceCaptureFrame === 'function') {
             stage.forceCaptureFrame();
-            this._dupFrames++; // a forced frame is a duplicated picture (Phase 2 telemetry)
           }
         } catch (_) { /* heartbeat must never kill the take */ }
         if (this._lastChunkAt && performance.now() - this._lastChunkAt > 2000 && !this.stalled) {
@@ -671,8 +643,6 @@ export class Recorder {
     this.tier = tierName;
     this._stage = stage;
     this._canvasTracks = canvasStream.getVideoTracks();
-    this._dupFrames = 0;
-    this._takeFps = tier.captureFps;
     this._acquireWakeLock();
 
     /* DECOUPLED FRAME HEARTBEAT + ENCODER HEALTH — the render loop's pushFrame
@@ -690,7 +660,6 @@ export class Recorder {
         const last = typeof stage.lastCaptureFrameAt === 'number' ? stage.lastCaptureFrameAt : 0;
         if (performance.now() - last > periodMs * 1.5 && typeof stage.forceCaptureFrame === 'function') {
           stage.forceCaptureFrame();
-          this._dupFrames++; // a forced frame is a duplicated picture (Phase 2 telemetry)
         }
       } catch (_) { /* heartbeat must never kill the take */ }
       if (this._lastChunkAt && performance.now() - this._lastChunkAt > 2000 && !this.stalled) {
@@ -804,22 +773,6 @@ export class Recorder {
       ext: this.ext,
       tier: this.tier,
       createdAt: new Date().toISOString(),
-      ...this._frameTelemetry(dur),
-    };
-  }
-
-  /** WATCHDOG TELEMETRY → take object (RETENTION_FIX_PLAN Phase 2 item 5 /
-      Phase 6): every watchdog-forced frame is a duplicated picture. The ratio
-      against the take's expected frame count exposes the slideshow the old
-      pipeline shipped silently; effectiveFps is what the viewer actually saw. */
-  _frameTelemetry(dur) {
-    const total = Math.max(1, Math.round(dur * this._takeFps));
-    const dupRatio = Math.min(1, this._dupFrames / total);
-    return {
-      captureFps: this._takeFps,
-      dupFrames: this._dupFrames,
-      dupRatio,
-      effectiveFps: Math.round(this._takeFps * (1 - dupRatio) * 10) / 10,
     };
   }
 
@@ -862,7 +815,6 @@ export class Recorder {
           ext: this.ext,
           tier: this.tier,
           createdAt: new Date().toISOString(),
-          ...this._frameTelemetry(dur),
         });
       };
       /* FLUSH THE TAIL: with 500ms timeslices the final <=500ms of audio+video

@@ -6,9 +6,7 @@ import { PerfRecorder } from '../studio/perf';
 import { vault, PERFORMANCES } from '../studio/vault';
 import { Tracker, makeRig } from '../studio/tracking';
 import { SpideyVoice } from '../studio/spideyVoice';
-import { Recorder, probeFps } from '../studio/recorder';
-import { createTakeDirector } from '../studio/director';
-import { buildTakeReport } from '../studio/reportCard';
+import { Recorder } from '../studio/recorder';
 import { MusicEngine } from '../studio/music';
 import { EMOTE_TO_EXPR } from '../studio/scripts';
 import { createDoor, parseHiddenFrame } from '../studio/door';
@@ -91,15 +89,6 @@ export default function Studio() {
      carries frameZero; null on freestyle takes, so nothing changes for them. */
   const doorRef = useRef(createDoor());
   const doorStateRef = useRef(null);   // { doorSec, resolved, ctaAt, ctaText, ctaFired, insertAt, insertSpec, insertFired }
-  /* THE TAKE DIRECTOR (RETENTION_FIX_PLAN Phase 5) — cold-open hook, the
-     2.5–3s visual-change guarantee, speech-reactive triggers and the
-     freestyle hook burn. Armed per take, ticked in the frame loop. */
-  const directorRef = useRef(createTakeDirector());
-  /* PRE-ROLL GATE (Phase 2 item 3 / Phase 6 item 1) — the countdown runs a
-     2s rolling fps probe; its average feeds pickTier's fpsOverride and, when
-     it still resolves the floor tier, blocks the roll behind an explicit
-     override instead of silently recording a 9fps 720p take. */
-  const preflightRef = useRef({ fps: 0, override: false });
 
   const [booted, setBooted] = useState(null); // null | 'live' | 'sim'
   const [booting, setBooting] = useState(false);
@@ -132,7 +121,6 @@ export default function Studio() {
   const [pipOn, setPipOn] = useState(true);
   const [glitchUi, setGlitchUi] = useState(false);
   const [countdown, setCountdown] = useState(null); // null | 3 | 2 | 1
-  const [preflightBlock, setPreflightBlock] = useState(null); // null | { fps } — the pre-roll gate's go/no-go panel
   const [captionsOn, setCaptionsOn] = useState(true); // default ON: word-by-word captions are the retention layer
   // sound layer UI
   const [musicOn, setMusicOn] = useState(true);
@@ -160,7 +148,6 @@ export default function Studio() {
       try { personalRecorderRef.current.stop(); } catch (_) {}
     }
     try { doorRef.current.abort(); } catch (_) {} // unmount: never strand door-closed
-    try { directorRef.current.stop(stageRef.current); } catch (_) {} // and never a stranded hook burn
     if (stageRef.current) { try { stageRef.current.dispose(); } catch (_) {} }
   }, []);
 
@@ -305,9 +292,6 @@ export default function Studio() {
             rig.expression = EMOTE_TO_EXPR[script.beats[0].emote] || 'calm';
             rig.exprSnap = true;
           }
-          /* the reveal IS a visible change — reset the director's clock so
-             the scheduler fills gaps from here instead of stacking on it */
-          directorRef.current.noteChange(el);
         }
         /* SOFT CTA — own overlay plane, self-clearing, fires exactly once at
            doorSec + likeCta.atSec; can never delay the auto-cut. */
@@ -350,16 +334,7 @@ export default function Studio() {
           const b = script.beats[idx];
           rig.expression = EMOTE_TO_EXPR[b.emote] || 'calm';
           (FX_MAP[b.fx] || FX_MAP.none)(stage, voice, musicRef.current);
-          /* scripted beats keep authority: report in so the director fills
-             gaps around the beat sheet instead of firing on top of it */
-          if (b.fx && b.fx !== 'none') directorRef.current.noteChange(rec.elapsed);
         }
-      }
-      /* THE TAKE DIRECTOR (Phase 5) — per-frame drive while rolling. Door
-         takes tick only after the reveal (the door owns the picture until
-         then); the reveal's noteChange above anchors the scheduler clock. */
-      if (rec.recording && (!ds || ds.resolved)) {
-        directorRef.current.tick(stage, rig, voice, rec.elapsed, dt);
       }
       /* WORD-BY-WORD CAPTIONS — driven by the line actually PLAYING, so the
          karaoke pacing rides the real audio (TTS or uploaded voice), not the
@@ -578,12 +553,7 @@ export default function Studio() {
     /* MIC-AWARE TIER: a live getUserMedia graph + a parallel recognition
        session add real encode-adjacent load — tell the recorder so it steps
        the capture tier down one level on mic takes */
-    const rolled = rec.start(stage, audioStream, {
-      micLive: !!(voice && voice.ready && voice.micMode),
-      /* the countdown's rolling fps probe (Phase 2) — a transient dip in the
-         instantaneous stage.fps can no longer lock the take into `low` */
-      fpsOverride: preflightRef.current.fps,
-    });
+    const rolled = rec.start(stage, audioStream, { micLive: !!(voice && voice.ready && voice.micMode) });
     if (!rolled) {
       // encoder refused at every tier — undo the roll cleanly instead of faking it
       perfRecRef.current.stop();
@@ -605,15 +575,6 @@ export default function Studio() {
         music.startScore();
       }
     }
-    /* ARM THE DIRECTOR (Phase 5) — cold-open entrance beat, the 2.5–3s
-       visual-change guarantee, the freestyle hook burn. Door takes skip the
-       cold open: the reveal IS the entrance. */
-    directorRef.current.start(stage, rig, {
-      freestyle: !script,
-      scripted: !!script,
-      captions: captionsRef.current,
-      skipColdOpen: doorTake,
-    });
     doneTRef.current = 0;
     outroFiredRef.current = false;
     setRecording(true);
@@ -660,13 +621,6 @@ export default function Studio() {
          lower tier + webm-first ladder BEFORE the take rolls — the performer
          never burns a take discovering the machine can't keep up. */
       rec.warmup(stage, { micLive: !!(voice && voice.ready && voice.micMode) }).catch(() => {});
-      /* PRE-ROLL FPS PROBE (Phase 2 / Phase 6 item 1) — a 2s rolling average
-         sampled DURING the countdown. Its result feeds pickTier's fpsOverride
-         at roll time, and gates the roll: below 28fps the machine would
-         resolve the floor tier, so the take is blocked behind an explicit
-         override instead of silently shipping a 9fps 720p slideshow. */
-      preflightRef.current = { fps: 0, override: false };
-      probeFps(stage, 2.2).then((f) => { preflightRef.current.fps = f; }).catch(() => {});
       // 3-2-1 before the roll; ticks are synth blips (silent if audio never came up)
       let n = 3;
       setCountdown(n);
@@ -680,24 +634,6 @@ export default function Studio() {
           clearInterval(countdownRef.current);
           countdownRef.current = null;
           setCountdown(null);
-          /* THE GATE — probe done, verdict in: a floor-tier machine gets the
-             go/no-go panel with specific fixes, never a silent broken take */
-          const pf = preflightRef.current;
-          if (pf.fps > 0 && pf.fps < 28 && !pf.override) {
-            /* one snapshot of everything the panel reports: measured fps
-               (the blocker), camera resolution and framing-clamp status —
-               Phase 6 item 1's single go/no-go read of the machine */
-            const trk = trackerRef.current;
-            const cam = trk && trk.video && trk.video.videoWidth
-              ? `${trk.video.videoWidth}×${trk.video.videoHeight}` : null;
-            const fr = stage.framing;
-            setPreflightBlock({
-              fps: Math.round(pf.fps),
-              cam,
-              framingOk: !(fr && fr.clamped),
-            });
-            return;
-          }
           if (musicRef.current) musicRef.current.blip(true);
           startRecording();
         }
@@ -709,10 +645,10 @@ export default function Studio() {
          frame, so closeDoor runs AFTER the await. A MANUAL stop is a
          bail-out mid-take: instant abort FIRST, so the performer sees the
          studio reset immediately and no neutral-pose frame ships anyway. */
-      if (!auto) { closeDoor(); directorRef.current.stop(stage); }
+      if (!auto) closeDoor();
       const take = await rec.stop();
       const perf = perfRecRef.current.stop();
-      if (auto) { closeDoor(); directorRef.current.stop(stage); } // seam pose held through the flush; restore now
+      if (auto) closeDoor(); // seam pose held through the flush; restore now
       if (voiceRef.current) voiceRef.current.stopPlayback(); // cut any mid-line audio with the take
       if (musicRef.current) musicRef.current.stopScore();    // groove out, ambient bed back
       setRecording(false); setElapsed(0);
@@ -721,40 +657,22 @@ export default function Studio() {
       if (take) {
         const script = scriptRef.current;
         const name = script ? `transmission-${String(script.number).padStart(2, '0')}-take` : 'spacespidey-freestyle-take';
-        /* POST-TAKE REPORT CARD (Phase 6 item 2) — recorder frame telemetry +
-           the voice engine's loudness verification + the director's counters,
-           folded into one-glance pass/fail rows on the take entry. The voice
-           meter flushes on the first update after the roll ends — the awaited
-           stop() above (>=400ms settle) guarantees it has landed by now. */
-        const report = buildTakeReport(
-          take,
-          directorRef.current.report,
-          voiceRef.current ? voiceRef.current.lastTakeAudioReport : null,
-        );
-        const entry = { ...take, id: `${Date.now()}`, name: `${name}-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}`, report };
+        const entry = { ...take, id: `${Date.now()}`, name: `${name}-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}` };
         setTakes((p) => [entry, ...p]);
            // the take as DATA: a `.veyl` rig timeline into the Vault for the Omega Room
         if (perf && perf.frames > 15) {
           perf.name = entry.name;
           vault.put(PERFORMANCES, perf).catch(() => {});
         }
-        /* PUBLISH GUARD (Phase 6 item 3) — a take failing a critical row
-           (effective fps < 24, loudness/peak out of spec, floor tier) is
-           never silently downloaded: the HUD says why and the takes rail
-           shows the failing rows, with SAVE as the explicit override. */
-        if (report.pass) {
-          /* auto-download — the anchor MUST be in the document: several browsers
-             silently ignore .click() on a detached anchor, and the extension now
-             always matches the container the encoder actually produced */
-          const a = document.createElement('a');
-          a.href = take.url; a.download = `${entry.name}.${take.ext || 'webm'}`;
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => { try { a.remove(); } catch (_) {} }, 1000);
-        } else {
-          stage.setHud('COSMIC WEAVER ── TAKE FLAGGED — CHECK THE REPORT CARD BEFORE PUBLISHING');
-        }
+        /* auto-download — the anchor MUST be in the document: several browsers
+           silently ignore .click() on a detached anchor, and the extension now
+           always matches the container the encoder actually produced */
+        const a = document.createElement('a');
+        a.href = take.url; a.download = `${entry.name}.${take.ext || 'webm'}`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { try { a.remove(); } catch (_) {} }, 1000);
         axios.post(`${API}/takes`, {
           name: entry.name, transmission: script ? script.number : null,
           world: stage.worldKey, duration: take.duration, size: take.size, mime: take.mime,
@@ -786,7 +704,6 @@ export default function Studio() {
     rec.cancel();               // discard every byte of the bad take
     perfRecRef.current.stop();  // and its rig timeline
     closeDoor();                // restart: fresh roll re-arms the door itself
-    directorRef.current.stop(stage); // fresh roll re-arms the director too
     if (voiceRef.current) voiceRef.current.stopPlayback();
     if (musicRef.current) musicRef.current.stopScore();
     stage.setCaption(null);
@@ -1160,64 +1077,6 @@ export default function Studio() {
                 <span className="mono text-[10px]" style={{ color: 'var(--cw-text-2)', letterSpacing: '0.3em' }}>
                   ROLLING IN {countdown}… · SPACE / REC CANCELS
                 </span>
-              </div>
-            )}
-            {/* PRE-ROLL GATE (RETENTION_FIX_PLAN Phase 2 item 3 / Phase 6 item 1) —
-                the countdown's fps probe resolved the floor tier: a silent 9fps
-                720p take is exactly what killed retention, so the roll is BLOCKED
-                behind this go/no-go panel. Specific fixes, explicit override. */}
-            {preflightBlock !== null && (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 p-6"
-                style={{ background: 'rgba(0,0,0,0.78)' }} data-testid="preflight-panel"
-                role="alertdialog" aria-modal="true" aria-label="Performance too low for quality recording">
-                <span className="mono font-bold text-[13px] text-center" style={{ color: 'var(--cw-red)', letterSpacing: '0.2em' }}>
-                  ⚠ PERFORMANCE TOO LOW FOR A QUALITY TAKE
-                </span>
-                <div className="mono text-[10px] w-full max-w-[260px] flex flex-col gap-1.5" style={{ color: 'var(--cw-text-2)' }}>
-                  <div className="flex justify-between gap-2">
-                    <span>STAGE FPS</span>
-                    <span style={{ color: 'var(--cw-red)' }}>{preflightBlock.fps} / 28 NEEDED</span>
-                  </div>
-                  {preflightBlock.cam && (
-                    <div className="flex justify-between gap-2">
-                      <span>CAMERA</span><span>{preflightBlock.cam}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between gap-2">
-                    <span>FRAMING</span>
-                    <span style={{ color: preflightBlock.framingOk ? 'var(--cw-green)' : 'var(--cw-red)' }}>
-                      {preflightBlock.framingOk ? 'OK' : 'TOO CLOSE — STEP BACK'}
-                    </span>
-                  </div>
-                </div>
-                <p className="mono text-[9px] text-center max-w-[280px] text-pretty" style={{ color: 'var(--cw-muted)' }}>
-                  AT THIS SPEED THE TAKE RECORDS AS A 720p SLIDESHOW.<br />
-                  CLOSE OTHER TABS · PLUG IN POWER · DISABLE LOW-POWER MODE · THEN HIT REC AGAIN.
-                </p>
-                <div className="flex items-center gap-3">
-                  <button className="mono text-[10px] px-3 py-2 cursor-pointer"
-                    style={{ background: 'transparent', border: '1px solid var(--cw-border)', color: 'var(--cw-text-2)' }}
-                    data-testid="preflight-cancel"
-                    onClick={() => {
-                      setPreflightBlock(null);
-                      /* the warmup probe held the take's render scale — give
-                         the preview its full quality back, same as a cancelled
-                         countdown */
-                      const st = stageRef.current;
-                      if (st && st.releaseCapture) st.releaseCapture();
-                    }}>CANCEL</button>
-                  <button className="mono text-[10px] px-3 py-2 cursor-pointer"
-                    style={{ background: 'rgba(255,26,46,0.12)', border: '1px solid var(--cw-red)', color: 'var(--cw-red)' }}
-                    data-testid="preflight-override"
-                    onClick={() => {
-                      /* EXPLICIT override — the plan allows the roll, but only
-                         on a deliberate click, never silently */
-                      preflightRef.current.override = true;
-                      setPreflightBlock(null);
-                      if (musicRef.current) musicRef.current.blip(true);
-                      startRecording();
-                    }}>RECORD ANYWAY</button>
-                </div>
               </div>
             )}
           </div>

@@ -661,22 +661,6 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
   let everLocked = false;  // once true, the suit never reveals raw video again
   let jawAnim = 0;         // eased mask jaw — audio-authoritative during script takes
 
-  /* ---- FRAMING CLAMP (RETENTION_FIX_PLAN Phase 3) ----
-     The webcam cover-crop keeps only ~32% of a landscape sensor's width, so at
-     normal sitting distance the head MUST fill the frame — the forensic take
-     shipped with the mask top cropped and the jaw on the bottom edge. The fix
-     is a virtual punch-out: when the head capsule exceeds ~55% of frame height
-     (or headroom above the mask top drops under ~9%), the whole person layer
-     scales down, ANCHORED TO THE FRAME BOTTOM so the crop's torso cut-off can
-     never float up into view. The world layer shows through the reclaimed
-     margin — chest-up medium shot as the resting state, always. Deliberate
-     punch-ins (stage.punch) ride the camera FOV on top and stay time-limited. */
-  const FRAME_HEAD_MAX = 0.55;   // head capsule may never exceed this frame-height fraction
-  const FRAME_HEADROOM = 0.09;   // required margin above the mask top at rest
-  const FRAME_SCALE_MIN = 0.62;  // never punch out beyond this — a tiny figure reads broken
-  const framing = { scale: 1, headFrac: 0, headroomFrac: 0, clamped: false, ok: false };
-  let frameScale = 1;
-
   function updateSegments() {
     const p = tracker.points.pose;
     uniforms.uPoseOk.value = p.ok;
@@ -923,32 +907,6 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     } else {
       uniforms.uFaceOk.value = f.ok;
     }
-    /* FRAMING CLAMP (Phase 3) — measured off the same skull frame the mask
-       uses: head capsule radius = eyeDist·1.40·1.86 in uv-x units, converted
-       to a frame-height fraction via ASPECT. The scale eases slowly (~2.5/s)
-       so a correction reads as a gentle camera adjust, never a jitter; on a
-       tracking dropout the last framing simply holds. */
-    if (f.ok > 0.4) {
-      const headR = Math.max(0.04, f.eyeDist * 1.40) * 1.86;      // uv-x units
-      const headFrac = (headR * 2) / ASPECT;                      // of frame height
-      const topFrac = Math.max(0, f.center.y - headR / ASPECT);   // margin above the mask top
-      let target = headFrac > FRAME_HEAD_MAX ? FRAME_HEAD_MAX / headFrac : 1;
-      // headroom rule: after a bottom-anchored scale s, topFrac' = 1 - s·(1-topFrac)
-      target = Math.min(target, (1 - FRAME_HEADROOM) / Math.max(0.05, 1 - topFrac));
-      target = Math.min(1, Math.max(FRAME_SCALE_MIN, target));
-      frameScale += (target - frameScale) * (1 - Math.exp(-dt * 2.5));
-      framing.headFrac = headFrac;
-      framing.headroomFrac = topFrac;
-      framing.ok = true;
-    } else {
-      framing.ok = false;
-    }
-    framing.scale = frameScale;
-    framing.clamped = frameScale < 0.995;
-    group.scale.set(frameScale, frameScale, 1);
-    // bottom-anchored: the crop's lower edge stays pinned to the frame bottom
-    group.position.y = -(planeH * (1 - frameScale)) / 2;
-
     updateSegments();
     updateHands();
 
@@ -991,5 +949,5 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
     person.geometry.dispose(); overlay.geometry.dispose();
   }
 
-  return { group, update, setRim, dispose, framing };
+  return { group, update, setRim, dispose };
 }
