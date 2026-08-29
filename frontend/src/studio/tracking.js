@@ -278,6 +278,7 @@ export class Tracker {
         rig.headPitch = lerp(rig.headPitch, Math.asin(Math.max(-1, Math.min(1, -m[9]))), kFace);
       }
     } catch (_) { rig.tracking.face = false; }
+    this.ml.cost.face = this.ml.cost.face * 0.8 + (performance.now() - faceT0) * 0.2;
 
     /* ---- POSE (staggered — Phase 1: runs every iv.pose frames; the raw
        result is cached and the smoothed state interpolates toward it EVERY
@@ -334,58 +335,112 @@ export class Tracker {
       pts.pose.ok = lerp(pts.pose.ok, 0, kBody * 0.5);
     }
 
-    /* ---- HANDS (every frame — real gloved fingers glued to yours) ---- */
-    try {
-      const hr = this.hand.detectForVideo(this.canvas, now + 1);
-      const found = hr.landmarks || [];
-      // match each detected hand to the nearest previously tracked slot (wrist distance)
-      // so a hand never "jumps" between slots frame-to-frame
-      const claimed = [false, false];
-      const assign = new Array(found.length).fill(-1);
-      found.forEach((lm, fi) => {
-        let bestSlot = -1, bestD = 1e9;
+    /* ---- HANDS (staggered — Phase 1: detection every iv.hands frames; the
+       smoothed slots interpolate toward the cached raw landmarks EVERY frame,
+       so the gloves stay glued to your fingers while the detector runs at a
+       third of the old cost) ---- */
+    if (this.frame - this.ml.last.hands >= this.ml.iv.hands && (mlFits(this.ml.cost.hands) || !this._rawHands)) {
+      this.ml.last.hands = this.frame;
+      const t0 = performance.now();
+      try {
+        const hr = this.hand.detectForVideo(this.canvas, now + 1);
+        const found = hr.landmarks || [];
+        // match each detected hand to the nearest previously tracked slot (wrist distance)
+        // so a hand never "jumps" between slots detection-to-detection
+        const claimed = [false, false];
+        const assign = new Array(found.length).fill(-1);
+        found.forEach((lm, fi) => {
+          let bestSlot = -1, bestD = 1e9;
+          for (let s = 0; s < 2; s++) {
+            if (claimed[s]) continue;
+            const slot = pts.hands.list[s];
+            const d = slot.lm ? Math.hypot(slot.lm[0].x - lm[0].x, slot.lm[0].y - lm[0].y) : 0.35 + s * 0.01;
+            if (d < bestD) { bestD = d; bestSlot = s; }
+          }
+          if (bestSlot >= 0) { claimed[bestSlot] = true; assign[fi] = bestSlot; }
+        });
+        if (!this._rawHands) this._rawHands = [{ seen: false, lm: null }, { seen: false, lm: null }];
         for (let s = 0; s < 2; s++) {
-          if (claimed[s]) continue;
-          const slot = pts.hands.list[s];
-          const d = slot.lm ? Math.hypot(slot.lm[0].x - lm[0].x, slot.lm[0].y - lm[0].y) : 0.35 + s * 0.01;
-          if (d < bestD) { bestD = d; bestSlot = s; }
+          const fi = assign.indexOf(s);
+          const raw = this._rawHands[s];
+          if (fi >= 0) {
+            const lm = found[fi];
+            raw.seen = true;
+            if (!raw.lm) raw.lm = lm.map((p) => ({ x: p.x, y: p.y }));
+            else lm.forEach((p, i) => { const q = raw.lm[i]; q.x = p.x; q.y = p.y; });
+          } else {
+            raw.seen = false;
+          }
         }
-        if (bestSlot >= 0) { claimed[bestSlot] = true; assign[fi] = bestSlot; }
-      });
-      for (let s = 0; s < 2; s++) {
-        const fi = assign.indexOf(s);
-        const slot = pts.hands.list[s];
-        if (fi >= 0) {
-          const lm = found[fi];
-          slot.ok = lerp(slot.ok, 1, kBody);
-          if (!slot.lm) slot.lm = lm.map((p) => ({ x: p.x, y: p.y }));
-          else lm.forEach((p, i) => { const q = slot.lm[i]; q.x = lerp(q.x, p.x, kPos); q.y = lerp(q.y, p.y, kPos); });
-        } else {
-          slot.ok = lerp(slot.ok, 0, kBody);
-        }
+      } catch (_) { if (this._rawHands) this._rawHands.forEach((r) => { r.seen = false; }); }
+      this.ml.cost.hands = this.ml.cost.hands * 0.8 + (performance.now() - t0) * 0.2;
+    }
+    /* every-frame interpolation toward the latest raw hands */
+    for (let s = 0; s < 2; s++) {
+      const slot = pts.hands.list[s];
+      const raw = this._rawHands && this._rawHands[s];
+      if (raw && raw.seen && raw.lm) {
+        slot.ok = lerp(slot.ok, 1, kBody);
+        if (!slot.lm) slot.lm = raw.lm.map((p) => ({ x: p.x, y: p.y }));
+        else raw.lm.forEach((p, i) => { const q = slot.lm[i]; q.x = lerp(q.x, p.x, kPos); q.y = lerp(q.y, p.y, kPos); });
+      } else {
+        slot.ok = lerp(slot.ok, 0, kBody);
       }
-    } catch (_) { pts.hands.list.forEach((s) => { s.ok = lerp(s.ok, 0, kBody); }); }
+    }
 
-    /* ---- SEGMENTATION (every frame, small input — cuts you out of the room) ---- */
-    try {
-      this.segCtx.drawImage(this.canvas, 0, 0, SEG_W, SEG_H);
-      const res = this.seg.segmentForVideo(this.segCanvas, now);
-      const mask = res.confidenceMasks && res.confidenceMasks[0];
-      if (mask) {
-        const fresh = mask.getAsFloat32Array();
-        // temporal blend: the matte edge stops flickering frame-to-frame
-        if (pts.seg.data && pts.seg.data.length === fresh.length) {
-          const prev = pts.seg.data;
-          for (let i = 0; i < fresh.length; i++) fresh[i] = prev[i] * 0.38 + fresh[i] * 0.62;
+    /* ---- SEGMENTATION (staggered — Phase 1: runs every iv.seg frames; the
+       previous smoothed matte is simply REUSED between runs (the temporal
+       blend below already smears detections across frames, so a reused matte
+       is indistinguishable at 2-frame cadence). Working resolution is
+       ADAPTIVE: 288x512 floor, raised to 432x768 only when the budget guard
+       measures real headroom — cleaner matte edges paid for with reclaimed
+       time, never with fps) ---- */
+    if (this.frame - this.ml.last.seg >= this.ml.iv.seg && (mlFits(this.ml.cost.seg) || !pts.seg.ok)) {
+      this.ml.last.seg = this.frame;
+      const t0 = performance.now();
+      try {
+        const sw = this.ml.segHi ? SEG_HI_W : SEG_W;
+        const sh = this.ml.segHi ? SEG_HI_H : SEG_H;
+        if (this.segCanvas.width !== sw) { this.segCanvas.width = sw; this.segCanvas.height = sh; }
+        this.segCtx.drawImage(this.canvas, 0, 0, sw, sh);
+        const res = this.seg.segmentForVideo(this.segCanvas, now);
+        const mask = res.confidenceMasks && res.confidenceMasks[0];
+        if (mask) {
+          const fresh = mask.getAsFloat32Array();
+          // temporal blend: the matte edge stops flickering run-to-run
+          // (only when the resolution matches — a segHi flip starts clean)
+          if (pts.seg.data && pts.seg.data.length === fresh.length) {
+            const prev = pts.seg.data;
+            for (let i = 0; i < fresh.length; i++) fresh[i] = prev[i] * 0.38 + fresh[i] * 0.62;
+          }
+          pts.seg.data = fresh;
+          pts.seg.w = mask.width; pts.seg.h = mask.height;
+          pts.seg.version++;
+          pts.seg.ok = true;
+          mask.close();
         }
-        pts.seg.data = fresh;
-        pts.seg.w = mask.width; pts.seg.h = mask.height;
-        pts.seg.version++;
-        pts.seg.ok = true;
-        mask.close();
-      }
-      rig.tracking.hands = pts.seg.ok; // telemetry slot reused for the matte
-    } catch (_) { pts.seg.ok = false; rig.tracking.hands = false; }
+        rig.tracking.hands = pts.seg.ok; // telemetry slot reused for the matte
+      } catch (_) { pts.seg.ok = false; rig.tracking.hands = false; }
+      this.ml.cost.seg = this.ml.cost.seg * 0.8 + (performance.now() - t0) * 0.2;
+    }
+
+    /* ---- FRAME-BUDGET GUARD (Phase 1) — the rolling per-tick ML time drives
+       both the cadence and the seg working resolution. Sustained load above
+       14ms widens the stagger (pose→3, hands→4, seg→3) and drops hi-res seg;
+       back under 8ms it tightens again, and headroom under 9ms buys the
+       432x768 matte. Hysteresis on every threshold: no oscillation. */
+    this.ml.avgMs = this.ml.avgMs === 0
+      ? (performance.now() - mlStart)
+      : this.ml.avgMs * 0.9 + (performance.now() - mlStart) * 0.1;
+    if (!this.ml.wide && this.ml.avgMs > ML_BUDGET_WIDEN_MS) {
+      this.ml.wide = true;
+      this.ml.iv = { ...ML_WIDE };
+    } else if (this.ml.wide && this.ml.avgMs < ML_BUDGET_TIGHTEN_MS) {
+      this.ml.wide = false;
+      this.ml.iv = { ...ML_TIGHT };
+    }
+    if (!this.ml.segHi && !this.ml.wide && this.ml.avgMs < ML_SEG_HI_MS) this.ml.segHi = true;
+    else if (this.ml.segHi && this.ml.avgMs > ML_SEG_LO_MS) this.ml.segHi = false;
   }
 
   simTick(t, dt) {

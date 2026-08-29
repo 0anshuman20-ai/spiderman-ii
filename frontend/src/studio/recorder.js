@@ -241,9 +241,11 @@ export class Recorder {
     this._wakeLock = null;
   }
 
-  /** resolve the tier for a roll, folding in the warmup self-test verdict */
-  _resolveTier(stage, micLive) {
-    let name = pickTier(stage, { micLive });
+  /** resolve the tier for a roll, folding in the warmup self-test verdict.
+      fpsOverride: the countdown's probeFps() rolling average — a transient
+      dip in the instantaneous stage.fps can no longer lock in `low`. */
+  _resolveTier(stage, micLive, fpsOverride = 0) {
+    let name = pickTier(stage, { micLive, fpsOverride });
     if (this._forcedTier && TIER_ORDER.indexOf(this._forcedTier) > TIER_ORDER.indexOf(name)) {
       name = this._forcedTier;
     }
@@ -341,9 +343,9 @@ export class Recorder {
       same stream/codec and confirm a chunk actually arrives. If it doesn't,
       drop one tier + fall back a codec BEFORE the real take starts — the
       performer never burns a take discovering the encoder can't keep up. */
-  async warmup(stage, { micLive = false } = {}) {
+  async warmup(stage, { micLive = false, fpsOverride = 0 } = {}) {
     if (this.recording) return true;
-    const tierName = this._resolveTier(stage, micLive);
+    const tierName = this._resolveTier(stage, micLive, fpsOverride);
     const tier = TIERS[tierName];
     /* WEBCODECS FIRST — if the trial encode proves the machine can encode at
        this tier via WebCodecs, the take will use that path (no WebRTC rate-
@@ -577,9 +579,9 @@ export class Recorder {
     }
   }
 
-  start(stage, voiceStream, { micLive = false } = {}) {
+  start(stage, voiceStream, { micLive = false, fpsOverride = 0 } = {}) {
     if (this.recording) return false;
-    const tierName = this._resolveTier(stage, micLive);
+    const tierName = this._resolveTier(stage, micLive, fpsOverride);
     const tier = TIERS[tierName];
 
     /* WEBCODECS PRIMARY — proven by the countdown trial encode. Full-bitrate
