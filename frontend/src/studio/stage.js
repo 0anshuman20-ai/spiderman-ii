@@ -236,7 +236,13 @@ export function createStage(canvas) {
     hudTex.needsUpdate = true;
   }
 
-  // ---- CAPTION lower-third burned into the recording (bottom of frame) ----
+  /* ---- CAPTIONS burned into the recording ----
+     CAPTION PLACEMENT FIX (RETENTION_FIX_PLAN Phase 5 item 4): the karaoke
+     line used to sit at y=-0.19 — the lower third, exactly where the torso
+     lives on a chest-up medium shot (words clipped by the body) and where
+     platform UI (caption bar, progress scrubber) covers the frame. It now
+     rides the UPPER-MIDDLE safe zone: just above frame center, clear of the
+     torso below and the mask above, inside every platform's safe area. */
   const capCanvas = document.createElement('canvas'); capCanvas.width = 2048; capCanvas.height = 440; // 2×: crisp in the 1080p encode
   const capCtx = capCanvas.getContext('2d');
   const capTex = new THREE.CanvasTexture(capCanvas);
@@ -245,7 +251,7 @@ export function createStage(canvas) {
     new THREE.PlaneGeometry(0.34, 0.073),
     new THREE.MeshBasicMaterial({ map: capTex, transparent: true, depthTest: false, depthWrite: false }),
   );
-  cap.position.set(0, -0.19, -1);
+  cap.position.set(0, 0.055, -1);
   cap.renderOrder = 1000; // above the suit layer
   camera.add(cap);
 
@@ -255,8 +261,8 @@ export function createStage(canvas) {
      the auto-cut can never be disturbed by a burn, a CTA flash or an insert.
 
        burnPlane   — the frame-zero hook (frameZero), 800-weight condensed
-                     over a backing bar, ~65% down the frame (ABOVE the
-                     karaoke lower-third at y=-0.19: they cannot collide)
+                     over a backing bar, ~65% down the frame (BELOW the
+                     karaoke line, now at y=+0.055: they cannot collide)
        ctaPlane    — the soft CTA, self-clearing ~1s, never queued
        insertPlane — the hiddenFrame glyph+text flash (~0.1s), center frame
 
@@ -279,7 +285,9 @@ export function createStage(canvas) {
   /* 2× canvases: the planes are small in NDC but the recording is 1080×1920 —
      a 1024-wide canvas was visibly soft in the encode. */
   const burnPlane = makeOverlayPlane(2048, 600, 0.30, 0.088, -0.088, 1001);
-  const ctaPlane = makeOverlayPlane(2048, 320, 0.26, 0.041, 0.115, 1002);
+  /* CTA lifted to 0.165 (Phase 5): clear of the karaoke line's new
+     upper-middle position at y=0.055 (top edge ≈ 0.092) */
+  const ctaPlane = makeOverlayPlane(2048, 320, 0.26, 0.041, 0.165, 1002);
   const insertPlane = makeOverlayPlane(1024, 640, 0.30, 0.1875, 0.01, 1003);
   let ctaUntil = 0;     // performance.now()/1000 the CTA self-clears at
   let insertUntil = 0;  // performance.now()/1000 the insert self-clears at
@@ -456,7 +464,7 @@ export function createStage(canvas) {
     if (text) {
       capCtx.font = `700 84px ${FONT_STACK}`;
       capCtx.textAlign = 'center';
-      // word-wrap into at most 3 lines
+      // word-wrap into at most 2 lines (Phase 5 item 4: max 2 caption lines)
       const words = String(text).toUpperCase().split(/\s+/);
       const lines = [];
       let line = '';
@@ -464,9 +472,9 @@ export function createStage(canvas) {
         const next = line ? `${line} ${w2}` : w2;
         if (capCtx.measureText(next).width > 1880 && line) { lines.push(line); line = w2; }
         else line = next;
-        if (lines.length === 3) break;
+        if (lines.length === 2) break;
       }
-      if (line && lines.length < 3) lines.push(line);
+      if (line && lines.length < 2) lines.push(line);
       const lh = 116;
       const y0 = 220 - ((lines.length - 1) * lh) / 2;
       lines.forEach((l, i) => {
@@ -701,7 +709,11 @@ export function createStage(canvas) {
     }
   }
 
-  let punchT = -10, glitchT = 0, running = true, lastT = performance.now() / 1000;
+  let punchT = -10, punchAmp = 5, glitchT = 0, running = true, lastT = performance.now() / 1000;
+  /* Phase 5 (RETENTION_FIX_PLAN) — director-driven world/light events:
+     energyT boosts the audio-reactive world energy for a beat; lightT lifts
+     the tone-mapping exposure a hair and decays. Both are subtle by design. */
+  let energyT = 0, lightT = 0;
   let fpsAcc = 0, fpsN = 0, fps = 0;
   /* IN-TAKE AUTO-DEGRADE — seconds the render loop has spent under ~22fps
      while a capture is live. A struggling take sheds quality instead of
@@ -776,8 +788,11 @@ export function createStage(canvas) {
         simFace[FACE.level] = rig.level;
         simActor.idle(t, simFace, Math.min(1, rig.level * 1.4));
       }
-      // audio-reactive worlds: the smoothed voice level pulses the scene
-      if (world.setEnergy) world.setEnergy(rig ? rig.level : 0);
+      // audio-reactive worlds: the smoothed voice level pulses the scene —
+      // the director's energyPulse (Phase 5) rides on top and decays out
+      if (energyT > 0) energyT = Math.max(0, energyT - dt);
+      const energyBoost = Math.min(0.7, energyT * 1.2);
+      if (world.setEnergy) world.setEnergy(Math.min(1, (rig ? rig.level : 0) + energyBoost));
       world.update(t, dt);
 
       // parallax: the space world shifts opposite your real head movement -> true depth
@@ -793,10 +808,22 @@ export function createStage(canvas) {
       camera.position.z = baseCam.z - rootZ * 0.35;
       const sincePunch = t - punchT;
       const punch = sincePunch < 1.2 ? Math.exp(-sincePunch * 4) : 0;
-      camera.fov = 34 - punch * 5;
+      /* punchAmp (Phase 5): the director's camera language — positive = a
+         punch-in that settles out, negative = a wide open settling in */
+      camera.fov = 34 - punch * punchAmp;
       camera.updateProjectionMatrix();
       camera.lookAt(0, 1.34, 0);
       handheld.apply(camera, t, 0);
+      /* SPEECH-REACTIVE INTENSITY (Phase 5 item 3) — live speech energy adds
+         a micro sway + focus flutter on top of the handheld solve, so the
+         camera visibly "performs" louder lines. Amplitudes are tiny: the
+         audience must feel it, never see it. */
+      const perfE = rig ? Math.min(1, rig.level || 0) : 0;
+      if (perfE > 0.02) {
+        camera.rotation.z += Math.sin(t * 5.3) * 0.0022 * perfE;
+        camera.fov += Math.sin(t * 3.7) * 0.35 * perfE;
+        camera.updateProjectionMatrix();
+      }
 
       /* THE DOOR's pose rides ON TOP of the handheld solve — the door frames
          the shot, the handheld keeps it human. exposure always applies (1
@@ -809,7 +836,11 @@ export function createStage(canvas) {
       camera.fov += doorCam.fov;
         camera.updateProjectionMatrix();
       }
-      renderer.toneMappingExposure = BASE_EXPOSURE * (doorCam.active ? doorCam.exposure : 1);
+      /* lightShift (Phase 5): a brief exposure lift the director can fire as
+         a visible-change beat; decays smoothly and stacks under the door */
+      if (lightT > 0) lightT = Math.max(0, lightT - dt);
+      const lightLift = 1 + Math.min(1, lightT * 1.8) * 0.14;
+      renderer.toneMappingExposure = BASE_EXPOSURE * (doorCam.active ? doorCam.exposure : 1) * lightLift;
 
       if (glitchT > 0) glitchT -= dt;
       updateCaptionAnim();
@@ -893,8 +924,15 @@ export function createStage(canvas) {
     },
     get worldParams() { return worldParams; },
     get worldKey() { return worldKey; },
-    punch() { punchT = performance.now() / 1000; },
+    /* amp (Phase 5): positive = punch-in settling out (the classic), negative
+       = open wide and settle in — the director alternates both, and keeps
+       amplitudes below the old 5 so a reduced-res take never reads soft */
+    punch(amp = 5) { punchT = performance.now() / 1000; punchAmp = amp; },
     glitch(sec = 0.4) { glitchT = sec; if (stage.rig) stage.rig.glitch = sec; },
+    /* Phase 5 director events — a world energy surge and a light shift, both
+       self-decaying, both safe to fire mid-take at any tier */
+    energyPulse(sec = 1.1) { energyT = Math.max(energyT, sec); },
+    lightShift(sec = 0.9) { lightT = Math.max(lightT, sec); },
     setHud,
     setHudOn(on) { hudOn = on; },
     setCaption,
