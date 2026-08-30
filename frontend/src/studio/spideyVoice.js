@@ -151,6 +151,82 @@ function splitOnSilence(buf, ctx, { minGap = 0.35, minSeg = 0.25 } = {}) {
   return spans.map(([s0, s1]) => sliceBuffer(buf, ctx, s0, s1));
 }
 
+/* ---- SCRIPT ALIGNMENT — the karaoke's source of truth in live-mic mode ----
+   The recognizer's transcript is never trusted as a raw word count; it is
+   fuzzy-matched against the KNOWN script. Normalization collapses case,
+   punctuation, apostrophes and hyphens so "Web-Slinger" ≙ "web slinger" ≙
+   "webslinger". A skip-ahead match (misheard/dropped word) commits only with
+   bigram confirmation, so a coincidental word can't teleport the highlight. */
+
+/** one script word prepared for matching: norm = fully collapsed form,
+    parts = hyphen segments (so a hyphenated word can match 1..n heard tokens) */
+function makeScriptWord(raw) {
+  const cleaned = String(raw || '').toLowerCase().replace(/[^a-z0-9'\u2019-]+/g, '');
+  const parts = cleaned.split('-').map((p) => p.replace(/['\u2019]/g, '')).filter(Boolean);
+  const norm = parts.join('');
+  return { raw, norm, parts: parts.length ? parts : [''] };
+}
+
+/** normalize a transcript into matchable tokens (hyphens/apostrophes collapsed) */
+function normTokens(text) {
+  return String(text || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-z0-9'\u2019-]+/g, '').replace(/[-'\u2019]/g, ''))
+    .filter(Boolean);
+}
+
+/** heard tokens starting at ti vs. script word sw: returns how many tokens the
+    word consumes (0 = no match). A hyphenated script word matches either its
+    joined form ("webslinger") or its split parts ("web" "slinger"). */
+function matchScriptWord(sw, tokens, ti) {
+  const t = tokens[ti];
+  if (!t || !sw.norm) return 0;
+  if (t === sw.norm) return 1;
+  if (sw.parts.length > 1) {
+    for (let k = 0; k < sw.parts.length; k++) {
+      if (tokens[ti + k] !== sw.parts[k]) return 0;
+    }
+    return sw.parts.length;
+  }
+  return 0;
+}
+
+/** align heard tokens against the flattened script from a committed position.
+    Sliding look-ahead window (~4 script words) with skip tolerance; skip-ahead
+    commits only with bigram confirmation. Returns the furthest confidently
+    matched flat position (index of the NEXT expected script word). */
+function alignToScript(tokens, script, fromIdx) {
+  let pos = Math.max(0, fromIdx | 0);
+  let ti = 0;
+  const LOOK = 4;
+  while (ti < tokens.length && pos < script.length) {
+    let advanced = false;
+    const limit = Math.min(script.length, pos + LOOK);
+    for (let s = pos; s < limit; s++) {
+      const used = matchScriptWord(script[s], tokens, ti);
+      if (!used) continue;
+      if (s === pos) {
+        pos = s + 1;
+        ti += used;
+        advanced = true;
+        break;
+      }
+      /* skip-ahead: only commit when the NEXT heard token also matches the
+         NEXT script word — a lone coincidental match can't jump the highlight */
+      const used2 = s + 1 < script.length ? matchScriptWord(script[s + 1], tokens, ti + used) : 0;
+      if (used2) {
+        pos = s + 2;
+        ti += used + used2;
+        advanced = true;
+        break;
+      }
+    }
+    if (!advanced) ti += 1; // unmatched heard token — skip it, stay anchored
+  }
+  return pos;
+}
+
 export class SpideyVoice {
   constructor({ onStatus } = {}) {
     this.onStatus = onStatus;
@@ -198,17 +274,29 @@ export class SpideyVoice {
     this._lineDurT = 0;        // seconds of real voice inside the current line
     this._spw = 0.36;          // YOUR measured seconds-per-word (adapts every line)
     this._lastLiveElapsed = 0; // monotonic guard for the live caption clock
-    /* live speech recognition: counts the words you have ACTUALLY spoken so
-       the karaoke highlight rides your real words, not a timing estimate */
+    /* live speech recognition, SCRIPT-ALIGNED: the transcript is fuzzy-matched
+       against the known script instead of blindly counted. Two-tier commit:
+       _alignPos advances ONLY from final results (never regresses, never
+       inflates on interim retractions); _displayPos extends it transiently
+       with the current interim tokens for a low-latency highlight. */
     this._recog = null;
     this._recogOn = false;
-    this._recogWords = 0;
-    this._wordsAtLineStart = 0;
-    /* recognizer word count at the moment the PREVIOUS line ended — any words
-       past this while idle belong to the NEXT line, and their arrival fires it
-       (the recognition half of the dual trigger) */
-    this._wordsAtIdle = 0;
     this._recogStartedForTake = false;
+    this._scriptFlat = null;    // flattened script words: [{ raw, norm, parts }]
+    this._lineOffsets = null;   // flat index where each line starts
+    this._lineWordCounts = null;// words per line
+    this._alignPos = 0;         // committed alignment (final results only)
+    this._displayPos = 0;       // transient alignment (finals + current interims)
+    this._lastRecogEventAt = 0; // wall clock of the last recognition event
+    this._sessionFinals = new Set(); // per-session final results already committed
+    this._recogBackoffMs = 250; // restart backoff after network/aborted errors
+    this._recogErrored = false; // last session died on an error (vs. recycle)
+    this._recogRestartTimer = null;
+    this._predLine = -1;        // predictedWordIndex monotonic guard
+    this._predIdx = -1;
+    /* live-mic dynamics: gate open/hold state + speech-RMS EMA for the leveler */
+    this._gateOpen = true;
+    this._gateHoldT = 0;
   }
 
   /** seconds of the CURRENT line present on the recorder's AudioContext
@@ -217,29 +305,16 @@ export class SpideyVoice {
       here — those values describe speaker monitoring, not the exported track.
       null when no buffered line is playing; captions then freewheel their tail. */
   lineElapsed() {
-    /* LIVE MIC: the caption clock is your ACTUAL SPEECH. Primary source is the
-       live recognizer's word count (the highlight can never run ahead of words
-       you haven't said, nor lag words you have); when recognition is silent or
-       unsupported it falls back to real elapsed time at YOUR measured pace. */
+    /* LIVE MIC: plain elapsed time with the monotonic guard. Recognition no
+       longer caps/floors this clock — the word-accurate signal now lives in
+       predictedWordIndex(), which the caption consumes directly. Two signals
+       fighting over one clock was the source of the stall/teleport artifacts. */
     if (this.micMode) {
       if (!this.playing || !this.lineStartedCtx) return null;
       let t = 0;
       try { t = this.ctx.currentTime - this.lineStartedCtx; } catch (_) { return null; }
       if (t < 0) return null;
-      const l = this.lines[this.currentLine];
-      if (l) {
-        const total = l.text.split(/\s+/).filter(Boolean).length || 1;
-        const est = Math.max(0.5, total * this._spw);
-        const heard = Math.max(0, this._recogWords - this._wordsAtLineStart);
-        if (this._recogOn && heard > 0) {
-          /* the highlight may run at most ~1.5 words ahead of what the
-             recognizer confirmed, and never behind what it confirmed */
-          const cap = Math.min(1, (heard + 1.5) / total) * est;
-          const floor = Math.min(1, heard / total) * est * 0.96;
-          t = Math.max(Math.min(t, cap), floor);
-        }
-      }
-      // monotonic: a late recognition result must never rewind the karaoke
+      // monotonic: a late line re-anchor must never rewind the karaoke
       t = Math.max(t, this._lastLiveElapsed);
       this._lastLiveElapsed = t;
       return t;
@@ -769,6 +844,25 @@ export class SpideyVoice {
       this.lines = parts.map((p) => ({ text: p.text, row: p.row, buffer: null, ok: true }));
       this.idx = 0; this.currentLine = -1;
       this.synthState = 'live';
+      /* flattened script word stream + per-line offset table — the aligner's
+         ground truth. One entry per ORIGINAL script word, so a flat index maps
+         1:1 onto the caption's word index. */
+      const flat = [];
+      const offsets = [];
+      const counts = [];
+      this.lines.forEach((l) => {
+        offsets.push(flat.length);
+        const ws = l.text.split(/\s+/).filter(Boolean);
+        counts.push(ws.length || 1);
+        ws.forEach((w) => flat.push(makeScriptWord(w)));
+      });
+      this._scriptFlat = flat;
+      this._lineOffsets = offsets;
+      this._lineWordCounts = counts;
+      this._alignPos = 0;
+      this._displayPos = 0;
+      this._predLine = -1;
+      this._predIdx = -1;
     };
     if (this.micMode && this.micStream) { bindScript(); return { ok: true, message: `live mic armed — ${parts.length} lines` }; }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -788,6 +882,7 @@ export class SpideyVoice {
           voiceIsolation: { ideal: true },
           channelCount: { ideal: 1 },
           sampleRate: { ideal: 48000 },
+          latency: { ideal: 0.01 },
         },
       });
     } catch (err) {
@@ -807,9 +902,12 @@ export class SpideyVoice {
        room hiss between phrases without clipping word onsets; the leveler
        (driven per-frame from the VAD analyser) rides your distance/energy
        swings +-9 dB so every take lands at the same loudness. */
-    const boost = ctx.createGain(); boost.gain.value = 2.0; // +6 dB input recovery
+    /* statics rebalanced now the leveler is LIVE (driven per-frame from
+       _updateLiveMic): fixed gain only primes the chain; the leveler owns the
+       ±12 dB ride. Old fixed 2.0 × 1.9 (~+11.6 dB) double-counted the range. */
+    const boost = ctx.createGain(); boost.gain.value = 1.6; // ~+4 dB input recovery
     const gate = ctx.createGain(); gate.gain.value = 1;     // VAD-driven downward expander
-    const leveler = ctx.createGain(); leveler.gain.value = 1; // slow AGC, +-9 dB
+    const leveler = ctx.createGain(); leveler.gain.value = 1; // slow AGC, ±12 dB
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 82; hp.Q.value = 0.71;
     const body = ctx.createBiquadFilter(); body.type = 'lowshelf'; body.frequency.value = 160; body.gain.value = 3;
     const box = ctx.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 300; box.Q.value = 1.1; box.gain.value = -2;
@@ -818,7 +916,7 @@ export class SpideyVoice {
        and a +2.5 dB shelf from 3.4kHz — consonants cut through phone speakers */
     const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2800; presence.Q.value = 0.9; presence.gain.value = 5;
     const shelf = ctx.createBiquadFilter(); shelf.type = 'highshelf'; shelf.frequency.value = 3400; shelf.gain.value = 2.5;
-    const trim = ctx.createGain(); trim.gain.value = 1.9; // make-up into the chain (~+5.6 dB)
+    const trim = ctx.createGain(); trim.gain.value = 1.6; // make-up into the chain (~+4 dB)
     src.connect(boost); boost.connect(gate); gate.connect(leveler);
     leveler.connect(hp); hp.connect(body); body.connect(box); box.connect(harsh);
     harsh.connect(presence); presence.connect(shelf); shelf.connect(trim);
@@ -835,6 +933,8 @@ export class SpideyVoice {
     this._micGate = gate;
     this._micLeveler = leveler;
     this._agcRms = 0; // speech-RMS EMA driving the leveler
+    this._gateOpen = true;
+    this._gateHoldT = 0;
     /* HOTTER FINAL LOUDNESS on mic takes only: the synthesized voice is already
        normalized at the source; your real voice needs the extra push to land at
        the same perceived level phone-speaker-loud. Restored in disableLiveMic. */
@@ -880,31 +980,102 @@ export class SpideyVoice {
     }
   }
 
-  /* live word counter — webkitSpeechRecognition where available. It listens to
-     the same mic in parallel and reports the words you have ACTUALLY said;
-     the karaoke highlight is slaved to that count. Unsupported browsers fall
-     back to the adaptive-pace clock automatically. */
+  /* live recognizer — webkitSpeechRecognition where available, rebuilt around
+     SCRIPT ALIGNMENT. Finals commit _alignPos (never regresses); interims are
+     rebuilt from scratch every event into a transient _displayPos, so Chrome's
+     interim retractions cost nothing. Session restarts (onend) reset only
+     per-session bookkeeping — committed alignment lives outside the session.
+     Unsupported browsers fall back to the adaptive-pace clock automatically. */
   _startRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    this._recogWords = 0;
-    this._wordsAtLineStart = 0;
+    this._alignPos = 0;
+    this._displayPos = 0;
+    this._lastRecogEventAt = 0;
+    this._recogBackoffMs = 250;
+    this._recogErrored = false;
+    this._sessionFinals = new Set();
+    this._predLine = -1;
+    this._predIdx = -1;
     if (!SR) { this._recogOn = false; return; }
     try {
       const r = new SR();
       r.continuous = true;
       r.interimResults = true;
       r.lang = 'en-US';
-      r.onresult = (e) => {
-        let words = 0;
-        for (let i = 0; i < e.results.length; i++) {
-          const alt = e.results[i][0];
-          if (alt && alt.transcript) words += alt.transcript.trim().split(/\s+/).filter(Boolean).length;
+      r.maxAlternatives = 3; // the aligner may rescue a misheard word from an alternate
+      /* CONTEXTUAL BIASING — the recognizer gets to HEAR the script before the
+         take: unique words boost ~2, hyphenated/rare tokens boost ~4. Chrome-
+         only enhancement; silently skipped where unsupported. */
+      try {
+        if (typeof window.SpeechRecognitionPhrase === 'function' && this._scriptFlat && this._scriptFlat.length) {
+          const seen = new Set();
+          const phrases = [];
+          for (const sw of this._scriptFlat) {
+            const raw = String(sw.raw || '').replace(/[^a-zA-Z0-9'\u2019-]+/g, '');
+            if (!raw || seen.has(sw.norm) || !sw.norm) continue;
+            seen.add(sw.norm);
+            const rare = sw.parts.length > 1 || sw.norm.length >= 9;
+            phrases.push(new window.SpeechRecognitionPhrase(raw, rare ? 4 : 2));
+            if (phrases.length >= 120) break;
+          }
+          if (phrases.length) r.phrases = phrases;
         }
-        // monotonic: interim retractions must never rewind the caption
-        if (words > this._recogWords) this._recogWords = words;
+      } catch (_) { /* biasing is a bonus, never a blocker */ }
+      r.onresult = (e) => {
+        this._lastRecogEventAt = performance.now();
+        this._recogBackoffMs = 250; // healthy session — reset the restart backoff
+        const script = this._scriptFlat || [];
+        const interim = [];
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const res = e.results[i];
+          if (res.isFinal) {
+            /* committed once per result index — survives cumulative re-emits */
+            if (this._sessionFinals.has(i)) continue;
+            this._sessionFinals.add(i);
+            let best = this._alignPos;
+            for (let a = 0; a < res.length; a++) {
+              const alt = res[a];
+              if (!alt || !alt.transcript) continue;
+              const toks = normTokens(alt.transcript);
+              if (!toks.length) continue;
+              const p = alignToScript(toks, script, this._alignPos);
+              if (p > best) best = p;
+            }
+            this._alignPos = best;
+          } else {
+            const alt = res[0];
+            if (alt && alt.transcript) interim.push(...normTokens(alt.transcript));
+          }
+        }
+        /* transient display position: committed alignment extended with the
+           CURRENT interims (rebuilt every event — retractions are free) */
+        let disp = this._alignPos;
+        if (interim.length) disp = Math.max(disp, alignToScript(interim, script, this._alignPos));
+        this._displayPos = disp;
       };
-      r.onerror = () => {};
-      r.onend = () => { if (this._recogOn) { try { r.start(); } catch (_) { this._recogOn = false; } } };
+      r.onerror = (ev) => {
+        const err = ev && ev.error;
+        if (err === 'not-allowed' || err === 'service-not-allowed') {
+          this._recogOn = false; // fatal: retrying a permission denial is useless
+          return;
+        }
+        if (err === 'no-speech') return; // routine — onend restarts immediately
+        this._recogErrored = true; // network/aborted: back off before restarting
+      };
+      r.onend = () => {
+        /* Chrome resets e.results to index 0 on restart — per-session
+           bookkeeping resets HERE so the new session can't corrupt alignment */
+        this._sessionFinals = new Set();
+        if (!this._recogOn) return;
+        const delay = this._recogErrored ? this._recogBackoffMs : 0;
+        if (this._recogErrored) this._recogBackoffMs = Math.min(1000, this._recogBackoffMs * 2);
+        this._recogErrored = false;
+        this._recogRestartTimer = setTimeout(() => {
+          this._recogRestartTimer = null;
+          if (!this._recogOn) return;
+          try { r.start(); } catch (_) { this._recogOn = false; }
+        }, delay);
+      };
       r.start();
       this._recog = r;
       this._recogOn = true;
@@ -913,23 +1084,48 @@ export class SpideyVoice {
 
   _stopRecognition() {
     this._recogOn = false;
+    if (this._recogRestartTimer) {
+      try { clearTimeout(this._recogRestartTimer); } catch (_) {}
+      this._recogRestartTimer = null;
+    }
     if (this._recog) {
-      try { this._recog.onend = null; this._recog.stop(); } catch (_) {}
+      try { this._recog.onend = null; this._recog.onerror = null; this._recog.stop(); } catch (_) {}
       this._recog = null;
     }
   }
 
-  /** WORD-INDEX KARAOKE — the confirmed word of the CURRENT live-mic line, or
-      null when recognition hasn't reported for it yet. The stage slaves the
-      highlight to this exact index: no estimate, no lapping your real words. */
+  /** WORD-INDEX KARAOKE — the aligner's confirmed word of the CURRENT live-mic
+      line (display position, so interims give it low latency), or null when
+      alignment hasn't reached the line yet. Clamped to the line. */
   recogWordIndex() {
     if (!this.micMode || !this._recogOn || this.currentLine < 0) return null;
-    const l = this.lines[this.currentLine];
-    if (!l) return null;
-    const total = l.text.split(/\s+/).filter(Boolean).length || 1;
-    const heard = this._recogWords - this._wordsAtLineStart;
+    if (!this._lineOffsets || this._lineOffsets[this.currentLine] == null) return null;
+    const off = this._lineOffsets[this.currentLine];
+    const total = this._lineWordCounts[this.currentLine] || 1;
+    const heard = Math.max(this._displayPos, this._alignPos) - off;
     if (heard <= 0) return null;
     return Math.min(total - 1, heard - 1);
+  }
+
+  /** PREDICT + CORRECT — the ONE signal the caption consumes in live-mic mode:
+      the aligned display index extended by elapsed-since-last-recognition-event
+      at YOUR measured pace, clamped to aligned + 2, monotonic per line. Fast
+      speech never sees raw recognition lag; the aligner corrects the estimate
+      the moment a result lands. */
+  predictedWordIndex() {
+    const base = this.recogWordIndex();
+    if (base == null) return null;
+    const total = this._lineWordCounts[this.currentLine] || 1;
+    let idx = base;
+    if (this._lastRecogEventAt) {
+      const lag = (performance.now() - this._lastRecogEventAt) / 1000;
+      idx = base + Math.min(2, Math.max(0, lag) / Math.max(0.15, this._spw));
+    }
+    idx = Math.min(total - 1, idx);
+    if (this._predLine === this.currentLine && idx < this._predIdx) idx = this._predIdx;
+    this._predLine = this.currentLine;
+    this._predIdx = idx;
+    return idx;
   }
 
   _startLiveLine() {
@@ -945,19 +1141,25 @@ export class SpideyVoice {
        the caption clock starts at the true first voiced instant */
     this.lineStartedAt = performance.now() - this._voicedT * 1000;
     this.lineStartedCtx = this.ctx.currentTime - this._voicedT;
-    /* the line's word baseline is where the PREVIOUS line ended, not "now":
-       when recognition itself fired this line, the words that fired it must
-       count toward it — snapshotting _recogWords here would swallow them */
-    this._wordsAtLineStart = Math.min(this._recogWords, this._wordsAtIdle);
+    /* alignment is global across the take — no per-line word baseline needed;
+       the aligner's per-line offset table maps flat position to line words */
+    this._predLine = -1;
+    this._predIdx = -1;
     this._voicedT = 0;
   }
 
   _endLiveLine(sil) {
     const l = this.lines[this.currentLine];
     if (l) {
-      /* learn YOUR pace: real voiced seconds / words in the line, folded into
-         an EMA so the next line's caption paces at how you actually read */
-      const words = l.text.split(/\s+/).filter(Boolean).length || 1;
+      /* learn YOUR pace from words actually ALIGNED in the line (not the
+         script's full count — skipped words no longer corrupt the EMA),
+         over the real voiced seconds */
+      const total = l.text.split(/\s+/).filter(Boolean).length || 1;
+      let words = total;
+      if (this._recogOn && this._lineOffsets && this._lineOffsets[this.currentLine] != null) {
+        const aligned = this._alignPos - this._lineOffsets[this.currentLine];
+        if (aligned >= 1) words = Math.min(total, aligned);
+      }
       const spw = Math.max(0.3, this._lineDurT) / words;
       if (spw > 0.12 && spw < 1.2) this._spw = this._spw * 0.6 + spw * 0.4;
     }
@@ -967,9 +1169,6 @@ export class SpideyVoice {
     this._quietT = 0.2;
     this._voicedT = 0;
     this._sinceEnd = 0;
-    // words confirmed so far belong to the finished line; anything past this
-    // count while idle is the NEXT line speaking — the recognition trigger
-    this._wordsAtIdle = this._recogWords;
     // the line really ended when the silence STARTED, not when we confirmed it
     this.lastEndedAt = performance.now() - (sil || 0) * 1000;
   }
@@ -994,6 +1193,40 @@ export class SpideyVoice {
     const voiced = rms > Math.max(0.015, this._noiseFloor * 2.6 + 0.009);
     this.level = { rms, gateOpen: voiced };
 
+    /* DRIVE THE DYNAMICS NODES from the same per-frame VAD signals:
+       gate = downward expander (8ms open — onsets never clipped; ~150ms hold
+       then a 40ms close to 0.35 mutes room hiss between phrases);
+       leveler = slow AGC steering toward a consistent speech level, clamped
+       ±12 dB. Target sits where the downstream chain lands near -14 LUFS —
+       consistent, never slammed (YouTube normalizes anything hotter DOWN). */
+    if (this._micGate && this._micLeveler) {
+      let now = 0;
+      try { now = this.ctx.currentTime; } catch (_) { now = -1; }
+      if (now >= 0) {
+        if (voiced) {
+          this._gateHoldT = 0;
+          if (!this._gateOpen) {
+            this._gateOpen = true;
+            try { this._micGate.gain.setTargetAtTime(1.0, now, 0.008); } catch (_) {}
+          }
+          /* speech-only RMS EMA (~0.3s) — silence never drags the estimate */
+          this._agcRms = this._agcRms > 0
+            ? this._agcRms + (rms - this._agcRms) * Math.min(1, dt * 3)
+            : rms;
+          if (this._agcRms > 0.02) {
+            const want = Math.min(4.0, Math.max(0.25, 0.35 / this._agcRms));
+            try { this._micLeveler.gain.setTargetAtTime(want, now, 0.4); } catch (_) {}
+          }
+        } else {
+          this._gateHoldT += dt;
+          if (this._gateHoldT >= 0.15 && this._gateOpen) {
+            this._gateOpen = false;
+            try { this._micGate.gain.setTargetAtTime(0.35, now, 0.04); } catch (_) {}
+          }
+        }
+      }
+    }
+
     // the recognizer rides the take: on when rolling, off when cut
     if (recording && !this._recogOn && !this._recogStartedForTake) {
       this._recogStartedForTake = true;
@@ -1016,8 +1249,15 @@ export class SpideyVoice {
         this._silT += dt;
         /* a clear pause (0.55s) closes the line — long enough that breaths and
            commas inside a sentence never split it, short enough that the next
-           line arms before you resume */
-        if (this._silT >= 0.55) this._endLiveLine(this._silT);
+           line arms before you resume. When the aligner already CONFIRMED the
+           line's last word, close on 0.35s — fast readers stop dragging tails. */
+        let closeAt = 0.55;
+        if (this._recogOn && this._lineOffsets && this._lineOffsets[this.currentLine] != null) {
+          const off = this._lineOffsets[this.currentLine];
+          const total = this._lineWordCounts[this.currentLine] || 1;
+          if (this._alignPos - off >= total) closeAt = 0.35;
+        }
+        if (this._silT >= closeAt) this._endLiveLine(this._silT);
       }
       return;
     }
