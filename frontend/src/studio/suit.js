@@ -173,12 +173,18 @@ const fragmentShader = /* glsl */ `
       vec2 qm = q;
       if (uFaceOk > 0.3) {
         vec2 mv = q - uMouthC;
-        float mrad = max(uMouthW, 0.02) * 2.3;
+        /* CONTAINMENT: the warp field must NEVER outgrow the mouth region.
+           Cap the radius against the face radius (not just mouth width — a
+           wide-open mouth reports a large uMouthW and the squared falloff
+           then covers the whole face), and hard-zero the field beyond it so
+           cheeks, brow and eye webbing stay perfectly rigid. */
+        float mrad = min(max(uMouthW, 0.02) * 2.0, max(uFaceR, 0.02) * 0.5);
         float mfall = exp(-dot(mv, mv) / max(mrad * mrad * 0.5, 1e-6));
+        mfall *= 1.0 - smoothstep(mrad * 0.85, mrad * 1.35, length(mv));
         // web lines VISIBLY spread apart over the talking mouth — pucker rounds
         // the spread field, smile widens it; hard-zero at rest via the jaw gate
         float gate = smoothstep(0.03, 0.12, uJaw);
-        float stretch = clamp(uJaw * 1.05 + uMouthOpen * 2.6 + uPucker * 0.30, 0.0, 0.9) * gate;
+        float stretch = clamp(uJaw * 0.9 + uMouthOpen * 2.6 + uPucker * 0.30, 0.0, 0.72) * gate;
         vec2 dir = normalize(mv + vec2(1e-5));
         dir.x *= 1.0 + uSmile * 0.5 - uPucker * 0.35; // viseme-shaped spread
         qm -= dir * mfall * stretch * max(uMouthW, 0.02) * 0.62;
@@ -872,9 +878,9 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       uniforms.uFaceOk.value = f.ok;
       // live mouth geometry: drives the mask's visible lip-sync articulation
       uniforms.uMouthC.value.set(f.mouth.x, f.mouth.y * ASPECT);
-      // 1.15: the fabric mouth must read at phone size — 0.85 produced a
-      // coin-sized smudge viewers couldn't parse as speech
-      uniforms.uMouthW.value = Math.max(0.028, f.mouthW * 1.15);
+      // 0.92: readable at phone size without inflating the warp field —
+      // 1.15 blew the squared falloff up so the whole face fabric sheared
+      uniforms.uMouthW.value = Math.max(0.024, f.mouthW * 0.92);
       uniforms.uMouthOpen.value = f.mouthOpen;
       /* TRUE LIP SYNC — the AUDIO is the single source of truth.
          During a script take (rig.voiceActive) your real jaw is only the
