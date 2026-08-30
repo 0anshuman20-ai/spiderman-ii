@@ -376,7 +376,13 @@ export default function Studio() {
                so it rides your real words, never a timing estimate */
             immediate: !!voice.micMode,
             wordIndex: voice.micMode
-              ? () => (voice.currentLine === myLine ? voice.recogWordIndex() : null)
+              ? () => {
+                  if (voice.currentLine !== myLine) return null;
+                  /* predict+correct index bridges recognition latency for fast
+                     speech; fall back to the raw aligned index if unavailable */
+                  const p = typeof voice.predictedWordIndex === 'function' ? voice.predictedWordIndex() : null;
+                  return (typeof p === 'number' && isFinite(p) && p >= 0) ? p : voice.recogWordIndex();
+                }
               : null,
           });
         }
