@@ -680,14 +680,8 @@ export function createStage(canvas) {
       const pc = Math.min(0.999, p);
       wIdx = n - 1;
       for (let i = 0; i < n; i++) { if (pc < capAnim.cum[i]) { wIdx = i; break; } }
-      /* BLEND RULE: once recognition has reported for this line, the time
-         fallback may bridge its latency but never LAP it — capped at
-         confirmed+2. Never rewind below what recognition confirmed. If
-         recognition has never reported (unsupported browser), pure time
-         pacing runs unchanged. */
-      if (capAnim.lastWIdx >= 0) {
-        wIdx = Math.min(Math.max(wIdx, capAnim.lastWIdx), capAnim.lastWIdx + 2);
-      }
+      // never fall behind what recognition already confirmed
+      if (capAnim.lastWIdx >= 0) wIdx = Math.max(wIdx, capAnim.lastWIdx);
     }
     const chunk = Math.floor(wIdx / CAP_CHUNK);
     const key = chunk * 100 + (wIdx % CAP_CHUNK);

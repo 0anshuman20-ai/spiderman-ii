@@ -82,13 +82,8 @@ const WEBM_FIRST = [
    (software GL / 2 cores) still downscales: there the RENDER itself is the
    bottleneck, not just the encoder. */
 const TIERS = {
-  /* wcBps tuned for re-encode survival (YouTube/TikTok crush low-bitrate
-     sources); audioBps raised because platforms re-encode audio to ~128k —
-     a richer source loses audibly less. Both MR audioBitsPerSecond and the
-     WebCodecs audio sources consume audioBps. Don't chase >16 Mbps: past that
-     at 1080p the post-transcode difference is invisible while stall risk rises. */
-  high: { captureFps: 30, scale: 1, videoBps: 12_000_000, wcScale: 1, wcBps: 16_000_000, audioBps: 256_000, ladder: MP4_FIRST },
-  medium: { captureFps: 30, scale: 0.75, videoBps: 6_000_000, wcScale: 1, wcBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },  // MR: 810x1440, WC: native
+  high: { captureFps: 30, scale: 1, videoBps: 12_000_000, wcScale: 1, wcBps: 12_000_000, audioBps: 192_000, ladder: MP4_FIRST },
+  medium: { captureFps: 30, scale: 0.75, videoBps: 6_000_000, wcScale: 1, wcBps: 10_000_000, audioBps: 160_000, ladder: MP4_FIRST },  // MR: 810x1440, WC: native
   low: { captureFps: 24, scale: 2 / 3, videoBps: 3_500_000, wcScale: 0.75, wcBps: 5_000_000, audioBps: 128_000, ladder: WEBM_FIRST }, // MR: 720x1280, WC: 810x1440
 };
 
@@ -115,11 +110,10 @@ function isSoftwareGL(renderer) {
 }
 
 /** capability read: measured stage fps wins; GL backend and core count break
-    ties. Returns the UN-STEPPED base tier — the mic-take step-down is a
-    MediaRecorder-only policy (its encoder saturation silently stalls the
-    video track; WebCodecs backpressure just drops frames instead), so it is
-    applied per-path in warmup()/start(), never here. */
-export function pickTier(stage) {
+    ties. MIC-AWARE: a live getUserMedia graph + a parallel speech-recognition
+    session add real load on top of the encoder — a machine that survives TTS
+    takes tips over on mic takes, so micLive steps the tier down one level. */
+export function pickTier(stage, { micLive = false } = {}) {
   const measured = stage && typeof stage.fps === 'number' ? stage.fps : 0;
   const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
   const soft = isSoftwareGL(stage && stage.renderer);
@@ -129,6 +123,7 @@ export function pickTier(stage) {
   // a machine that only just holds 50fps stalls the encoder once REC adds load
   else if (cores <= 6 || (measured > 0 && measured < 55)) tier = 'medium';
   else tier = 'high';
+  if (micLive) tier = stepDown(tier);
   return tier;
 }
 
@@ -179,11 +174,6 @@ export class Recorder {
        { container, video, audio } = proven working — the real take uses it */
     this._wc = undefined;
     this._wcSession = null; // live WebCodecs take: { output, target, videoSource, state, stopAudio }
-    /* WebCodecs capture fps, decided ONCE at warmup (60 only on a proven
-       55fps+ hardware-GL high-tier stage) and cached so the trial encode and
-       the real roll always run at the SAME fps — a probe verdict at one fps
-       is meaningless for a roll at another */
-    this._wcFps = 0;
     /* dedicated 48k AudioContext + capture worklet for the WebCodecs audio path
        (see public/worklets/capture-processor.js for WHY):
        undefined = not preloaded, null = preload failed (fall back to
@@ -222,12 +212,9 @@ export class Recorder {
     this._wakeLock = null;
   }
 
-  /** resolve the UN-STEPPED base tier for a roll, folding in the warmup
-      self-test verdict. _forcedTier stays authoritative for BOTH paths — it
-      reflects a proven machine failure, not a policy guess. The mic-take
-      step-down is applied only where MediaRecorder resolves. */
-  _resolveTier(stage) {
-    let name = pickTier(stage);
+  /** resolve the tier for a roll, folding in the warmup self-test verdict */
+  _resolveTier(stage, micLive) {
+    let name = pickTier(stage, { micLive });
     if (this._forcedTier && TIER_ORDER.indexOf(this._forcedTier) > TIER_ORDER.indexOf(name)) {
       name = this._forcedTier;
     }
@@ -287,21 +274,18 @@ export class Recorder {
       /* trial encode: two real frames off the live canvas (already at the
          take's render scale), sealed into a real container. Time-boxed so a
          hung encoder can't eat the countdown. */
-      /* SAME fps as the roll — decided at warmup and cached in _wcFps; the
-         trial verdict is only meaningful if probe and roll agree */
-      const fps = this._wcFps || tier.captureFps;
-      const canvas = stage.captureFrames(fps, wcScale, null);
+      const canvas = stage.captureFrames(tier.captureFps, wcScale, null);
       const target = new BufferTarget();
       const output = new Output({
         format: verdict.container === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(),
         target,
       });
       const src = new CanvasSource(canvas, { codec: verdict.video, bitrate: wcBps, keyFrameInterval: 2 });
-      output.addVideoTrack(src, { frameRate: fps });
+      output.addVideoTrack(src, { frameRate: tier.captureFps });
       const trial = (async () => {
         await output.start();
-        await src.add(0, 1 / fps);
-        await src.add(1 / fps, 1 / fps);
+        await src.add(0, 1 / tier.captureFps);
+        await src.add(1 / tier.captureFps, 1 / tier.captureFps);
         await output.finalize();
         return !!(target.buffer && target.buffer.byteLength > 0);
       })();
@@ -330,22 +314,13 @@ export class Recorder {
       performer never burns a take discovering the encoder can't keep up. */
   async warmup(stage, { micLive = false } = {}) {
     if (this.recording) return true;
-    const tierName = this._resolveTier(stage);
+    const tierName = this._resolveTier(stage, micLive);
     const tier = TIERS[tierName];
-    /* WEBCODECS CAPTURE FPS — decided ONCE, here, before the probe, so the
-       trial encode and the real roll always agree. 60fps only when the stage
-       has PROVEN 55+ fps on hardware GL at the high tier; everything else
-       (and the whole MediaRecorder path) stays at the tier's captureFps. */
-    this._wcFps = (tierName === 'high'
-      && typeof stage.fps === 'number' && stage.fps >= 55
-      && !isSoftwareGL(stage.renderer)) ? 60 : tier.captureFps;
     /* WEBCODECS FIRST — if the trial encode proves the machine can encode at
        this tier via WebCodecs, the take will use that path (no WebRTC rate-
        control ramp, sharp from frame zero) and the MediaRecorder probe is
-       unnecessary. WebCodecs takes the FULL tier even on mic takes: its
-       backpressure drops frames under load instead of stalling the track.
-       The render scale is already applied by the probe's captureFrames call;
-       keepScale holds it warm through the handoff to REC. */
+       unnecessary. The render scale is already applied by the probe's
+       captureFrames call; keepScale holds it warm through the handoff to REC. */
     try {
       const wc = await this._probeWebCodecs(stage, tier);
       if (wc) {
@@ -353,19 +328,14 @@ export class Recorder {
         return true;
       }
     } catch (_) { /* fall through to the MediaRecorder probe */ }
-    /* MEDIARECORDER HALF — mic takes step down one tier HERE (a live
-       getUserMedia graph + a parallel recognition session add real load, and
-       MR's encoder saturation silently stalls the video track mid-take) */
-    const mrName = micLive ? stepDown(tierName) : tierName;
-    const mrTier = TIERS[mrName];
     let tracks = [];
     try {
-      const s = stage.captureStream(mrTier.captureFps, mrTier.scale);
+      const s = stage.captureStream(tier.captureFps, tier.scale);
       tracks = s.getVideoTracks();
       /* same contentHint as the real roll — the warmup verdict must reflect
          the exact encoder configuration the take will use */
       tracks.forEach((t) => { try { t.contentHint = 'detail'; } catch (_) {} });
-      const built = buildRecorder(new MediaStream(tracks), mrTier, this._preferWebm ? WEBM_FIRST : null);
+      const built = buildRecorder(new MediaStream(tracks), tier, this._preferWebm ? WEBM_FIRST : null);
       if (!built) {
         this._forcedTier = 'low';
         this._preferWebm = true;
@@ -384,11 +354,11 @@ export class Recorder {
         }, 700);
       });
       if (!ok) {
-        this._forcedTier = mrName === 'high' ? 'medium' : 'low';
+        this._forcedTier = tierName === 'high' ? 'medium' : 'low';
         this._preferWebm = true;
-        console.warn(`[recorder] warmup self-test failed at ${mrName} — forcing ${this._forcedTier} + webm-first ladder`);
+        console.warn(`[recorder] warmup self-test failed at ${tierName} — forcing ${this._forcedTier} + webm-first ladder`);
       } else {
-        console.log(`[recorder] warmup ok — ${mrName} / ${built.codec.mime}`);
+        console.log(`[recorder] warmup ok — ${tierName} / ${built.codec.mime}`);
       }
       return ok;
     } catch (err) {
@@ -441,9 +411,7 @@ export class Recorder {
          dropping (a live source can't be slowed down) */
       const wcScale = tier.wcScale ?? tier.scale;
       const wcBps = tier.wcBps ?? tier.videoBps;
-      /* SAME fps the probe was proven at — never re-derive here */
-      const fps = this._wcFps || tier.captureFps;
-      const canvas = stage.captureFrames(fps, wcScale, () => {
+      const canvas = stage.captureFrames(tier.captureFps, wcScale, () => {
         if (!this.recording || !state.ready || state.pending || state.failed) return;
         const now = performance.now();
         if (!state.t0) state.t0 = now;
@@ -455,7 +423,7 @@ export class Recorder {
         }
         state.pending = true;
         session.videoSource
-          .add(ts, 1 / fps, encodeOpts)
+          .add(ts, 1 / tier.captureFps, encodeOpts)
           .then(() => {
             this._lastChunkAt = performance.now(); // encoder health heartbeat
             this.stalled = false;
@@ -482,7 +450,7 @@ export class Recorder {
            motion smoothness */
         contentHint: 'detail',
       });
-      output.addVideoTrack(session.videoSource, { frameRate: fps });
+      output.addVideoTrack(session.videoSource, { frameRate: tier.captureFps });
 
       /* AUDIO — WORKLET PCM CAPTURE (primary). MediaStreamAudioTrackSource
          rides MediaStreamTrackProcessor, which delivers AudioData on the MAIN
@@ -582,15 +550,13 @@ export class Recorder {
 
   start(stage, voiceStream, { micLive = false } = {}) {
     if (this.recording) return false;
-    const tierName = this._resolveTier(stage);
+    const tierName = this._resolveTier(stage, micLive);
     const tier = TIERS[tierName];
 
     /* WEBCODECS PRIMARY — proven by the countdown trial encode. Full-bitrate
        H.264/VP9 from the very first frame: no WebRTC rate-control ramp, no
-       soft opening second. Takes the FULL tier even on mic takes (WebCodecs
-       backpressure drops frames under load instead of stalling the track).
-       Falls through to the MediaRecorder ladder if construction fails for
-       any reason. */
+       soft opening second. Falls through to the MediaRecorder ladder if
+       construction fails for any reason. */
     if (this._wc && this._startWc(stage, voiceStream, tierName)) {
       this.recording = true;
       this.startTs = performance.now();
@@ -600,7 +566,7 @@ export class Recorder {
       this._stage = stage;
       this._canvasTracks = [];
       this._acquireWakeLock();
-      const periodMs = 1000 / (this._wcFps || tier.captureFps);
+      const periodMs = 1000 / tier.captureFps;
       this._watchdog = setInterval(() => {
         if (!this.recording) return;
         try {
@@ -617,13 +583,8 @@ export class Recorder {
       return true;
     }
 
-    /* MEDIARECORDER BRANCH — mic takes step down one tier HERE (matching the
-       warmup probe): the live mic graph + recognition session add load that
-       MR's encoder answers with a silent mid-take video stall */
-    const mrName = micLive ? stepDown(tierName) : tierName;
-    const mrTier = TIERS[mrName];
     let canvasStream;
-    try { canvasStream = stage.captureStream(mrTier.captureFps, mrTier.scale); } catch (err) {
+    try { canvasStream = stage.captureStream(tier.captureFps, tier.scale); } catch (err) {
       console.error('[recorder] captureStream failed', err);
       return false;
     }
@@ -635,14 +596,14 @@ export class Recorder {
     if (voiceStream) tracks.push(...voiceStream.getAudioTracks());
     const stream = new MediaStream(tracks);
 
-    const built = buildRecorder(stream, mrTier, this._preferWebm ? WEBM_FIRST : null);
+    const built = buildRecorder(stream, tier, this._preferWebm ? WEBM_FIRST : null);
     if (!built) {
       console.error('[recorder] MediaRecorder could not be constructed at any tier');
       canvasStream.getVideoTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
       try { if (stage.releaseCapture) stage.releaseCapture(); } catch (_) {} // never leave the preview downscaled
       return false;
     }
-    console.log(`[recorder] rolling — tier ${mrName}, codec ${built.codec.mime}`);
+    console.log(`[recorder] rolling — tier ${tierName}, codec ${built.codec.mime}`);
 
     this.chunks = [];
     this.rec = built.rec;
@@ -673,7 +634,7 @@ export class Recorder {
     const actualMime = (this.rec.mimeType && this.rec.mimeType.length) ? this.rec.mimeType : built.codec.mime;
     this.mime = actualMime;
     this.ext = /mp4/i.test(actualMime) ? 'mp4' : 'webm';
-    this.tier = mrName;
+    this.tier = tierName;
     this._stage = stage;
     this._canvasTracks = canvasStream.getVideoTracks();
     this._acquireWakeLock();
@@ -686,7 +647,7 @@ export class Recorder {
        >2s while recording means the encoder itself has stalled — log it and
        expose rec.stalled so the HUD can warn instead of silently shipping a
        frozen file. */
-    const periodMs = 1000 / mrTier.captureFps;
+    const periodMs = 1000 / tier.captureFps;
     this._watchdog = setInterval(() => {
       if (!this.recording) return;
       try {
