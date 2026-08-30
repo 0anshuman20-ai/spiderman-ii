@@ -203,6 +203,13 @@ export class SpideyVoice {
     this._recog = null;
     this._recogOn = false;
     this._recogWords = 0;
+    /* words confirmed by PREVIOUS recognizer sessions: Chrome silently kills a
+       continuous session (~60s / network hiccup) and onend restarts it with an
+       EMPTY results list. Without this base the fresh session counted from 0
+       while the monotonic guard held the old total — the caption froze until
+       you out-spoke the whole take so far ("I say a line fast and it can't
+       catch"). Every restart folds the confirmed total into this base. */
+    this._wordsBase = 0;
     this._wordsAtLineStart = 0;
     /* recognizer word count at the moment the PREVIOUS line ended — any words
        past this while idle belong to the NEXT line, and their arrival fires it
@@ -572,6 +579,7 @@ export class SpideyVoice {
     this._lineDurT = 0;
     this._lastLiveElapsed = 0;
     this._recogWords = 0;
+    this._wordsBase = 0;
     this._wordsAtLineStart = 0;
     this._wordsAtIdle = 0;
     /* FULL RECOGNITION RESET — an aborted/restarted take used to leave
@@ -895,16 +903,36 @@ export class SpideyVoice {
       r.interimResults = true;
       r.lang = 'en-US';
       r.onresult = (e) => {
-        let words = 0;
+        /* count FINAL segments fully, but only the LAST interim segment.
+           Chrome regularly leaves a stale interim segment that duplicates
+           words already present in a final one — counting every segment
+           inflated the total, so the karaoke lapped ahead and the next-line
+           trigger fired early: the same words got written twice. Slightly
+           lagging an uncounted interim is invisible; overcounting is not. */
+        let finals = 0;
+        let interim = 0;
         for (let i = 0; i < e.results.length; i++) {
-          const alt = e.results[i][0];
-          if (alt && alt.transcript) words += alt.transcript.trim().split(/\s+/).filter(Boolean).length;
+          const res = e.results[i];
+          const alt = res && res[0];
+          if (!alt || !alt.transcript) continue;
+          const n = alt.transcript.trim().split(/\s+/).filter(Boolean).length;
+          if (res.isFinal) finals += n;
+          else interim = n; // later interims supersede earlier (stale) ones
         }
+        const words = this._wordsBase + finals + interim;
         // monotonic: interim retractions must never rewind the caption
         if (words > this._recogWords) this._recogWords = words;
       };
       r.onerror = () => {};
-      r.onend = () => { if (this._recogOn) { try { r.start(); } catch (_) { this._recogOn = false; } } };
+      r.onend = () => {
+        if (this._recogOn) {
+          /* the restarted session counts from an EMPTY results list — fold
+             everything confirmed so far into the base so the caption clock
+             keeps advancing instead of freezing at the old total */
+          this._wordsBase = this._recogWords;
+          try { r.start(); } catch (_) { this._recogOn = false; }
+        }
+      };
       r.start();
       this._recog = r;
       this._recogOn = true;
@@ -1016,8 +1044,16 @@ export class SpideyVoice {
         this._silT += dt;
         /* a clear pause (0.55s) closes the line — long enough that breaths and
            commas inside a sentence never split it, short enough that the next
-           line arms before you resume */
-        if (this._silT >= 0.55) this._endLiveLine(this._silT);
+           line arms before you resume. FAST DELIVERY: once the recognizer has
+           confirmed every word of the line, only a token 0.18s pause is needed
+           — a quick reader no longer waits out the full gap, so back-to-back
+           lines can't pile up on one caption ("I say a line fast and it can't
+           catch"). */
+        const l = this.lines[this.currentLine];
+        const total = l ? (l.text.split(/\s+/).filter(Boolean).length || 1) : 1;
+        const heard = this._recogOn ? this._recogWords - this._wordsAtLineStart : 0;
+        const closeAt = heard >= total ? 0.18 : 0.55;
+        if (this._silT >= closeAt) this._endLiveLine(this._silT);
       }
       return;
     }
