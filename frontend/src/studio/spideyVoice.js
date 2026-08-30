@@ -633,6 +633,9 @@ export class SpideyVoice {
     this._silT = 0;
     this._lineDurT = 0;
     this._lastLiveElapsed = 0;
+    this._recogWords = 0;
+    this._wordsAtLineStart = 0;
+    this._wordsAtIdle = 0;
     /* FULL RECOGNITION RESET — an aborted/restarted take used to leave
        _recogStartedForTake latched true, so the recognizer never re-armed on
        the next roll and the karaoke fell back to pure time estimates. Kill any
