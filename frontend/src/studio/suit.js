@@ -173,18 +173,12 @@ const fragmentShader = /* glsl */ `
       vec2 qm = q;
       if (uFaceOk > 0.3) {
         vec2 mv = q - uMouthC;
-        /* CONTAINMENT: the warp field must NEVER outgrow the mouth region.
-           Cap the radius against the face radius (not just mouth width — a
-           wide-open mouth reports a large uMouthW and the squared falloff
-           then covers the whole face), and hard-zero the field beyond it so
-           cheeks, brow and eye webbing stay perfectly rigid. */
-        float mrad = min(max(uMouthW, 0.02) * 2.0, max(uFaceR, 0.02) * 0.5);
+        float mrad = max(uMouthW, 0.02) * 2.3;
         float mfall = exp(-dot(mv, mv) / max(mrad * mrad * 0.5, 1e-6));
-        mfall *= 1.0 - smoothstep(mrad * 0.85, mrad * 1.35, length(mv));
         // web lines VISIBLY spread apart over the talking mouth — pucker rounds
         // the spread field, smile widens it; hard-zero at rest via the jaw gate
         float gate = smoothstep(0.03, 0.12, uJaw);
-        float stretch = clamp(uJaw * 0.9 + uMouthOpen * 2.6 + uPucker * 0.30, 0.0, 0.72) * gate;
+        float stretch = clamp(uJaw * 0.85 + uMouthOpen * 2.6 + uPucker * 0.30, 0.0, 0.72) * gate;
         vec2 dir = normalize(mv + vec2(1e-5));
         dir.x *= 1.0 + uSmile * 0.5 - uPucker * 0.35; // viseme-shaped spread
         qm -= dir * mfall * stretch * max(uMouthW, 0.02) * 0.62;
@@ -376,32 +370,28 @@ const fragmentShader = /* glsl */ `
         float act   = max(openA, max(puck * 0.55, sml * 0.45));
         if (act > 0.004) {
           /* viseme-shaped cavity: rounds when you say "O" (pucker narrows width,
-             adds height), widens on "E" (smile), opens tall on "A" (jaw).
-             SIZED FOR PHONE SCREENS: a Short is judged at ~6cm wide — the
-             cavity must be wide, deep and travel a big range with the jaw,
-             or the character reads as mute. Wide-not-round by default so it
-             reads as a MOUTH, never a small "o" coin. */
-          float wS = 2.05 * (1.0 - puck * 0.42) * (1.0 + sml * 0.50);
-          float hS = (0.34 + openA * 1.90) * (1.0 + puck * 0.38);
-          vec2 mc = vec2(md.x / (mw * wS), (md.y - mw * 0.30 * openA) / (mw * hS));
-          float cav = exp(-dot(mc, mc) * 2.4) * openA;
-          sLuma -= cav * 0.34;                        // deep shadowed fabric cavity
-          form  -= cav * 0.18;                        // cavity goes matte in the light
+             adds height), widens on "E" (smile), opens tall on "A" (jaw) */
+          float wS = 1.30 * (1.0 - puck * 0.42) * (1.0 + sml * 0.50);
+          float hS = (0.48 + openA * 1.20) * (1.0 + puck * 0.38);
+          vec2 mc = vec2(md.x / (mw * wS), (md.y - mw * 0.20 * openA) / (mw * hS));
+          float cav = exp(-dot(mc, mc) * 2.0) * openA;
+          sLuma -= cav * 0.15;                        // shadowed fabric cavity
+          form  -= cav * 0.10;                        // cavity goes matte in the light
           // stretched-fabric upper-lip highlight: a ridge just above the cavity
-          vec2 ul = vec2(md.x / (mw * (1.55 + sml * 0.40)), (md.y + mw * (0.26 + openA * 0.26)) / (mw * 0.19));
+          vec2 ul = vec2(md.x / (mw * (1.10 + sml * 0.40)), (md.y + mw * (0.26 + openA * 0.20)) / (mw * 0.17));
           float ridge = exp(-dot(ul, ul) * 2.3) * act;
-          sLuma += ridge * 0.13;
-          form  += ridge * 0.10;
+          sLuma += ridge * 0.09;
+          form  += ridge * 0.07;
           // chin bulge: the jaw pushes fabric outward below the cavity
-          vec2 cb = vec2(md.x / (mw * 1.45), (md.y - mw * (0.95 + openA * 0.75)) / (mw * 0.60));
+          vec2 cb = vec2(md.x / (mw * 1.05), (md.y - mw * (0.85 + openA * 0.55)) / (mw * 0.55));
           float bulge = exp(-dot(cb, cb) * 1.8) * openA;
-          sLuma += bulge * 0.09;
-          form  += bulge * 0.06;
+          sLuma += bulge * 0.06;
+          form  += bulge * 0.04;
           // tension creases: soft dimples at both mouth corners
-          vec2 coL = vec2((md.x + mw * (0.95 + sml * 0.32)) / (mw * 0.24), md.y / (mw * 0.36));
-          vec2 coR = vec2((md.x - mw * (0.95 + sml * 0.32)) / (mw * 0.24), md.y / (mw * 0.36));
+          vec2 coL = vec2((md.x + mw * (0.60 + sml * 0.32)) / (mw * 0.22), md.y / (mw * 0.34));
+          vec2 coR = vec2((md.x - mw * (0.60 + sml * 0.32)) / (mw * 0.22), md.y / (mw * 0.34));
           float dimp = (exp(-dot(coL, coL) * 1.6) + exp(-dot(coR, coR) * 1.6)) * max(act, sml);
-          sLuma -= dimp * 0.07;
+          sLuma -= dimp * 0.05;
           sLuma = clamp(sLuma, 0.0, 1.0);
         }
       }
@@ -878,9 +868,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       uniforms.uFaceOk.value = f.ok;
       // live mouth geometry: drives the mask's visible lip-sync articulation
       uniforms.uMouthC.value.set(f.mouth.x, f.mouth.y * ASPECT);
-      // 0.92: readable at phone size without inflating the warp field —
-      // 1.15 blew the squared falloff up so the whole face fabric sheared
-      uniforms.uMouthW.value = Math.max(0.024, f.mouthW * 0.92);
+      uniforms.uMouthW.value = Math.max(0.02, f.mouthW * 0.85);
       uniforms.uMouthOpen.value = f.mouthOpen;
       /* TRUE LIP SYNC — the AUDIO is the single source of truth.
          During a script take (rig.voiceActive) your real jaw is only the
@@ -895,12 +883,7 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
          tails, which kept the smoothed level just high enough to hold the
          mouth ajar between syllables and after a line. Subtract the floor
          BEFORE scaling so silence maps to a hard 0 and speech still hits 1. */
-      /* 1.9 gain + soft knee: syllable peaks must actually REACH wide-open
-         (1.0) or the mouth spends the whole take at 30-50% and looks mumbly.
-         The sqrt knee lifts mid-level syllables without letting the floor
-         breathe — silence still maps to a hard 0. */
-      const jawRaw = Math.max(0, (rig.level || 0) - 0.055) * 1.9;
-      const audioJaw = Math.min(1, Math.sqrt(Math.min(1, jawRaw)));
+      const audioJaw = Math.min(1, Math.max(0, (rig.level || 0) - 0.055) * 1.35);
       let jawTarget;
       if (rig.voiceActive) {
         if (rig.voicePlaying) jawTarget = rig.voiceBuffered ? audioJaw : rig.jaw;
