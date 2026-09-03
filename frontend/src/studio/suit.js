@@ -118,29 +118,22 @@ const fragmentShader = /* glsl */ `
       float m4 = texture2D(uMask, mUv - vec2(0.0, px.y)).r;
       float mAvg = (m0 + m1 + m2 + m3 + m4) * 0.2;
       m = mix(mAvg, min(m0, mAvg), 0.55);       // slight erode pulls the edge inward
+      alpha = smoothstep(0.36, 0.60, m);
     }
+    if (alpha < 0.004) discard;
 
-    /* ---- region classification against the live skeleton + hands ----
-       Runs BEFORE the matte cut on purpose: the skeleton is a second, independent
-       witness to where your body is, and it rescues the matte wherever the
-       segmenter loses a hand or forearm (see below). */
+    /* ---- region classification against the live skeleton + hands ---- */
     float best = 1e9; float bid = 0.0; float bt = 0.0;
     vec2 bA = uChest; float bR = 0.1;
-    float bestHand = 1e9;   // nearest glove/finger capsule, normalized (1 = its edge)
-    float bestBody = 1e9;   // nearest non-hand limb/torso capsule
     for (int i = 0; i < 32; i++) {
       vec2 a = uSegs[i].xy, b = uSegs[i].zw;
       vec2 ba = b - a; vec2 pa = q - a;
       float tt = clamp(dot(pa, ba) / (dot(ba, ba) + 1e-6), 0.0, 1.0);
-      float dRaw = length(pa - ba * tt) / max(uSegR[i], 1e-4);
-      float d = dRaw;
+      float d = length(pa - ba * tt) / max(uSegR[i], 1e-4);
       // gloves win ties against the coarse forearm capsule so fingers stay crisp
-      if (uSegCol[i] > 4.5) { d *= 0.72; bestHand = min(bestHand, dRaw); }
-      else bestBody = min(bestBody, dRaw);
+      if (uSegCol[i] > 4.5) d *= 0.72;
       if (d < best) { best = d; bid = uSegCol[i]; bt = tt; bA = a; bR = uSegR[i]; }
     }
-    // a hand pixel is "confident" when it sits well inside a glove/finger capsule
-    bool inHand = bestHand < 0.92;
     /* head region: rolled ellipse that hugs the real skull — taller than wide,
        so the mask reads as a mask, not a red disc.
        IMPORTANT: the mask must swallow HAIR too. Landmarks only describe the face,
@@ -160,32 +153,9 @@ const fragmentShader = /* glsl */ `
     if (hd2.y > 0.0) hd2.y /= (1.0 + uJaw * 0.16);
     hd2.x /= 1.03;                                  // slight width for ears/sideburns
     float dHead = length(hd2);
-    bool inHeadEllipse = uFaceOk > 0.3 && dHead < uFaceR * 1.86;
-    /* DEPTH ORDER: a hand raised in front of the face is CLOSER to the camera
-       than the face. The old rule painted the head ellipse over everything, so
-       a hand over the mouth or cheek was recolored as mask fabric — the glove
-       "vanished" into the face. Now a confident glove/finger pixel wins, and
-       the head is only claimed where no hand is. */
-    bool isHead = inHeadEllipse && !inHand;
+    bool isHead = uFaceOk > 0.3 && dHead < uFaceR * 1.86;
     if (isHead) bid = 3.0;
-    if (uPoseOk < 0.3 && !isHead && !inHand && bid < 4.5) { bid = 0.0; best = 0.5; }
-
-    /* ---- GEOMETRY-AWARE MATTE: the skeleton rescues what the segmenter drops.
-       Anywhere the live tracking says "this is a hand / forearm / head" the pixel
-       is kept even if the person-matte says background. Only the confident core
-       of each capsule counts (interior 0..0.85 of the radius, feathered to the
-       edge), so this can never grow a halo of wall around the silhouette — it
-       only refuses to let a real body part disappear. */
-    if (uHasMask > 0.5) {
-      alpha = smoothstep(0.36, 0.60, m);
-      float rescue = 0.0;
-      rescue = max(rescue, 1.0 - smoothstep(0.78, 1.0, bestHand));            // gloves + fingers
-      if (uPoseOk > 0.3) rescue = max(rescue, 1.0 - smoothstep(0.62, 0.90, bestBody)); // limbs + torso
-      if (uFaceOk > 0.3) rescue = max(rescue, 1.0 - smoothstep(1.40, 1.80, dHead / max(uFaceR, 1e-4)));
-      // the matte still shapes the soft edge: rescue lifts alpha, never hard-fills it
-      alpha = max(alpha, rescue * smoothstep(0.08, 0.30, m + rescue * 0.35));
-    }
-    if (alpha < 0.004) discard;
+    if (uPoseOk < 0.3 && !isHead && bid < 4.5) { bid = 0.0; best = 0.5; }
 
     /* ---- base color + web distance field per region ---- */
     vec3 base;
@@ -450,19 +420,6 @@ const fragmentShader = /* glsl */ `
     vec3 rubber = vec3(0.016, 0.014, 0.02) * (0.6 + sLuma * 1.4);
     suit = mix(suit, rubber, clamp(line, 0.0, 1.0) * 0.96);
     suit += vec3(0.9, 0.85, 0.8) * emboss * (0.10 + sLuma * 0.30); // embossed highlight
-
-    /* CONTACT SHADOW: when a glove sits over the mask or the torso, the body
-       underneath is a different surface at a different depth. A soft occlusion
-       band just outside the glove silhouette makes the hand read as ON TOP of
-       the suit instead of a flat red shape merging into a flat red shape. Only
-       non-hand pixels receive it; the glove itself keeps its own lighting. */
-    if (!inHand && bestHand < 1.7) {
-      float occ = 1.0 - smoothstep(0.92, 1.7, bestHand);
-      suit *= 1.0 - occ * 0.42;
-      // gloves carry a hairline dark seam at their edge so red-on-red still separates
-      float seam = 1.0 - smoothstep(0.92, 1.08, bestHand);
-      suit = mix(suit, vec3(0.03, 0.02, 0.03), seam * 0.55);
-    }
 
     vec3 col = mix(video.rgb, suit, uSuitMix);
 
@@ -868,41 +825,6 @@ export function createSuitLayer(tracker, rig, planeW, planeH) {
       const cx = sx + (hx - sx) * 0.24, cy = sy + (hy - sy) * 0.24;
       const ang = Math.atan2(L[12].y - L[11].y, L[12].x - L[11].x);
       drawSpider(og, cx, cy, swPx * 0.30, ang);
-      og.restore();
-    }
-    /* HAND OCCLUSION of the overlay. Lenses and the chest spider are painted on
-       this separate top layer, so without this a hand crossing an eye would show
-       the lens floating ON the glove. Punch every tracked glove out of the layer
-       (same capsules the shader uses, slightly grown for a soft edge) — the glove
-       from the suit pass shows through, correctly in front. */
-    const hands = tracker.points.hands;
-    if (hands) {
-      og.save();
-      og.globalCompositeOperation = 'destination-out';
-      og.lineCap = 'round'; og.lineJoin = 'round';
-      og.strokeStyle = 'rgba(0,0,0,1)'; og.fillStyle = 'rgba(0,0,0,1)';
-      for (let h = 0; h < 2; h++) {
-        const slot = hands.list[h];
-        if (!slot || slot.ok < 0.35 || !slot.lm) continue;
-        og.globalAlpha = Math.min(1, (slot.ok - 0.35) / 0.4);
-        const L = slot.lm;
-        const X = (i) => L[i].x * CROP_W, Y = (i) => L[i].y * CROP_H;
-        const handLen = Math.max(8, Math.hypot(X(9) - X(0), Y(9) - Y(0)));
-        const fingerW = handLen * 0.19 * 2 * 1.08;
-        // palm as a filled polygon through wrist + MCP knuckles
-        og.beginPath();
-        [0, 1, 5, 9, 13, 17].forEach((i, k) => { if (k === 0) og.moveTo(X(i), Y(i)); else og.lineTo(X(i), Y(i)); });
-        og.closePath(); og.fill();
-        og.lineWidth = handLen * 0.62 * 1.6;
-        og.beginPath(); og.moveTo(X(0), Y(0)); og.lineTo(X(9), Y(9)); og.stroke();
-        // thumb + four fingers as thick round-capped strokes
-        og.lineWidth = fingerW;
-        [[2, 3, 4], [5, 6, 8], [9, 10, 12], [13, 14, 16], [17, 18, 20]].forEach((chain) => {
-          og.beginPath();
-          chain.forEach((i, k) => { if (k === 0) og.moveTo(X(i), Y(i)); else og.lineTo(X(i), Y(i)); });
-          og.stroke();
-        });
-      }
       og.restore();
     }
     overlayTex.needsUpdate = true;
