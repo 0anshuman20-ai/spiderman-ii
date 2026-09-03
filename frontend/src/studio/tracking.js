@@ -79,35 +79,11 @@ export class Tracker {
         this.face = await FaceLandmarker.createFromOptions(fileset, {
           ...base('/models/face_landmarker.task'), numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
         });
-        /* POSE — the FULL bundle, with its body segmentation mask turned on.
-           The mask is conditioned on the detected skeleton, so it paints the
-           whole body — arms and hands INCLUDED, wherever they are — which is
-           exactly what a portrait segmenter cannot do when a hand crosses the
-           face or rests on the chest. Falls back to lite if full fails to load. */
-        const poseOpts = { numPoses: 1, outputSegmentationMasks: true, minTrackingConfidence: 0.45 };
-        try { this.pose = await PoseLandmarker.createFromOptions(fileset, { ...base('/models/pose_landmarker_full.task'), ...poseOpts }); }
-        catch (_) { this.pose = await PoseLandmarker.createFromOptions(fileset, { ...base('/models/pose_landmarker_lite.task'), ...poseOpts }); }
-        // slightly stickier hand tracking survives the frames where a hand sits over same-tone skin (the face)
-        this.hand = await HandLandmarker.createFromOptions(fileset, {
-          ...base('/models/hand_landmarker.task'), numHands: 2, minHandDetectionConfidence: 0.45, minTrackingConfidence: 0.45,
+        this.pose = await PoseLandmarker.createFromOptions(fileset, { ...base('/models/pose_landmarker_lite.task'), numPoses: 1 });
+        this.hand = await HandLandmarker.createFromOptions(fileset, { ...base('/models/hand_landmarker.task'), numHands: 2 });
+        this.seg = await ImageSegmenter.createFromOptions(fileset, {
+          ...base('/models/selfie_segmenter.tflite'), outputConfidenceMasks: true, outputCategoryMask: false,
         });
-        /* SEGMENTER — multi-class selfie model (hair / body-skin / face-skin /
-           clothes / accessories). The old 250 KB general selfie model was
-           trained on video-call framing: anything raised in front of the torso
-           (a hand, a forearm) is routinely labelled background and CUT OUT.
-           The multi-class model explicitly knows "body-skin" — hands and arms
-           stay in the person. Person confidence = 1 - background. */
-        try {
-          this.seg = await ImageSegmenter.createFromOptions(fileset, {
-            ...base('/models/selfie_multiclass_256x256.tflite'), outputConfidenceMasks: true, outputCategoryMask: false,
-          });
-          this.segMulti = true;
-        } catch (_) {
-          this.seg = await ImageSegmenter.createFromOptions(fileset, {
-            ...base('/models/selfie_segmenter.tflite'), outputConfidenceMasks: true, outputCategoryMask: false,
-          });
-          this.segMulti = false;
-        }
       };
       try { await mk('GPU')(); } catch (_) { await mk('CPU')(); }
       /* FIRST-INFERENCE WARMUP — each model's first detect call compiles its
@@ -119,12 +95,12 @@ export class Tracker {
         this.drawCrop();
         const now = performance.now();
         this.face.detectForVideo(this.canvas, now);
-        const pr = this.pose.detectForVideo(this.canvas, now);
-        if (pr && pr.segmentationMasks) pr.segmentationMasks.forEach((mm) => { try { mm.close(); } catch (_) {} });
+        this.pose.detectForVideo(this.canvas, now);
         this.hand.detectForVideo(this.canvas, now + 1);
         this.segCtx.drawImage(this.canvas, 0, 0, SEG_W, SEG_H);
         const res = this.seg.segmentForVideo(this.segCanvas, now);
-        if (res && res.confidenceMasks) res.confidenceMasks.forEach((mm) => { try { mm.close(); } catch (_) {} });
+        const mask = res && res.confidenceMasks && res.confidenceMasks[0];
+        if (mask && mask.close) mask.close();
       } catch (_) { /* warmup is best-effort — live tick warms whatever it missed */ }
       this.running = true;
       this.rig.tracking.mode = 'live';
@@ -271,26 +247,6 @@ export class Tracker {
         rig.tracking.pose = false;
         pts.pose.ok = lerp(pts.pose.ok, 0, kBody * 0.5);
       }
-      /* BODY MASK from the pose model: skeleton-conditioned, so it keeps the
-         arms and hands attached to the person even when the portrait
-         segmenter drops them. Read back and box-downsampled into SEG space,
-         then fused into the matte below. The GPU->CPU readback is the one real
-         cost here, so it is timed: if it ever averages slow, it alternates
-         frames and the previous body mask is held (the body barely moves in
-         one frame, so nothing visible changes). */
-      const pm = pr.segmentationMasks && pr.segmentationMasks[0];
-      if (pm) {
-        const wantThisFrame = !this.poseMaskSlow || (this.frame & 1) === 0;
-        if (wantThisFrame && nl) {
-          const t0 = performance.now();
-          try { this.readPoseMask(pm); } catch (_) {}
-          const cost = performance.now() - t0;
-          this.poseMaskCost = this.poseMaskCost == null ? cost : this.poseMaskCost * 0.9 + cost * 0.1;
-          this.poseMaskSlow = this.poseMaskCost > 11;
-        }
-        pr.segmentationMasks.forEach((mm) => { try { mm.close(); } catch (_) {} });
-      }
-      if (!nl) this.poseMaskAge = (this.poseMaskAge || 0) + 1; else this.poseMaskAge = 0;
     } catch (_) { rig.tracking.pose = false; }
 
     /* ---- HANDS (every frame — real gloved fingers glued to yours) ---- */
@@ -316,18 +272,11 @@ export class Tracker {
         const slot = pts.hands.list[s];
         if (fi >= 0) {
           const lm = found[fi];
-          slot.ok = lerp(slot.ok, 1, kBody * 1.6);   // fast attack: a glove must appear the instant the hand does
-          slot.lostT = 0;
+          slot.ok = lerp(slot.ok, 1, kBody);
           if (!slot.lm) slot.lm = lm.map((p) => ({ x: p.x, y: p.y }));
           else lm.forEach((p, i) => { const q = slot.lm[i]; q.x = lerp(q.x, p.x, kPos); q.y = lerp(q.y, p.y, kPos); });
         } else {
-          /* HOLD, don't drop. The hand detector flickers exactly where it
-             matters most — a hand over the face (skin on skin) or crossing the
-             chest. For a third of a second the glove stays where it was; only
-             a sustained loss releases it. A frozen glove for 300 ms is
-             invisible; a glove blinking out for 3 frames is not. */
-          slot.lostT = (slot.lostT || 0) + dt;
-          slot.ok = lerp(slot.ok, 0, slot.lostT < 0.33 ? kBody * 0.12 : kBody);
+          slot.ok = lerp(slot.ok, 0, kBody);
         }
       }
     } catch (_) { pts.hands.list.forEach((s) => { s.ok = lerp(s.ok, 0, kBody); }); }
@@ -336,69 +285,22 @@ export class Tracker {
     try {
       this.segCtx.drawImage(this.canvas, 0, 0, SEG_W, SEG_H);
       const res = this.seg.segmentForVideo(this.segCanvas, now);
-      const masks = res.confidenceMasks || [];
-      if (masks.length) {
-        let fresh;
-        if (masks.length >= 6) {
-          // multi-class: person = everything that is not background (softmax sums to 1)
-          fresh = masks[0].getAsFloat32Array();
-          for (let i = 0; i < fresh.length; i++) fresh[i] = 1 - fresh[i];
-        } else if (masks.length === 2) {
-          fresh = masks[1].getAsFloat32Array();
-        } else {
-          fresh = masks[0].getAsFloat32Array();
-        }
-        const mw = masks[0].width, mh = masks[0].height;
-        /* FUSION with the skeleton-conditioned body mask. The pose mask is
-           squared first: its confident interior (~1) survives intact while
-           its soft over-reach around the silhouette (0.5 -> 0.25) is pushed
-           below the matte threshold, so it can only ever ADD body that the
-           portrait segmenter missed — never a halo of wall. It is also aged
-           out quickly when the skeleton is lost, so a stale body blob can
-           never linger where you no longer are. */
-        const bm = this.poseMask;
-        if (bm && bm.length === fresh.length && (this.poseMaskAge || 0) < 6) {
-          for (let i = 0; i < fresh.length; i++) {
-            const b = bm[i] * bm[i] * 0.98;
-            if (b > fresh[i]) fresh[i] = b;
-          }
-        }
+      const mask = res.confidenceMasks && res.confidenceMasks[0];
+      if (mask) {
+        const fresh = mask.getAsFloat32Array();
         // temporal blend: the matte edge stops flickering frame-to-frame
         if (pts.seg.data && pts.seg.data.length === fresh.length) {
           const prev = pts.seg.data;
           for (let i = 0; i < fresh.length; i++) fresh[i] = prev[i] * 0.38 + fresh[i] * 0.62;
         }
         pts.seg.data = fresh;
-        pts.seg.w = mw; pts.seg.h = mh;
+        pts.seg.w = mask.width; pts.seg.h = mask.height;
         pts.seg.version++;
         pts.seg.ok = true;
-        masks.forEach((mm) => { try { mm.close(); } catch (_) {} });
+        mask.close();
       }
       rig.tracking.hands = pts.seg.ok; // telemetry slot reused for the matte
     } catch (_) { pts.seg.ok = false; rig.tracking.hands = false; }
-  }
-
-  /* Box-downsample the pose body mask (input-canvas resolution) into SEG space.
-     2x2 averaging per output pixel keeps thin structures (fingers, a raised
-     forearm) from aliasing out, at ~150k taps per frame. */
-  readPoseMask(pm) {
-    const src = pm.getAsFloat32Array();
-    const sw = pm.width, sh = pm.height;
-    if (!src || !sw || !sh) return;
-    if (!this.poseMask || this.poseMask.length !== SEG_W * SEG_H) this.poseMask = new Float32Array(SEG_W * SEG_H);
-    const out = this.poseMask;
-    const fx = sw / SEG_W, fy = sh / SEG_H;
-    const ox = Math.max(1, Math.floor(fx * 0.5)), oy = Math.max(1, Math.floor(fy * 0.5));
-    for (let y = 0; y < SEG_H; y++) {
-      const sy0 = Math.min(sh - 1, Math.floor(y * fy));
-      const sy1 = Math.min(sh - 1, sy0 + oy);
-      const row0 = sy0 * sw, row1 = sy1 * sw;
-      for (let x = 0; x < SEG_W; x++) {
-        const sx0 = Math.min(sw - 1, Math.floor(x * fx));
-        const sx1 = Math.min(sw - 1, sx0 + ox);
-        out[y * SEG_W + x] = (src[row0 + sx0] + src[row0 + sx1] + src[row1 + sx0] + src[row1 + sx1]) * 0.25;
-      }
-    }
   }
 
   simTick(t, dt) {
